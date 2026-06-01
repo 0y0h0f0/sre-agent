@@ -1,0 +1,14 @@
+{
+  "source": "mock",
+  "fingerprint": "fp-checkout-db-connection-demo",
+  "service": "checkout",
+  "severity": "P1",
+  "alert_name": "DatabaseConnectionExhaustion",
+  "starts_at": "2026-06-01T00:00:00Z",
+  "labels": {
+    "team": "payments"
+  },
+  "annotations": {
+    "summary": "Database connection pool is near the configured maximum"
+  }
+}

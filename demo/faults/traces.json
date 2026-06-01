@@ -1,0 +1,44 @@
+{
+  "spans": [
+    {
+      "trace_id": "trace-high-5xx-1",
+      "span_id": "span-checkout-1",
+      "service": "checkout",
+      "name": "POST /checkout",
+      "start": "2026-06-01T00:03:00Z",
+      "duration_ms": 920,
+      "status": "error",
+      "downstream_service": "payments"
+    },
+    {
+      "trace_id": "trace-cache-1",
+      "span_id": "span-checkout-redis",
+      "service": "checkout",
+      "name": "GET /cart",
+      "start": "2026-06-01T00:05:00Z",
+      "duration_ms": 760,
+      "status": "ok",
+      "downstream_service": "redis"
+    },
+    {
+      "trace_id": "trace-db-1",
+      "span_id": "span-checkout-db",
+      "service": "checkout",
+      "name": "POST /orders",
+      "start": "2026-06-01T00:07:00Z",
+      "duration_ms": 1300,
+      "status": "error",
+      "downstream_service": "postgres"
+    },
+    {
+      "trace_id": "trace-pod-1",
+      "span_id": "span-checkout-pod",
+      "service": "checkout",
+      "name": "GET /health-dependent",
+      "start": "2026-06-01T00:09:00Z",
+      "duration_ms": 610,
+      "status": "error",
+      "downstream_service": "inventory"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "source": "mock",
+  "fingerprint": "fp-checkout-cache-avalanche-demo",
+  "service": "checkout",
+  "severity": "P2",
+  "alert_name": "RedisCacheAvalanche",
+  "starts_at": "2026-06-01T00:00:00Z",
+  "labels": {
+    "team": "payments"
+  },
+  "annotations": {
+    "summary": "Redis cache hit rate dropped while database QPS increased"
+  }
+}

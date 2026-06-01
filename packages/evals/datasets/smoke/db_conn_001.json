@@ -1,0 +1,119 @@
+{
+  "case_id": "db_conn_001",
+  "incident_type": "database_connection_exhaustion",
+  "alert": {
+    "source": "mock",
+    "fingerprint": "fp-checkout-db-connection-demo",
+    "service": "checkout",
+    "severity": "P1",
+    "alert_name": "DatabaseConnectionExhaustion",
+    "starts_at": "2026-06-01T00:00:00Z",
+    "labels": {
+      "team": "payments"
+    },
+    "annotations": {
+      "summary": "Database connection pool is near the configured maximum"
+    }
+  },
+  "fixtures": {
+    "metrics": {
+      "db_connections": {
+        "samples": [
+          42,
+          51,
+          63,
+          77,
+          89,
+          97,
+          99
+        ]
+      },
+      "latency": {
+        "samples": [
+          0.38,
+          0.52,
+          0.74,
+          0.96,
+          1.12,
+          1.27
+        ]
+      },
+      "qps": {
+        "samples": [
+          120,
+          135,
+          140,
+          142,
+          141,
+          139
+        ]
+      },
+      "cpu": {
+        "samples": [
+          0.52,
+          0.56,
+          0.61,
+          0.68
+        ]
+      },
+      "memory": {
+        "samples": [
+          512,
+          530,
+          548,
+          551
+        ]
+      }
+    },
+    "logs": {
+      "lines": [
+        {
+          "timestamp": "2026-06-01T00:01:00Z",
+          "line": "{\"level\":\"error\",\"error_type\":\"connection_error\",\"message\":\"database connection exhausted\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        },
+        {
+          "timestamp": "2026-06-01T00:02:00Z",
+          "line": "{\"level\":\"warn\",\"message\":\"pool wait timeout on checkout-db\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        },
+        {
+          "timestamp": "2026-06-01T00:03:00Z",
+          "line": "{\"level\":\"error\",\"message\":\"connection refused by checkout-db\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        },
+        {
+          "timestamp": "2026-06-01T00:04:00Z",
+          "line": "{\"level\":\"error\",\"message\":\"slow query pinned all workers\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        }
+      ]
+    },
+    "traces": "demo/faults/traces.json",
+    "git_changes": "demo/faults/git_changes.json"
+  },
+  "expected": {
+    "root_cause_keywords": [
+      "connection pool",
+      "max connections"
+    ],
+    "top3_root_causes": [
+      "Connection pool saturated by slow queries",
+      "Connection leak in application code"
+    ],
+    "required_evidence_types": [
+      "metric",
+      "log",
+      "runbook"
+    ],
+    "expected_risk_level": "L1"
+  }
+}

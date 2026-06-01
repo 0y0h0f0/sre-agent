@@ -1,0 +1,112 @@
+{
+  "case_id": "cache_001",
+  "incident_type": "redis_cache_avalanche",
+  "alert": {
+    "source": "mock",
+    "fingerprint": "fp-checkout-cache-avalanche-demo",
+    "service": "checkout",
+    "severity": "P2",
+    "alert_name": "RedisCacheAvalanche",
+    "starts_at": "2026-06-01T00:00:00Z",
+    "labels": {
+      "team": "payments"
+    },
+    "annotations": {
+      "summary": "Redis cache hit rate dropped while database QPS increased"
+    }
+  },
+  "fixtures": {
+    "metrics": {
+      "cache_hit_rate": {
+        "samples": [
+          0.92,
+          0.89,
+          0.74,
+          0.41,
+          0.28,
+          0.14
+        ]
+      },
+      "db_connections": {
+        "samples": [
+          25,
+          31,
+          49,
+          72,
+          86,
+          93
+        ]
+      },
+      "latency": {
+        "samples": [
+          0.42,
+          0.64,
+          0.81,
+          1.08,
+          1.31
+        ]
+      },
+      "qps": {
+        "samples": [
+          150,
+          165,
+          188,
+          225,
+          240,
+          260
+        ]
+      },
+      "cpu": {
+        "samples": [
+          0.33,
+          0.39,
+          0.45,
+          0.52
+        ]
+      }
+    },
+    "logs": {
+      "lines": [
+        {
+          "timestamp": "2026-06-01T00:01:00Z",
+          "line": "{\"level\":\"error\",\"error_type\":\"cache_error\",\"message\":\"redis cache miss storm\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        },
+        {
+          "timestamp": "2026-06-01T00:02:00Z",
+          "line": "{\"level\":\"warn\",\"message\":\"hot key expired everywhere\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        },
+        {
+          "timestamp": "2026-06-01T00:03:00Z",
+          "line": "{\"level\":\"error\",\"message\":\"database query amplification after cache miss\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        }
+      ]
+    },
+    "traces": "demo/faults/traces.json",
+    "git_changes": "demo/faults/git_changes.json"
+  },
+  "expected": {
+    "root_cause_keywords": [
+      "cache avalanche",
+      "ttl"
+    ],
+    "top3_root_causes": [
+      "Synchronized TTL expiry flooded database",
+      "Hot key thundering herd under traffic"
+    ],
+    "required_evidence_types": [
+      "metric",
+      "log",
+      "runbook"
+    ],
+    "expected_risk_level": "L3"
+  }
+}

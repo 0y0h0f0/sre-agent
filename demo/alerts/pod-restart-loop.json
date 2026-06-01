@@ -1,0 +1,14 @@
+{
+  "source": "mock",
+  "fingerprint": "fp-checkout-pod-restart-demo",
+  "service": "checkout",
+  "severity": "P2",
+  "alert_name": "PodRestartLoop",
+  "starts_at": "2026-06-01T00:00:00Z",
+  "labels": {
+    "team": "payments"
+  },
+  "annotations": {
+    "summary": "Checkout pod is repeatedly restarting"
+  }
+}

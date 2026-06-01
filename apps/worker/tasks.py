@@ -1,0 +1,309 @@
+"""Celery task — runs the LangGraph SRE diagnosis workflow asynchronously."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from apps.api.schemas.common import AgentRunStatus, IncidentStatus
+from apps.worker.celery_app import celery_app
+from packages.agent.fake_llm import FakeLLM
+from packages.agent.runner import AgentRunner
+from packages.agent.schemas import AgentDeps
+from packages.common.errors import NotFoundError
+from packages.common.ids import new_id
+from packages.common.settings import get_settings
+from packages.db.models import AgentRunNode
+from packages.db.repositories.agent_runs import TERMINAL_RUN_STATUSES, AgentRunRepository
+from packages.db.repositories.incidents import IncidentRepository
+from packages.db.repositories.runbooks import RunbookChunkRepository
+from packages.db.repositories.tool_calls import ToolCallRepository
+from packages.db.session import SessionLocal
+from packages.memory.context_builder import ContextBuilder
+from packages.memory.memory_store import MemoryStore
+from packages.rag.retriever import RunbookRetriever
+from packages.tools import (
+    GitChangeTool,
+    LogsTool,
+    MetricsTool,
+    TraceTool,
+)
+from packages.tools.base import ToolResult
+from packages.tools.cache import RequestLocalToolCache
+from packages.tools.runbook_search import RunbookSearchTool
+
+
+class TransientError(Exception):
+    """Retryable worker dependency failure."""
+
+
+def enqueue_diagnosis_task(incident_id: str, agent_run_id: str) -> str:
+    async_result = run_incident_diagnosis.delay(incident_id, agent_run_id)
+    return str(async_result.id)
+
+
+def enqueue_resume_task(agent_run_id: str, decision: str) -> str:
+    """Enqueue a task to resume the graph after approval/rejection."""
+    async_result = resume_incident_after_approval.delay(agent_run_id, decision)
+    return str(async_result.id)
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    bind=True, autoretry_for=(TransientError,), retry_backoff=True, max_retries=2
+)
+def run_incident_diagnosis(self: Any, incident_id: str, agent_run_id: str) -> dict[str, Any]:
+    with SessionLocal() as db:
+        return run_incident_diagnosis_logic(db, incident_id, agent_run_id)
+
+
+def run_incident_diagnosis_logic(
+    db: Session, incident_id: str, agent_run_id: str
+) -> dict[str, Any]:
+    incidents = IncidentRepository(db)
+    runs = AgentRunRepository(db)
+
+    incident = incidents.get_by_public_id(incident_id)
+    if incident is None:
+        raise NotFoundError("incident", incident_id)
+    run = runs.get_by_public_id(agent_run_id)
+    if run is None:
+        raise NotFoundError("agent_run", agent_run_id)
+    if run.status in TERMINAL_RUN_STATUSES:
+        return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
+
+    runs.mark_running(run)
+    incident.status = IncidentStatus.DIAGNOSING.value
+    db.flush()
+
+    checkpointer: Any | None = None
+
+    try:
+        settings = get_settings()
+        alert_payload = incidents.alert_payload(incident)
+        deps = _build_deps(db, settings, agent_run_id)
+
+        # Wire PostgresSaver for checkpoint persistence
+        checkpointer = _build_checkpointer(settings)
+
+        runner = AgentRunner(deps, checkpointer=checkpointer)
+        result = runner.run(incident_id, agent_run_id, alert_payload)
+
+        if result["status"] == "waiting_approval":
+            _handle_waiting_approval(db, agent_run_id, result["state"])
+            db.commit()
+            return {
+                "incident_id": incident_id,
+                "agent_run_id": agent_run_id,
+                "status": AgentRunStatus.WAITING_APPROVAL.value,
+            }
+
+        if result["status"] == "failed":
+            error_msg = result.get("error", "unknown error")
+            runs.mark_failed(agent_run_id, "GRAPH_FAILED", error_msg)
+            db.commit()
+            raise TransientError(error_msg)
+
+        state_dict = _sanitize_state(result.get("state", {}))
+        runs.mark_succeeded(run, state_dict)
+        # Only mark mitigated if actions were actually executed
+        if result.get("state", {}).get("execution_results"):
+            incident.status = IncidentStatus.MITIGATED.value
+        else:
+            incident.status = IncidentStatus.RESOLVED.value
+        db.commit()
+        return {
+            "incident_id": incident_id,
+            "agent_run_id": agent_run_id,
+            "status": AgentRunStatus.SUCCEEDED.value,
+        }
+
+    except TransientError:
+        raise
+    except Exception as exc:
+        db.rollback()
+        runs.mark_failed(agent_run_id, "DIAGNOSIS_FAILED", str(exc))
+        db.commit()
+        raise
+    finally:
+        _close_checkpointer(checkpointer)
+
+
+def _build_checkpointer(settings: Any) -> Any:
+    """Create a PostgresSaver if a real database URL is configured."""
+    db_url = settings.database_url
+    if not db_url or "sqlite" in db_url or "memory" in db_url:
+        return None
+    try:
+        from langgraph.checkpoint.postgres import PostgresSaver
+
+        saver_context = PostgresSaver.from_conn_string(db_url)
+        saver = saver_context.__enter__()
+        saver.setup()
+        saver._codex_context_manager = saver_context  # type: ignore[attr-defined]
+        return saver
+    except Exception:
+        return None
+
+
+def _close_checkpointer(checkpointer: Any | None) -> None:
+    context = getattr(checkpointer, "_codex_context_manager", None)
+    if context is not None:
+        context.__exit__(None, None, None)
+
+
+def _build_deps(db: Session, settings: Any, agent_run_id: str) -> AgentDeps:
+    cache = RequestLocalToolCache()
+    timeout = settings.tool_timeout_seconds
+
+    metrics_tool = MetricsTool(
+        base_url=settings.prometheus_url, timeout_seconds=timeout, cache=cache
+    )
+    logs_tool = LogsTool(base_url=settings.loki_url, timeout_seconds=timeout, cache=cache)
+    trace_tool = TraceTool(
+        fixture_path=settings.trace_fixture_path, timeout_seconds=timeout, cache=cache
+    )
+    git_change_tool = GitChangeTool(
+        fixture_path=settings.git_changes_fixture_path, timeout_seconds=timeout, cache=cache
+    )
+
+    chunk_repo = RunbookChunkRepository(db)
+    retriever = RunbookRetriever(chunk_repo)
+    runbook_search_tool = RunbookSearchTool(
+        retriever=retriever, timeout_seconds=timeout, cache=cache
+    )
+
+    memory_store = MemoryStore(db)
+    context_builder = ContextBuilder()
+    llm = FakeLLM()
+    tool_calls_repo = ToolCallRepository(db)
+
+    def node_tracer(**kwargs: Any) -> None:
+        started = kwargs.get("started_at")
+        finished = kwargs.get("finished_at")
+        duration_ms = (
+            max(0, int((finished - started).total_seconds() * 1000)) if started and finished else 0
+        )
+        node = AgentRunNode(
+            node_id=kwargs.get("node_id", new_id("nd_")),
+            agent_run_id=kwargs.get("agent_run_id", agent_run_id),
+            name=kwargs.get("name", "unknown"),
+            status=kwargs.get("status", "unknown"),
+            started_at=started,
+            finished_at=finished,
+            duration_ms=duration_ms,
+            input_summary=(kwargs.get("input_summary") or "")[:500],
+            output_summary=(kwargs.get("output_summary") or "")[:500],
+            error_message=(kwargs.get("error_message") or "")[:500] or None,
+        )
+        db.add(node)
+        db.flush()
+
+    def tool_call_recorder(**kwargs: Any) -> None:
+        tool_calls_repo.create(
+            agent_run_id=kwargs.get("agent_run_id", agent_run_id),
+            node_name=kwargs.get("node_name", "unknown"),
+            tool_name=kwargs.get("tool_name", "unknown"),
+            query=kwargs.get("query", {}),
+            result=kwargs.get(
+                "result", ToolResult(status="degraded", data={}, summary="", duration_ms=0)
+            ),
+            input_summary=kwargs.get("input_summary", ""),
+        )
+        db.flush()
+
+    return AgentDeps(
+        db=db,
+        settings=settings,
+        tool_cache=cache,
+        metrics_tool=metrics_tool,
+        logs_tool=logs_tool,
+        trace_tool=trace_tool,
+        git_change_tool=git_change_tool,
+        runbook_search_tool=runbook_search_tool,
+        memory_store=memory_store,
+        context_builder=context_builder,
+        llm=llm,
+        node_tracer=node_tracer,
+        tool_call_recorder=tool_call_recorder,
+    )
+
+
+def _handle_waiting_approval(db: Session, agent_run_id: str, state: dict[str, Any]) -> None:
+    runs = AgentRunRepository(db)
+    run = runs.get_by_public_id(agent_run_id)
+    if run is None:
+        return
+    run.status = AgentRunStatus.WAITING_APPROVAL.value
+    run.state = _sanitize_state(state)
+
+
+def _sanitize_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Remove internal keys and convert datetimes to ISO strings."""
+    from datetime import datetime as dt
+
+    def _convert(obj: Any) -> Any:
+        if isinstance(obj, dt):
+            return obj.isoformat()
+        if isinstance(obj, dict):
+            return {k: _convert(v) for k, v in obj.items() if not k.startswith("_")}
+        if isinstance(obj, list):
+            return [_convert(v) for v in obj]
+        return obj
+
+    converted = _convert(state)
+    return converted if isinstance(converted, dict) else {}
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    bind=True, autoretry_for=(TransientError,), retry_backoff=True, max_retries=2
+)
+def resume_incident_after_approval(self: Any, agent_run_id: str, decision: str) -> dict[str, Any]:
+    """Resume a LangGraph workflow after approval/rejection decision."""
+    with SessionLocal() as db:
+        return _resume_incident_logic(db, agent_run_id, decision)
+
+
+def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dict[str, Any]:
+    runs = AgentRunRepository(db)
+
+    run = runs.get_by_public_id(agent_run_id)
+    if run is None:
+        raise NotFoundError("agent_run", agent_run_id)
+    if run.status != AgentRunStatus.WAITING_APPROVAL.value:
+        return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
+
+    checkpointer: Any | None = None
+
+    try:
+        settings = get_settings()
+        deps = _build_deps(db, settings, agent_run_id)
+        checkpointer = _build_checkpointer(settings)
+
+        runner = AgentRunner(deps, checkpointer=checkpointer)
+        result = runner.resume(agent_run_id, decision)
+
+        if result["status"] == "failed":
+            error_msg = result.get("error", "unknown error")
+            runs.mark_failed(agent_run_id, "RESUME_FAILED", error_msg)
+            db.commit()
+            raise TransientError(error_msg)
+
+        state_dict = _sanitize_state(result.get("state", {}))
+        runs.mark_succeeded(run, state_dict)
+        db.commit()
+        return {
+            "agent_run_id": agent_run_id,
+            "status": AgentRunStatus.SUCCEEDED.value,
+            "decision": decision,
+        }
+
+    except TransientError:
+        raise
+    except Exception as exc:
+        db.rollback()
+        runs.mark_failed(agent_run_id, "RESUME_FAILED", str(exc))
+        db.commit()
+        raise
+    finally:
+        _close_checkpointer(checkpointer)

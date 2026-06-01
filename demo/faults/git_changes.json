@@ -1,0 +1,20 @@
+{
+  "changes": [
+    {
+      "service": "checkout",
+      "deployed_at": "2026-06-01T00:01:30Z",
+      "commit_sha": "a1b2c3d",
+      "author": "demo",
+      "summary": "Raise checkout payment client timeout and switch retry policy",
+      "files": ["services/checkout/payment_client.py", "deploy/checkout.yaml"]
+    },
+    {
+      "service": "checkout",
+      "deployed_at": "2026-06-01T00:04:30Z",
+      "commit_sha": "d4e5f6a",
+      "author": "demo",
+      "summary": "Change Redis key TTL jitter for cart cache",
+      "files": ["services/checkout/cache.py"]
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+{
+  "case_id": "pod_restart_001",
+  "incident_type": "pod_restart_loop",
+  "alert": {
+    "source": "mock",
+    "fingerprint": "fp-checkout-pod-restart-demo",
+    "service": "checkout",
+    "severity": "P2",
+    "alert_name": "PodRestartLoop",
+    "starts_at": "2026-06-01T00:00:00Z",
+    "labels": {
+      "team": "payments"
+    },
+    "annotations": {
+      "summary": "Checkout pod is repeatedly restarting"
+    }
+  },
+  "fixtures": {
+    "metrics": {
+      "memory": {
+        "samples": [
+          420,
+          474,
+          498,
+          503,
+          506,
+          507
+        ]
+      },
+      "cpu": {
+        "samples": [
+          0.58,
+          0.67,
+          0.72,
+          0.74
+        ]
+      },
+      "latency": {
+        "samples": [
+          0.31,
+          0.44,
+          0.73,
+          0.92
+        ]
+      },
+      "qps": {
+        "samples": [
+          88,
+          91,
+          85,
+          82
+        ]
+      },
+      "db_connections": {
+        "samples": [
+          11,
+          12,
+          13,
+          14
+        ]
+      }
+    },
+    "logs": {
+      "lines": [
+        {
+          "timestamp": "2026-06-01T00:01:00Z",
+          "line": "{\"level\":\"error\",\"error_type\":\"pod_restart\",\"message\":\"pod restarted due to OOMKilled\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        },
+        {
+          "timestamp": "2026-06-01T00:02:00Z",
+          "line": "{\"level\":\"error\",\"message\":\"container terminated with exit code 137\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        },
+        {
+          "timestamp": "2026-06-01T00:03:00Z",
+          "line": "{\"level\":\"warn\",\"message\":\"restart loop detected\"}",
+          "labels": {
+            "service": "checkout"
+          }
+        }
+      ]
+    },
+    "traces": "demo/faults/traces.json",
+    "git_changes": "demo/faults/git_changes.json"
+  },
+  "expected": {
+    "root_cause_keywords": [
+      "oomkilled",
+      "memory limit"
+    ],
+    "top3_root_causes": [
+      "OOMKilled \u2014 memory limit too low",
+      "Startup probe failure after config change"
+    ],
+    "required_evidence_types": [
+      "metric",
+      "log",
+      "trace"
+    ],
+    "expected_risk_level": "L2"
+  }
+}

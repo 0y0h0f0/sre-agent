@@ -1,18 +1,24 @@
-"""Trace lookup tool backed by demo fixtures for MVP."""
+"""Trace lookup tool backed by a pluggable trace backend (Phase 2.1).
+
+The fixture backend keeps MVP behaviour; Jaeger/Tempo backends query a real
+trace store. Analysis (slow/error span extraction, p95, downstream services)
+lives here so every backend shares one path.
+"""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
 from math import ceil
-from pathlib import Path
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from packages.common.time import ensure_utc
 from packages.tools.base import ToolResult, ToolStatus, compact_summary, elapsed_ms, start_timer
 from packages.tools.cache import RequestLocalToolCache, build_cache_key
+from packages.tools.trace_backends import FixtureTraceBackend, TraceBackend
 
 
 class TraceQuery(BaseModel):
@@ -42,11 +48,14 @@ class TraceTool:
     def __init__(
         self,
         *,
-        fixture_path: str | Path = "demo/faults/traces.json",
+        backend: TraceBackend | None = None,
+        fixture_path: str | None = None,
         timeout_seconds: float = 2.0,
         cache: RequestLocalToolCache | None = None,
     ) -> None:
-        self.fixture_path = Path(fixture_path)
+        if backend is None:
+            backend = FixtureTraceBackend(fixture_path=fixture_path or "demo/faults/traces.json")
+        self.backend = backend
         self.timeout_seconds = timeout_seconds
         self.cache = cache
 
@@ -60,13 +69,16 @@ class TraceTool:
             start=trace_query.start,
             end=trace_query.end,
             bucket_seconds=300,
+            datasource=self.backend.name,
         )
         cached = self.cache.get(cache_key) if self.cache else None
         if cached is not None:
             return cached.model_copy(update={"duration_ms": elapsed_ms(started_at)})
 
         try:
-            spans = self._load_spans()
+            spans = self.backend.fetch_spans(
+                trace_query.service, trace_query.start, trace_query.end
+            )
             matching = [_normalize_span(span) for span in spans]
             matching = [
                 span
@@ -114,7 +126,7 @@ class TraceTool:
                 evidence=[
                     {
                         "type": "trace",
-                        "source": "demo-trace-fixture",
+                        "source": self.backend.name,
                         "title": f"trace spans for {trace_query.service}",
                         "payload": data,
                     }
@@ -123,13 +135,29 @@ class TraceTool:
                 else [],
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
-                error_message=None if matching else "empty trace fixture result",
+                error_message=None if matching else "empty trace result",
             )
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        except httpx.TimeoutException as exc:
+            result = ToolResult(
+                status="timeout",
+                data={},
+                summary=f"trace backend timed out for {trace_query.service}",
+                cache_key=cache_key,
+                duration_ms=elapsed_ms(started_at),
+                error_message=str(exc),
+            )
+        except (
+            httpx.HTTPError,
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
             result = ToolResult(
                 status="degraded",
                 data={},
-                summary=f"trace fixture unavailable for {trace_query.service}",
+                summary=f"trace backend unavailable for {trace_query.service}",
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
                 error_message=str(exc),
@@ -138,14 +166,6 @@ class TraceTool:
         if self.cache and result.status in {"succeeded", "degraded"}:
             self.cache.set(cache_key, result)
         return result
-
-    def _load_spans(self) -> list[dict[str, Any]]:
-        payload = json.loads(self.fixture_path.read_text(encoding="utf-8"))
-        spans = payload.get("spans", [])
-        if not isinstance(spans, list):
-            msg = "spans must be a list"
-            raise ValueError(msg)
-        return [span for span in spans if isinstance(span, dict)]
 
 
 def _normalize_span(span: dict[str, Any]) -> dict[str, Any]:

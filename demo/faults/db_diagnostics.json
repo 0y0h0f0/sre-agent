@@ -1,0 +1,17 @@
+{
+  "connection_pool": [
+    {"state": "active", "connections": 95},
+    {"state": "idle in transaction", "connections": 18},
+    {"state": "idle", "connections": 5}
+  ],
+  "locks": [
+    {"mode": "RowExclusiveLock", "held": 42},
+    {"mode": "AccessShareLock", "held": 30},
+    {"mode": "ShareLock", "held": 12}
+  ],
+  "slow_queries": [
+    {"query": "SELECT * FROM orders WHERE user_id = $1", "calls": 18234, "mean_exec_time": 412.7},
+    {"query": "UPDATE carts SET items = $1 WHERE id = $2", "calls": 9120, "mean_exec_time": 233.1},
+    {"query": "SELECT count(*) FROM sessions", "calls": 540, "mean_exec_time": 188.4}
+  ]
+}

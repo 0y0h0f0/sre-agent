@@ -97,7 +97,7 @@ class TestDeriveSignals:
     def test_empty_sources_are_degraded(self) -> None:
         signals, degraded = derive_signals({})
         assert signals == []
-        assert set(degraded) == {"metrics", "logs", "traces", "deployment"}
+        assert set(degraded) == {"metrics", "logs", "traces", "deployment", "k8s", "db"}
 
     def test_fallback_items_without_payload_are_degraded(self) -> None:
         state = {"metrics_evidence": [{"type": "metric", "status": "degraded"}]}

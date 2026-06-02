@@ -68,9 +68,12 @@ def test_worker_task_idempotent(monkeypatch, db_session) -> None:
     second = tasks.run_incident_diagnosis_logic(db_session, "inc_worker", "run_worker")
 
     run = runs.get_by_public_id("run_worker")
+    incident = IncidentRepository(db_session).get_by_public_id("inc_worker")
     assert first["status"] == "succeeded"
     assert second["idempotent"] is True
     assert run.status == "succeeded"
+    assert incident is not None
+    assert incident.root_cause_summary
 
 
 @pytest.mark.parametrize("in_flight_status", ["running", "waiting_approval"])

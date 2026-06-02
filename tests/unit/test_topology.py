@@ -180,3 +180,24 @@ class TestAnalyzeCascadeFromState:
         assert result["is_cascade"] is True
         assert result["root_services"] == ["payments"]
         assert result["cascade_services"] == ["checkout"]
+
+    def test_configured_topology_path_is_merged_with_trace_topology(self, tmp_path: Any) -> None:
+        path = tmp_path / "topology.json"
+        path.write_text(
+            '{"services": {"checkout": ["payments"], "payments": ["postgres"]}}',
+            encoding="utf-8",
+        )
+        state = {
+            "service_name": "checkout",
+            "traces_evidence": [
+                _ev_trace(
+                    [{"service": "checkout", "downstream_service": "payments", "status": "error"}]
+                )
+            ],
+        }
+
+        result = analyze_cascade_from_state(state, topology_path=path)
+
+        assert result["is_cascade"] is True
+        assert result["root_services"] == ["payments"]
+        assert result["topology_source"] == "config+trace"

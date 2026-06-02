@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 from packages.agent.evidence_validation import (
     apply_confidence_adjustment,
     cross_validate_state,
 )
+from packages.agent.llm.base import extract_json
 from packages.agent.llm.reasoning import (
     capture_metadata,
     format_call_metadata,
@@ -37,7 +39,10 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
                 severity=state.get("severity", ""),
                 time_window=state.get("time_window", {}),
                 evidence_block=json.dumps(
-                    state.get("metrics_evidence", []) + state.get("logs_evidence", [])
+                    state.get("metrics_evidence", [])
+                    + state.get("logs_evidence", [])
+                    + state.get("traces_evidence", [])
+                    + state.get("deployment_evidence", [])
                 ),
                 runbook_block=json.dumps(state.get("runbook_context", [])),
                 memory_block=json.dumps(state.get("memory_context", [])),
@@ -46,17 +51,25 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
         # diagnose is the core reasoning node — request deep reasoning per config.
         thinking = should_use_deep_reasoning(deps.settings, _NODE_NAME)
 
+        _clear_llm_metadata(deps.llm)
         try:
             output = deps.llm.generate_json(prompt_text, DiagnosisOutput, thinking=thinking)
         except Exception:
             try:
-                raw = deps.llm.invoke(
-                    [{"role": "user", "content": prompt_text}], thinking=thinking
+                repair_prompt = (
+                    "Return only a valid JSON object matching DiagnosisOutput. "
+                    "Preserve evidence_id references from the original prompt.\n\n"
+                    f"Original prompt:\n{prompt_text}"
                 )
-                data = json.loads(raw)
+                raw = deps.llm.invoke(
+                    [{"role": "user", "content": repair_prompt}], thinking=thinking
+                )
+                data = extract_json(raw)
                 output = DiagnosisOutput(**data)
             except Exception:
-                output = _rules_diagnosis(state.get("alert_name", ""))
+                output = _rules_diagnosis(
+                    state.get("alert_name", ""), _state_evidence_ids(state)
+                )
 
         hypotheses = [h.model_dump() for h in output.hypotheses]
         root_cause = dict(output.root_cause)
@@ -79,10 +92,10 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
             root_cause["confidence_source"] = "model"
         needs_review = bool(cross_validation["needs_human_review"])
 
-        # Cascading-failure analysis: from trace error spans, find the root
-        # service of the dependency chain. Informational — no decision change,
-        # and is_cascade=False for the common single-service incident.
-        cascade_analysis = analyze_cascade_from_state(state)
+        # Cascading-failure analysis is informational and does not change decisions.
+        cascade_analysis = analyze_cascade_from_state(
+            state, topology_path=deps.settings.service_topology_path
+        )
 
         meta = capture_metadata(deps.llm)
         record_llm_call(state, _NODE_NAME, meta)
@@ -154,8 +167,39 @@ def _build_rationale(
     }
 
 
-def _rules_diagnosis(alert_name: str) -> DiagnosisOutput:
+def _state_evidence_ids(state: IncidentState) -> list[str]:
+    ids: list[str] = []
+    for key in (
+        "metrics_evidence",
+        "logs_evidence",
+        "traces_evidence",
+        "deployment_evidence",
+    ):
+        for item in state.get(key, []) or []:
+            evidence_id = item.get("evidence_id") if isinstance(item, dict) else None
+            if isinstance(evidence_id, str) and evidence_id and evidence_id not in ids:
+                ids.append(evidence_id)
+    return ids
+
+
+def _clear_llm_metadata(llm: object) -> None:
+    if hasattr(llm, "last_metadata"):
+        try:
+            setattr(llm, "last_metadata", {})
+        except Exception:
+            pass
+
+
+def _rules_diagnosis(alert_name: str, evidence_ids: list[str] | None = None) -> DiagnosisOutput:
     from packages.agent.fake_llm import _DIAGNOSIS_MAP
 
-    data = _DIAGNOSIS_MAP.get(alert_name, _DIAGNOSIS_MAP["High5xxAfterDeploy"])
+    data = deepcopy(_DIAGNOSIS_MAP.get(alert_name, _DIAGNOSIS_MAP["High5xxAfterDeploy"]))
+    ids = list(evidence_ids or [])
+    if ids:
+        data["evidence_ids"] = ids
+        root_cause = data.setdefault("root_cause", {})
+        root_cause["evidence_ids"] = ids
+        for hypothesis in data.get("hypotheses", []) or []:
+            if not hypothesis.get("supporting_evidence_ids"):
+                hypothesis["supporting_evidence_ids"] = ids
     return DiagnosisOutput(**data)

@@ -2,6 +2,22 @@
 
 目标：把工具层从 Mock/fixture 推到真实后端，从 Mock 到真实。对应工具实现见 `03-tools/tools.md`，风险分级见 `02-agent/guardrails-and-approval.md`。
 
+> **实现状态（已落地，2.1-2.4）**：工具层改为「可插拔后端 + factory」结构，所有后端默认 `fixture`，保持测试确定性与本地离线；切到真实后端只改配置，不改调用方。
+> - 2.1：Trace（`packages/tools/trace_backends.py`：fixture | jaeger | tempo）、Deployment（`packages/tools/deployment_backends.py`：fixture | github | argocd）后端化；PromQL/LogQL 的 service label 可配置；大时间窗口自动分片**且不截断**——超过 `metrics_max_shards` 时加宽分片窗口并按比例放粗 step 以覆盖整窗（避免静默丢尾部数据）；缓存 key 增加 datasource 维度。
+> - 2.2：`packages/tools/k8s.py` 提供只读诊断（describe/logs/events/rollout status）；非只读操作在工具层被直接拒绝；写类动作仅由 `build_remediation_suggestions` 产出 `--dry-run` 建议命令（`executed=False`、需审批），从不执行。
+> - 2.3：`packages/tools/db_diagnostics.py` 只读诊断（pg_stat_activity / pg_locks / pg_stat_statements）；live 后端用只读连接（`conn.read_only`）+ `statement_timeout` + `connect_timeout`，且 `_assert_read_only` 逐句拒绝非 SELECT。
+> - 2.4：故障类型从 4 种扩展到 15 种（`packages/agent/fake_llm.py`），新增对应 PromQL 模板（`cpu_throttle`/`disk_avail`/`cert_expiry_days`/`dns_error_rate`/`queue_lag`/`rate_limit_hits`/`slo_burn_rate`），并在 `collect_metrics._metric_for_alert` 接通告警名 → 指标类型映射。
+> - 图接入：新增 `collect_k8s` / `collect_db` 节点（`collect_deployment` → `collect_k8s` → `collect_db` → `retrieve_memory`），证据经 `build_context` 汇入诊断；两节点在工具缺省（如 eval harness，`deps.k8s_tool`/`db_diagnostics_tool` 为 None）时安全空转，保持既有测试确定性。
+>
+> **边界处理（按优先级）**：
+> 1. **相关性门控**：`collect_k8s`/`collect_db` 仅在故障类别确实涉及该层时采集（关键字 + P0 兜底），避免把无关 pod/db 状态注入证据与交叉验证。
+> 2. **交叉验证接入**：K8s/DB 作为新的印证源进入 `evidence_validation`（权重 Trace>Metrics>**K8s**>Logs>**DB**>Deploy；OOM/CrashLoop/BackOff、连接池饱和/idle-in-txn/重锁/慢查询触发 anomaly）；仅在相关时采集，故只印证不引入噪声。
+> 3. **指标分片不截断**：见上。
+> 4. **Deployment 历史**：GitHub API 无时间过滤，改为 `per_page=100` 客户端按窗口过滤（深翻页为后续项）。
+> 5. **Live 覆盖**：LiveDbBackend 只读路径（无 `SET TRANSACTION READ ONLY`、connect/statement timeout）与 LiveK8sBackend events 路径已用 mock 单测覆盖。
+>
+> **边界遵从**：K8s/DB 均为只读默认 fixture；无真实生产写操作，L4 仍直接拒绝，L3 仍二次确认。放宽 scope 的真实写操作未实现，需单独立项。待真实环境验证项：Jaeger/Tempo/GitHub/Argo CD/K8s/PG 的端到端 live smoke。
+
 ## 2.1 Prometheus / Loki 查询增强与 Fixture 替换
 
 目标：Prometheus 和 Loki 当前已经通过 HTTP 查询真实后端；此阶段重点是增强查询模板、生产安全性，并把仍使用 fixture 的 Trace / Git deployment 数据源替换为真实后端。

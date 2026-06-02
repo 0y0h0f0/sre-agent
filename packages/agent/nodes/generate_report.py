@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from packages.agent.llm.base import extract_json
 from packages.agent.llm.reasoning import (
     capture_metadata,
     record_llm_call,
@@ -34,6 +35,7 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
         evidence_summary = json.dumps(
             [
                 {
+                    "evidence_id": e.get("evidence_id", ""),
                     "type": e.get("type", ""),
                     "source": e.get("source", ""),
                     "summary": str(e.get("summary", ""))[:200],
@@ -61,15 +63,16 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
             f"Evidence collected: {evidence_summary}\n"
             f"Actions proposed: {actions_summary}\n"
             f"Errors: {json.dumps(state.get('errors', []))}\n"
+            "Every evidence-backed claim must cite evidence_id values from the evidence list.\n"
         )
 
         thinking = should_use_deep_reasoning(deps.settings, _NODE_NAME)
         try:
             raw = deps.llm.invoke([{"role": "user", "content": prompt}], thinking=thinking)
-            report_data = json.loads(raw)
             record_llm_call(state, _NODE_NAME, capture_metadata(deps.llm))
+            report_data = extract_json(raw)
         except Exception:
-            report_data = _fallback_report(state, root_cause, actions)
+            report_data = _fallback_report(state, root_cause, actions, evidence)
 
         # Surface the deterministic cross-validation review flag (Phase 1.3).
         # It is authoritative, so it is injected here rather than trusted to the
@@ -132,14 +135,23 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
 
 
 def _fallback_report(
-    state: IncidentState, root_cause: dict[str, object], actions: list[dict[str, object]]
+    state: IncidentState,
+    root_cause: dict[str, object],
+    actions: list[dict[str, object]],
+    evidence: list[dict[str, object]],
 ) -> dict[str, object]:
+    evidence_ids = [
+        str(item.get("evidence_id"))
+        for item in evidence
+        if isinstance(item.get("evidence_id"), str) and item.get("evidence_id")
+    ]
     return {
         "root_cause": root_cause.get("summary", "unknown"),
-        "impact": "Service affected — see evidence",
+        "impact": "Service affected; see referenced evidence ids",
         "timeline": [
             {"time": state.get("time_window", {}).get("start", ""), "event": "Alert fired"}
         ],
         "actions": actions,
+        "evidence_ids": evidence_ids,
         "follow_ups": ["Review monitoring", "Update runbook"],
     }

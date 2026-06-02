@@ -122,31 +122,35 @@ class Compressor:
         return self._compress_generic(items)
 
     def _compress_logs(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        data = items[0] if items else {}
-        samples = data.get("samples", [])[: self.MAX_LOG_SAMPLES]
-        return [
+        item = items[0] if items else {}
+        data = self._payload(item)
+        raw_samples = data.get("samples") or data.get("log_samples") or []
+        samples = raw_samples[: self.MAX_LOG_SAMPLES] if isinstance(raw_samples, list) else []
+        out = self._base_item(item, "log")
+        out.update(
             {
-                "type": "log",
-                "source": data.get("source", "loki"),
-                "top_error_type": data.get("top_error_type", ""),
+                "top_error_type": data.get("top_error_type", data.get("top_error", "")),
                 "top_stack_signature": data.get("top_stack_signature", ""),
-                "line_count": data.get("line_count", len(items)),
-                "error_counts": data.get("error_counts", {}),
+                "line_count": data.get("line_count", data.get("total_lines", len(items))),
+                "error_counts": data.get("error_counts", data.get("error_type_counts", {})),
                 "samples": samples,
-                "omitted_count": max(0, len(data.get("samples", [])) - self.MAX_LOG_SAMPLES),
+                "omitted_count": max(0, len(raw_samples) - self.MAX_LOG_SAMPLES)
+                if isinstance(raw_samples, list)
+                else 0,
             }
-        ]
+        )
+        return [out]
 
     def _compress_metrics(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for item in items:
-            stats = item.get("stats", {})
-            result.append(
+            data = self._payload(item)
+            stats = data.get("stats", {}) if isinstance(data.get("stats"), dict) else {}
+            out = self._base_item(item, "metric")
+            out.update(
                 {
-                    "type": "metric",
-                    "source": item.get("source", "prometheus"),
-                    "metric_type": item.get("metric_type", ""),
-                    "service": item.get("service", ""),
+                    "metric_type": item.get("metric_type") or data.get("metric_type", ""),
+                    "service": item.get("service") or data.get("service", ""),
                     "stats": {
                         k: stats.get(k)
                         for k in ("min", "max", "avg", "p95", "first", "last", "change_ratio")
@@ -154,31 +158,56 @@ class Compressor:
                     },
                 }
             )
+            result.append(out)
         return result
 
     def _compress_traces(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        data = items[0] if items else {}
-        slow = data.get("slow_spans", [])[: self.MAX_TRACE_SPANS // 2]
-        errors = data.get("error_spans", [])[: self.MAX_TRACE_SPANS // 2]
-        return [
+        item = items[0] if items else {}
+        data = self._payload(item)
+        raw_slow = data.get("slow_spans") or []
+        raw_errors = data.get("error_spans") or []
+        slow = raw_slow[: self.MAX_TRACE_SPANS // 2] if isinstance(raw_slow, list) else []
+        errors = raw_errors[: self.MAX_TRACE_SPANS // 2] if isinstance(raw_errors, list) else []
+        downstream = data.get("downstream_services")
+        if not isinstance(downstream, list):
+            downstream = _downstream_from_spans(slow + errors)
+        out = self._base_item(item, "trace")
+        out.update(
             {
-                "type": "trace",
-                "source": data.get("source", "otel"),
                 "duration_p95_ms": data.get("duration_p95_ms"),
-                "downstream_services": data.get("downstream_services", []),
+                "downstream_services": downstream,
                 "slow_spans": slow,
                 "error_spans": errors,
                 "omitted_count": max(
                     0,
-                    len(data.get("slow_spans", []))
-                    + len(data.get("error_spans", []))
+                    (len(raw_slow) if isinstance(raw_slow, list) else 0)
+                    + (len(raw_errors) if isinstance(raw_errors, list) else 0)
                     - self.MAX_TRACE_SPANS,
                 ),
             }
-        ]
+        )
+        return [out]
 
     def _compress_generic(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return items[:3]
+
+    @staticmethod
+    def _payload(item: dict[str, Any]) -> dict[str, Any]:
+        payload = item.get("payload")
+        return payload if isinstance(payload, dict) else item
+
+    @staticmethod
+    def _base_item(item: dict[str, Any], etype: str) -> dict[str, Any]:
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        out: dict[str, Any] = {
+            "type": etype,
+            "source": item.get("source") or payload.get("source", "unknown"),
+        }
+        for key in ("evidence_id", "source_id", "title", "summary", "status", "service", "timestamp"):
+            value = item.get(key, payload.get(key))
+            if value not in (None, ""):
+                out[key] = value
+        return out
 
     @staticmethod
     def _group_by_type(evidence: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -214,3 +243,14 @@ class Compressor:
             return "no evidence"
         types = {i.get("type", "?") for i in items}
         return f"compressed evidence ({len(items)} items, types: {', '.join(sorted(types))})"
+
+
+def _downstream_from_spans(spans: list[dict[str, Any]]) -> list[str]:
+    services: list[str] = []
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        service = span.get("downstream_service")
+        if isinstance(service, str) and service and service not in services:
+            services.append(service)
+    return services

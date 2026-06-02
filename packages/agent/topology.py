@@ -155,12 +155,16 @@ def correlate_incidents(
     return results
 
 
-def analyze_cascade_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
-    """Derive a cascade analysis from an incident's trace evidence.
+def analyze_cascade_from_state(
+    state: Mapping[str, Any], *, topology_path: str | Path | None = None
+) -> dict[str, Any]:
+    """Derive cascade analysis from configured topology plus incident trace evidence.
 
-    Self-contained: builds a topology from the incident's own error spans, so it
-    works without external config. Returns ``is_cascade=False`` for the common
-    single-service case, leaving existing behaviour unchanged.
+    Trace spans keep the MVP self-contained. When ``topology_path`` is provided
+    and readable, configured edges are merged in so production smoke can validate
+    the same dependency graph the operator configured. The result is still
+    informational: downstream services inferred only from trace edges remain root
+    candidates, not confirmed root causes.
     """
     incident_service = str(state.get("service_name", "") or "")
     error_spans: list[dict[str, Any]] = []
@@ -171,7 +175,17 @@ def analyze_cascade_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
                 sp for sp in payload.get("error_spans", []) if isinstance(sp, dict)
             )
 
-    topology = ServiceTopology.from_trace_spans(error_spans)
+    topology_sources: list[str] = []
+    trace_topology = ServiceTopology.from_trace_spans(error_spans)
+    topology = trace_topology
+    if trace_topology.services:
+        topology_sources.append("trace")
+    if topology_path:
+        config_topology = ServiceTopology.from_file(topology_path)
+        if config_topology.services:
+            topology = _merge_topologies(config_topology, trace_topology)
+            topology_sources.insert(0, "config")
+
     anomalous: set[str] = {incident_service} if incident_service else set()
     for span in error_spans:
         for key in ("service", "downstream_service"):
@@ -179,7 +193,19 @@ def analyze_cascade_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(value, str) and value:
                 anomalous.add(value)
 
-    return analyze_propagation(topology, anomalous)
+    result = analyze_propagation(topology, anomalous)
+    result["topology_source"] = "+".join(topology_sources) if topology_sources else "none"
+    return result
+
+
+
+def _merge_topologies(left: ServiceTopology, right: ServiceTopology) -> ServiceTopology:
+    services = left.services | right.services
+    deps = {
+        service: sorted(left.dependencies(service) | right.dependencies(service))
+        for service in services
+    }
+    return ServiceTopology(deps)
 
 
 # --------------------------------------------------------------------------- #

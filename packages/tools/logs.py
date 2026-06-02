@@ -52,11 +52,13 @@ class LogsTool:
         client: httpx.Client | None = None,
         timeout_seconds: float = 2.0,
         cache: RequestLocalToolCache | None = None,
+        service_label: str = "service",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.client = client
         self.timeout_seconds = timeout_seconds
         self.cache = cache
+        self.service_label = service_label
 
     def run(self, query: BaseModel) -> ToolResult:
         logs_query = LogsQuery.model_validate(query)
@@ -132,7 +134,7 @@ class LogsTool:
         keywords: list[str | None] = list(query.keywords) if query.keywords else [None]
         collected: dict[tuple[Any, ...], dict[str, Any]] = {}
         for keyword in keywords:
-            logql = _logql(query.service, keyword)
+            logql = _logql(query.service, keyword, self.service_label)
             params: dict[str, str | int] = {
                 "query": logql,
                 "start": int(query.start.timestamp() * 1_000_000_000),
@@ -166,9 +168,9 @@ class LogsTool:
         return list(collected.values())[: query.limit]
 
 
-def _logql(service: str, keyword: str | None) -> str:
+def _logql(service: str, keyword: str | None, service_label: str = "service") -> str:
     escaped_service = service.replace("\\", "\\\\").replace('"', '\\"')
-    query = f'{{service="{escaped_service}"}}'
+    query = f'{{{service_label}="{escaped_service}"}}'
     if keyword:
         escaped_keyword = keyword.replace("\\", "\\\\").replace('"', '\\"')
         query = f'{query} |= "{escaped_keyword}"'

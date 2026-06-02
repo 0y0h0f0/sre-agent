@@ -211,6 +211,92 @@ class TestOpenAICompatibleAdapter:
         adapter.invoke([{"role": "user", "content": "hi"}], thinking=True)
         assert captured.get("reasoning_effort") == "high"
 
+    def test_global_reasoning_flag_does_not_override_node_flag(self) -> None:
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "qwen-7b",
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+        client = httpx.Client(
+            base_url="http://vllm:8000/v1", transport=httpx.MockTransport(handler)
+        )
+        adapter = OpenAICompatibleAdapter(
+            base_url="http://vllm:8000/v1",
+            model="qwen-7b",
+            reasoning_enabled=True,
+            reasoning_effort="high",
+            client=client,
+        )
+
+        adapter.invoke([{"role": "user", "content": "hi"}], thinking=False)
+
+        assert "reasoning_effort" not in captured
+
+    def test_deepseek_standard_node_explicitly_disables_thinking(self) -> None:
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "deepseek-v4-flash",
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+        client = httpx.Client(
+            base_url="https://api.deepseek.com", transport=httpx.MockTransport(handler)
+        )
+        adapter = OpenAICompatibleAdapter(
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-flash",
+            provider_name="deepseek",
+            reasoning_enabled=True,
+            client=client,
+        )
+
+        adapter.invoke([{"role": "user", "content": "hi"}], thinking=False)
+
+        assert captured["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in captured
+
+    def test_deepseek_reasoning_node_enables_thinking(self) -> None:
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "deepseek-v4-pro",
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+        client = httpx.Client(
+            base_url="https://api.deepseek.com", transport=httpx.MockTransport(handler)
+        )
+        adapter = OpenAICompatibleAdapter(
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-pro",
+            provider_name="deepseek",
+            reasoning_effort="medium",
+            client=client,
+        )
+
+        adapter.invoke([{"role": "user", "content": "hi"}], thinking=True)
+
+        assert captured["thinking"] == {"type": "enabled"}
+        assert captured["reasoning_effort"] == "high"
+
 
 # --------------------------------------------------------------------------- #
 # Anthropic adapter                                                            #
@@ -294,6 +380,71 @@ class TestAnthropicAdapter:
     def test_missing_api_key_raises(self) -> None:
         with pytest.raises(ValidationAppError):
             AnthropicAdapter(model="claude-sonnet-4-6", api_key=None)
+
+    def test_global_reasoning_flag_does_not_override_node_flag(self) -> None:
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "claude-sonnet-4-6",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                },
+            )
+
+        client = httpx.Client(
+            base_url="https://api.anthropic.com", transport=httpx.MockTransport(handler)
+        )
+        adapter = AnthropicAdapter(
+            model="claude-sonnet-4-6",
+            api_key="sk-ant",
+            reasoning_enabled=True,
+            client=client,
+        )
+
+        adapter.invoke([{"role": "user", "content": "hi"}], thinking=False)
+
+        assert "thinking" not in captured
+        assert "output_config" not in captured
+        assert captured["temperature"] == 0.1
+
+    def test_thinking_payload_omits_temperature_and_records_summary(self) -> None:
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "claude-sonnet-4-6",
+                    "content": [
+                        {"type": "thinking", "thinking": "checked evidence ids"},
+                        {"type": "text", "text": "answer"},
+                    ],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 2, "output_tokens": 3},
+                },
+            )
+
+        client = httpx.Client(
+            base_url="https://api.anthropic.com", transport=httpx.MockTransport(handler)
+        )
+        adapter = AnthropicAdapter(
+            model="claude-sonnet-4-6",
+            api_key="sk-ant",
+            reasoning_effort="high",
+            client=client,
+        )
+
+        assert adapter.invoke([{"role": "user", "content": "hi"}], thinking=True) == "answer"
+
+        assert captured["thinking"] == {"type": "adaptive"}
+        assert captured["output_config"] == {"effort": "high"}
+        assert "temperature" not in captured
+        assert adapter.last_metadata["reasoning_summary"] == "checked evidence ids"
 
 
 # --------------------------------------------------------------------------- #

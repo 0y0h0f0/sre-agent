@@ -60,12 +60,13 @@ class AnthropicAdapter:
         payload: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
             "messages": chat,
         }
+        if not thinking:
+            payload["temperature"] = self.temperature
         if system:
             payload["system"] = system
-        if thinking or self.reasoning_enabled:
+        if thinking:
             payload["thinking"] = {"type": "adaptive"}
             payload["output_config"] = {"effort": self.reasoning_effort}
         data = self._post("/v1/messages", payload)
@@ -112,6 +113,9 @@ class AnthropicAdapter:
                 "prompt_tokens": int(usage.get("input_tokens", 0)),
                 "completion_tokens": int(usage.get("output_tokens", 0)),
             }
+        reasoning = _extract_reasoning_summary(data)
+        if reasoning:
+            meta["reasoning_summary"] = reasoning[:500]
         self.last_metadata = meta
 
 
@@ -129,3 +133,15 @@ def _extract_text(data: dict[str, Any]) -> str:
     return "".join(
         str(b.get("text", "")) for b in blocks if b.get("type") == "text"
     )
+
+
+def _extract_reasoning_summary(data: dict[str, Any]) -> str:
+    blocks = data.get("content") or []
+    summaries: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "thinking":
+            continue
+        value = block.get("thinking", "")
+        if value:
+            summaries.append(str(value))
+    return "\n".join(summaries)

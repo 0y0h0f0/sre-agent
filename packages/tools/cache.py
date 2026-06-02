@@ -37,11 +37,17 @@ def build_cache_key(
     start: datetime,
     end: datetime,
     bucket_seconds: int,
+    datasource: str | None = None,
 ) -> str:
     normalized = _normalized_query_payload(query)
     normalized.pop("service", None)
     normalized.pop("start", None)
     normalized.pop("end", None)
+    # Fold the datasource into the query hash so the same logical query against a
+    # different backend (e.g. jaeger vs fixture) never collides in the cache
+    # (Phase 2.1 cache-key requirement).
+    if datasource is not None:
+        normalized["__datasource"] = datasource
     query_hash = hashlib.sha256(
         json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]

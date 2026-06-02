@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
 
 from packages.agent.nodes._persist import persist_evidence
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
 from packages.common.time import utc_now
-from packages.tools.metrics import MetricsQuery
+from packages.tools.metrics import MetricsQuery, MetricType
 
 
 def collect_metrics(state: IncidentState, deps: AgentDeps) -> IncidentState:
@@ -48,8 +47,10 @@ def collect_metrics(state: IncidentState, deps: AgentDeps) -> IncidentState:
             ]
         )
 
-        # Persist evidence to DB
-        persist_evidence(deps.db, state["incident_id"], state["agent_run_id"], evidence)
+        # Persist evidence to DB and keep generated evidence_id values in state.
+        evidence = persist_evidence(
+            deps.db, state["incident_id"], state["agent_run_id"], evidence
+        )
 
         deps.node_tracer(
             node_id=node_id,
@@ -76,23 +77,34 @@ def collect_metrics(state: IncidentState, deps: AgentDeps) -> IncidentState:
         return state
 
 
-MetricType = Literal[
-    "latency",
-    "error_rate",
-    "qps",
-    "cpu",
-    "memory",
-    "db_connections",
-    "cache_hit_rate",
-]
-
-
 def _metric_for_alert(alert_name: str) -> MetricType:
     n = alert_name.lower()
+    # Order matters: check the most specific fault keywords first. The four MVP
+    # alerts (db/connection, cache/redis, pod/restart, 5xx) keep their mapping;
+    # the rest are the Phase 2.4 fault catalog.
     if "db" in n or "connection" in n:
         return "db_connections"
     if "cache" in n or "redis" in n:
         return "cache_hit_rate"
+    if "throttl" in n or "cpu" in n:
+        return "cpu_throttle"
+    if "leak" in n or "oom" in n:
+        return "memory"
     if "pod" in n or "restart" in n:
         return "memory"
+    if "disk" in n:
+        return "disk_avail"
+    if "cert" in n:
+        return "cert_expiry_days"
+    if "dns" in n:
+        return "dns_error_rate"
+    if "queue" in n or "lag" in n or "kafka" in n:
+        return "queue_lag"
+    if "ratelimit" in n or "rate_limit" in n:
+        return "rate_limit_hits"
+    # Note: avoid a bare "slo" token here — it is a substring of "slow".
+    if "budget" in n or "burn" in n:
+        return "slo_burn_rate"
+    if "slow" in n or "latency" in n or "timeout" in n:
+        return "latency"
     return "error_rate"

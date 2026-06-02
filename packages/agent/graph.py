@@ -8,7 +8,9 @@ from typing import Any
 from langgraph.graph import END, StateGraph
 
 from packages.agent.nodes.build_context import build_context
+from packages.agent.nodes.collect_db import collect_db
 from packages.agent.nodes.collect_deployment import collect_deployment
+from packages.agent.nodes.collect_k8s import collect_k8s
 from packages.agent.nodes.collect_logs import collect_logs
 from packages.agent.nodes.collect_metrics import collect_metrics
 from packages.agent.nodes.collect_traces import collect_traces
@@ -39,6 +41,8 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph.add_node("collect_logs", partial(collect_logs, deps=deps))
     graph.add_node("collect_traces", partial(collect_traces, deps=deps))
     graph.add_node("collect_deployment", partial(collect_deployment, deps=deps))
+    graph.add_node("collect_k8s", partial(collect_k8s, deps=deps))
+    graph.add_node("collect_db", partial(collect_db, deps=deps))
     graph.add_node("retrieve_memory", partial(retrieve_memory, deps=deps))
     graph.add_node("retrieve_runbook", partial(retrieve_runbook, deps=deps))
     graph.add_node("build_context", partial(build_context, deps=deps))
@@ -55,7 +59,9 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph.add_edge("collect_metrics", "collect_logs")
     graph.add_edge("collect_logs", "collect_traces")
     graph.add_edge("collect_traces", "collect_deployment")
-    graph.add_edge("collect_deployment", "retrieve_memory")
+    graph.add_edge("collect_deployment", "collect_k8s")
+    graph.add_edge("collect_k8s", "collect_db")
+    graph.add_edge("collect_db", "retrieve_memory")
     graph.add_edge("retrieve_memory", "retrieve_runbook")
     graph.add_edge("retrieve_runbook", "build_context")
     graph.add_edge("build_context", "diagnose")

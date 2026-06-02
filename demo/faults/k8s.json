@@ -1,0 +1,48 @@
+{
+  "checkout": {
+    "describe_pod": {
+      "name": "checkout-7d8f-abcde",
+      "phase": "Running",
+      "restart_count": 7,
+      "last_state": "OOMKilled",
+      "memory_limit": "256Mi",
+      "containers": ["checkout"]
+    },
+    "logs": [
+      "2026-06-01T00:03:01Z ERROR payment client timeout after 2000ms",
+      "2026-06-01T00:03:02Z WARN retry budget exhausted for /charge"
+    ],
+    "events": [
+      {"reason": "BackOff", "message": "Back-off restarting failed container", "count": 7},
+      {"reason": "OOMKilling", "message": "Memory cgroup out of memory", "count": 3}
+    ],
+    "rollout_status": {
+      "deployment": "checkout",
+      "updated_replicas": 2,
+      "ready_replicas": 1,
+      "desired_replicas": 3,
+      "status": "progressing"
+    }
+  },
+  "payments": {
+    "describe_pod": {
+      "name": "payments-6c5a-fghij",
+      "phase": "Running",
+      "restart_count": 0,
+      "last_state": "Running",
+      "memory_limit": "512Mi",
+      "containers": ["payments"]
+    },
+    "logs": [
+      "2026-06-01T00:03:00Z INFO processed charge id=ch_123"
+    ],
+    "events": [],
+    "rollout_status": {
+      "deployment": "payments",
+      "updated_replicas": 3,
+      "ready_replicas": 3,
+      "desired_replicas": 3,
+      "status": "complete"
+    }
+  }
+}

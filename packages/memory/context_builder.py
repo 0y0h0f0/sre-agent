@@ -54,7 +54,6 @@ class ContextBuilder:
         usage["alert"] = self._count(alert_text)
 
         # Evidence (compress if needed)
-        evidence = input.evidence
         evidence_tokens = self._count(json.dumps(evidence, default=str))
         if self.budgeter.evidence_over_threshold(evidence_tokens, budget):
             evidence, comp_ctx = self.compressor.compress_evidence(evidence, budget)

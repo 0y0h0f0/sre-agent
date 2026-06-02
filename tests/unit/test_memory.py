@@ -80,6 +80,65 @@ class TestCompressor:
         result = c._compress_by_type_to_items("trace", items)
         assert len(result[0]["slow_spans"]) <= 5
 
+    def test_compress_nested_payload_preserves_evidence_ids(self) -> None:
+        c = Compressor()
+
+        log_result = c._compress_by_type_to_items(
+            "log",
+            [
+                {
+                    "type": "log",
+                    "source": "loki",
+                    "evidence_id": "evi_log",
+                    "payload": {
+                        "samples": [{"msg": str(i)} for i in range(5)],
+                        "error_type_counts": {"timeout": 3},
+                    },
+                }
+            ],
+        )
+        assert log_result[0]["evidence_id"] == "evi_log"
+        assert len(log_result[0]["samples"]) == 3
+        assert log_result[0]["error_counts"] == {"timeout": 3}
+
+        metric_result = c._compress_by_type_to_items(
+            "metric",
+            [
+                {
+                    "type": "metric",
+                    "source": "prometheus",
+                    "evidence_id": "evi_metric",
+                    "payload": {
+                        "metric_type": "error_rate",
+                        "service": "checkout",
+                        "stats": {"min": 0, "max": 5, "avg": 2, "p95": 4},
+                    },
+                }
+            ],
+        )
+        assert metric_result[0]["evidence_id"] == "evi_metric"
+        assert metric_result[0]["metric_type"] == "error_rate"
+        assert metric_result[0]["stats"]["p95"] == 4
+
+        trace_result = c._compress_by_type_to_items(
+            "trace",
+            [
+                {
+                    "type": "trace",
+                    "source": "otel",
+                    "evidence_id": "evi_trace",
+                    "payload": {
+                        "slow_spans": [{"id": i} for i in range(10)],
+                        "error_spans": [
+                            {"service": "checkout", "downstream_service": "payments"}
+                        ],
+                    },
+                }
+            ],
+        )
+        assert trace_result[0]["evidence_id"] == "evi_trace"
+        assert trace_result[0]["downstream_services"] == ["payments"]
+
     def test_no_compression_for_small_evidence(self) -> None:
         c = Compressor()
         evidence = [{"type": "log", "samples": [{"msg": "only one"}]}]
@@ -148,3 +207,22 @@ class TestContextBuilder:
         )
         result = builder.build(ctx_input)
         assert result.token_usage_estimate["evidence"] > 0
+
+    def test_build_keeps_deterministic_evidence_order(self) -> None:
+        from packages.memory.context_builder import ContextBuilder
+
+        builder = ContextBuilder()
+        ctx_input = BuildContextInput(
+            incident={"_system_prompt": "You are an SRE."},
+            evidence=[
+                {"type": "trace", "evidence_id": "evi_trace", "summary": "trace"},
+                {"type": "log", "evidence_id": "evi_log", "summary": "log"},
+            ],
+            runbook_chunks=[],
+            memories=[],
+        )
+
+        result = builder.build(ctx_input)
+        content = result.messages[-1]["content"]
+
+        assert content.index("evi_log") < content.index("evi_trace")

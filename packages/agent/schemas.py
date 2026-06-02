@@ -75,6 +75,8 @@ class AgentDeps:
         llm: Any,
         node_tracer: Callable[..., None],
         tool_call_recorder: Callable[..., None],
+        k8s_tool: BaseTool | None = None,
+        db_diagnostics_tool: BaseTool | None = None,
     ) -> None:
         self.db = db
         self.settings = settings
@@ -84,6 +86,10 @@ class AgentDeps:
         self.trace_tool = trace_tool
         self.git_change_tool = git_change_tool
         self.runbook_search_tool = runbook_search_tool
+        # Phase 2.2/2.3 read-only diagnosis tools (optional; default None keeps
+        # existing call sites and the deterministic test harness unchanged).
+        self.k8s_tool = k8s_tool
+        self.db_diagnostics_tool = db_diagnostics_tool
         self.memory_store = memory_store
         self.context_builder = context_builder
         self.llm = llm

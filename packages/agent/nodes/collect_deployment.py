@@ -44,7 +44,9 @@ def collect_deployment(state: IncidentState, deps: AgentDeps) -> IncidentState:
             ]
         )
 
-        persist_evidence(deps.db, state["incident_id"], state["agent_run_id"], evidence)
+        evidence = persist_evidence(
+            deps.db, state["incident_id"], state["agent_run_id"], evidence
+        )
 
         deps.node_tracer(
             node_id=node_id,

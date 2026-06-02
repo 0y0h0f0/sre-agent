@@ -19,6 +19,8 @@ def build_context(state: IncidentState, deps: AgentDeps) -> IncidentState:
             + state.get("logs_evidence", [])
             + state.get("traces_evidence", [])
             + state.get("deployment_evidence", [])
+            + state.get("k8s_evidence", [])
+            + state.get("db_evidence", [])
         )
         bci = BuildContextInput(
             incident={

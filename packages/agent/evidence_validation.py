@@ -5,12 +5,16 @@ diagnostic confidence and flag contradictions for human review. Pure and
 deterministic — no LLM, no network.
 
 Design rules:
-- **Weights**: Trace > Metrics > Logs > Git/deployment.
+- **Weights**: Trace > Metrics > K8s > Logs > DB > Git/deployment.
 - **Corroboration** (>= 2 independent anomaly signals) raises confidence.
 - **Conflict** (anomaly and healthy signals disagree) flags ``needs_human_review``.
 - **Degradation**: an empty/failed source is recorded but never interrupts the flow.
 - **Deployment asymmetry**: a recent deploy is an anomaly-correlation signal; the
   *absence* of a deploy is neutral, not a "healthy" dissent (avoids false conflicts).
+- **K8s/DB (Phase 2)**: read-only K8s pod state and DB pool/lock state are extra
+  corroborating sources, collected only when the fault class implicates that
+  layer (see ``collect_k8s``/``collect_db``), so they corroborate rather than
+  inject off-topic noise.
 """
 
 from __future__ import annotations
@@ -19,11 +23,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-# Trace > Metrics > Logs > Git/deployment.
+# Trace > Metrics > K8s > Logs > DB > Git/deployment.
 SOURCE_WEIGHTS: dict[str, float] = {
     "traces": 1.0,
     "metrics": 0.8,
+    "k8s": 0.7,
     "logs": 0.6,
+    "db": 0.5,
     "deployment": 0.4,
 }
 
@@ -32,6 +38,21 @@ CORROBORATION_MAX_BONUS = 0.15
 CONFLICT_PENALTY = 0.2
 CONFIDENCE_FLOOR = 0.05
 CONFIDENCE_CEIL = 0.99
+
+# K8s/DB anomaly thresholds (Phase 2).
+_K8S_PROBLEM_TOKENS = (
+    "backoff",
+    "oom",
+    "crashloop",
+    "crash",
+    "failed",
+    "unhealthy",
+    "evicted",
+    "error",
+)
+DB_ACTIVE_CONN_ANOMALY = 80
+DB_LOCK_ANOMALY = 50
+DB_SLOW_MS_ANOMALY = 200.0
 
 _LOG_ERROR_TOKENS = (
     "error",
@@ -71,12 +92,16 @@ def derive_signals(state: Mapping[str, Any]) -> tuple[list[Signal], list[str]]:
         "logs": state.get("logs_evidence", []) or [],
         "traces": state.get("traces_evidence", []) or [],
         "deployment": state.get("deployment_evidence", []) or [],
+        "k8s": state.get("k8s_evidence", []) or [],
+        "db": state.get("db_evidence", []) or [],
     }
     detectors = {
         "metrics": _metric_direction,
         "logs": _log_direction,
         "traces": _trace_direction,
         "deployment": _deployment_direction,
+        "k8s": _k8s_direction,
+        "db": _db_direction,
     }
 
     signals: list[Signal] = []
@@ -193,6 +218,46 @@ def _deployment_direction(payloads: list[dict[str, Any]]) -> str | None:
         if _as_float(payload.get("change_count")) > 0 or payload.get("changes"):
             return ANOMALY
     return None
+
+
+def _k8s_direction(payloads: list[dict[str, Any]]) -> str | None:
+    # Evidence payload is the tool's {"operation", "payload"} result; problem
+    # event reasons (OOMKilling, BackOff, CrashLoop, ...) signal an anomaly.
+    saw = False
+    for payload in payloads:
+        inner = payload.get("payload")
+        if inner in (None, {}, [], ""):
+            continue
+        saw = True
+        text = str(inner).lower()
+        if any(token in text for token in _K8S_PROBLEM_TOKENS):
+            return ANOMALY
+    return NORMAL if saw else None
+
+
+def _db_direction(payloads: list[dict[str, Any]]) -> str | None:
+    # Evidence payload is {"operation", "rows"}; pool saturation, idle-in-txn,
+    # heavy locks, or slow queries signal an anomaly.
+    saw = False
+    for payload in payloads:
+        rows = payload.get("rows")
+        if not isinstance(rows, list) or not rows:
+            continue
+        saw = True
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            state = str(row.get("state", "")).lower()
+            connections = _as_float(row.get("connections"))
+            if "idle in transaction" in state and connections > 0:
+                return ANOMALY
+            if "active" in state and connections >= DB_ACTIVE_CONN_ANOMALY:
+                return ANOMALY
+            if _as_float(row.get("held")) >= DB_LOCK_ANOMALY:
+                return ANOMALY
+            if _as_float(row.get("mean_exec_time")) >= DB_SLOW_MS_ANOMALY:
+                return ANOMALY
+    return NORMAL if saw else None
 
 
 def _as_float(value: Any) -> float:

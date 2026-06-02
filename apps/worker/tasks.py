@@ -24,10 +24,16 @@ from packages.memory.context_builder import ContextBuilder
 from packages.memory.memory_store import MemoryStore
 from packages.rag.retriever import RunbookRetriever
 from packages.tools import (
+    DbDiagnosticsTool,
     GitChangeTool,
+    K8sDiagnosticsTool,
     LogsTool,
     MetricsTool,
     TraceTool,
+    build_db_diagnostics_backend,
+    build_deployment_backend,
+    build_k8s_backend,
+    build_trace_backend,
 )
 from packages.tools.base import ToolResult
 from packages.tools.cache import RequestLocalToolCache
@@ -97,6 +103,7 @@ def run_incident_diagnosis_logic(
         result = runner.run(incident_id, agent_run_id, alert_payload)
 
         if result["status"] == "waiting_approval":
+            _sync_incident_diagnosis(incident, result.get("state", {}))
             _handle_waiting_approval(db, agent_run_id, result["state"])
             db.commit()
             return {
@@ -112,6 +119,7 @@ def run_incident_diagnosis_logic(
             raise TransientError(error_msg)
 
         state_dict = _sanitize_state(result.get("state", {}))
+        _sync_incident_diagnosis(incident, state_dict)
         runs.mark_succeeded(run, state_dict)
         # Only mark mitigated if actions were actually executed
         if result.get("state", {}).get("execution_results"):
@@ -188,14 +196,31 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str) -> AgentDeps:
     timeout = settings.tool_timeout_seconds
 
     metrics_tool = MetricsTool(
-        base_url=settings.prometheus_url, timeout_seconds=timeout, cache=cache
+        base_url=settings.prometheus_url,
+        timeout_seconds=timeout,
+        cache=cache,
+        service_label=settings.metrics_service_label,
+        step_seconds=settings.metrics_step_seconds,
+        max_window_seconds=settings.metrics_max_window_seconds,
+        max_shards=settings.metrics_max_shards,
     )
-    logs_tool = LogsTool(base_url=settings.loki_url, timeout_seconds=timeout, cache=cache)
+    logs_tool = LogsTool(
+        base_url=settings.loki_url,
+        timeout_seconds=timeout,
+        cache=cache,
+        service_label=settings.logs_service_label,
+    )
+    # Phase 2.1: trace/deployment data sources are now pluggable backends
+    # (default fixture). Phase 2.2/2.3 add read-only K8s and DB diagnosis tools.
     trace_tool = TraceTool(
-        fixture_path=settings.trace_fixture_path, timeout_seconds=timeout, cache=cache
+        backend=build_trace_backend(settings), timeout_seconds=timeout, cache=cache
     )
     git_change_tool = GitChangeTool(
-        fixture_path=settings.git_changes_fixture_path, timeout_seconds=timeout, cache=cache
+        backend=build_deployment_backend(settings), timeout_seconds=timeout, cache=cache
+    )
+    k8s_tool = K8sDiagnosticsTool(backend=build_k8s_backend(settings), timeout_seconds=timeout)
+    db_diagnostics_tool = DbDiagnosticsTool(
+        backend=build_db_diagnostics_backend(settings), timeout_seconds=timeout
     )
 
     chunk_repo = RunbookChunkRepository(db)
@@ -251,6 +276,8 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str) -> AgentDeps:
         logs_tool=logs_tool,
         trace_tool=trace_tool,
         git_change_tool=git_change_tool,
+        k8s_tool=k8s_tool,
+        db_diagnostics_tool=db_diagnostics_tool,
         runbook_search_tool=runbook_search_tool,
         memory_store=memory_store,
         context_builder=context_builder,
@@ -258,6 +285,15 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str) -> AgentDeps:
         node_tracer=node_tracer,
         tool_call_recorder=tool_call_recorder,
     )
+
+
+def _sync_incident_diagnosis(incident: Any, state: dict[str, Any]) -> None:
+    root_cause = state.get("root_cause")
+    if not isinstance(root_cause, dict):
+        return
+    summary = root_cause.get("summary")
+    if summary:
+        incident.root_cause_summary = str(summary)
 
 
 def _handle_waiting_approval(db: Session, agent_run_id: str, state: dict[str, Any]) -> None:
@@ -330,6 +366,9 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
         # The graph may pause again (e.g. a rejection triggered a fresh
         # plan that needs a new approval round). Keep the run waiting.
         if result["status"] == "waiting_approval":
+            incident = incidents.get_by_public_id(run.incident_id)
+            if incident is not None:
+                _sync_incident_diagnosis(incident, result.get("state", {}))
             _handle_waiting_approval(db, agent_run_id, result["state"])
             db.commit()
             return {
@@ -345,6 +384,7 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
         # forever and kept deduplicating future alerts.
         incident = incidents.get_by_public_id(run.incident_id)
         if incident is not None:
+            _sync_incident_diagnosis(incident, state_dict)
             if result.get("state", {}).get("execution_results"):
                 incident.status = IncidentStatus.MITIGATED.value
             else:

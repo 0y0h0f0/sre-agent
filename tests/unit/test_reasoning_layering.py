@@ -99,6 +99,11 @@ class _SpyLLM:
         self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
     ) -> Any:
         self.thinking_seen = thinking
+        self.last_metadata = {
+            "provider": "vllm",
+            "model": "qwen-7b",
+            "usage": {"prompt_tokens": 42, "completion_tokens": 7},
+        }
         return DiagnosisOutput(
             hypotheses=[
                 {
@@ -122,6 +127,25 @@ class _SpyLLM:
         self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
     ) -> str:
         return "{}"
+
+
+class _BrokenLLM:
+    def __init__(self) -> None:
+        self.last_metadata = {
+            "provider": "vllm",
+            "model": "stale",
+            "usage": {"prompt_tokens": 99, "completion_tokens": 99},
+        }
+
+    def generate_json(
+        self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
+    ) -> Any:
+        raise ValueError("bad json")
+
+    def invoke(
+        self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
+    ) -> str:
+        raise ValueError("still bad")
 
 
 def _deps(llm: Any, settings: Settings) -> AgentDeps:
@@ -215,3 +239,16 @@ class TestDiagnoseReasoning:
         assert root_cause["model_confidence"] == 0.9
         assert root_cause["confidence"] < 0.9
         assert result["needs_human_review"] is True
+
+    def test_rules_fallback_uses_state_evidence_ids_without_stale_metadata(self) -> None:
+        deps = _deps(_BrokenLLM(), _settings(llm_reasoning_enabled=True))
+        state = _state()
+        state["metrics_evidence"] = [
+            {"type": "metric", "evidence_id": "evi_metric", "summary": "pool saturated"}
+        ]
+
+        result = diagnose(state, deps)
+
+        assert result["diagnosis_rationale"]["evidence_ids"] == ["evi_metric"]
+        assert result["root_cause"]["evidence_ids"] == ["evi_metric"]
+        assert result["llm_calls"] == []

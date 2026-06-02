@@ -67,6 +67,167 @@ def _base_state(**overrides) -> IncidentState:
     return state
 
 
+class TestPersistEvidence:
+    def test_persist_evidence_writes_ids_back_to_state(self, db_session: Session) -> None:
+        from packages.agent.nodes._persist import persist_evidence
+        from packages.common.time import utc_now
+        from packages.db.models import AgentRun, Incident
+        from packages.db.repositories.evidence_items import EvidenceItemRepository
+
+        db_session.add(
+            Incident(
+                incident_id="inc_evidence",
+                fingerprint="fp_evidence",
+                source="mock",
+                service="checkout",
+                severity="P2",
+                alert_name="High5xxAfterDeploy",
+                status="diagnosing",
+                starts_at=utc_now(),
+                labels={},
+                annotations={},
+            )
+        )
+        db_session.add(
+            AgentRun(
+                agent_run_id="run_evidence",
+                incident_id="inc_evidence",
+                status="running",
+            )
+        )
+        db_session.flush()
+        evidence = [
+            {
+                "type": "metric",
+                "source": "prometheus",
+                "summary": "error rate elevated",
+            }
+        ]
+
+        persisted = persist_evidence(db_session, "inc_evidence", "run_evidence", evidence)
+
+        assert persisted[0] is evidence[0]
+        assert evidence[0]["evidence_id"].startswith("evi_")
+        row = EvidenceItemRepository(db_session).list_for_run("run_evidence")[0]
+        assert row.evidence_id == evidence[0]["evidence_id"]
+        assert row.payload["evidence_id"] == evidence[0]["evidence_id"]
+
+
+class TestCollectK8sAndDbNodes:
+    def test_collect_k8s_noops_without_tool(self, db_session: Session) -> None:
+        from packages.agent.nodes.collect_k8s import collect_k8s
+
+        deps = _make_deps(db_session)  # no k8s_tool -> None
+        result = collect_k8s(_base_state(service_name="checkout"), deps)
+        assert result["k8s_evidence"] == []
+        assert result["phase"] == "k8s_collected"
+
+    def test_collect_db_noops_without_tool(self, db_session: Session) -> None:
+        from packages.agent.nodes.collect_db import collect_db
+
+        deps = _make_deps(db_session)  # no db_diagnostics_tool -> None
+        result = collect_db(_base_state(), deps)
+        assert result["db_evidence"] == []
+        assert result["phase"] == "db_collected"
+
+    def test_collect_k8s_skips_when_alert_not_relevant(self, db_session: Session) -> None:
+        from packages.agent.nodes.collect_k8s import collect_k8s
+        from packages.tools.k8s import K8sDiagnosticsTool
+
+        deps = _make_deps(db_session)
+        deps.k8s_tool = K8sDiagnosticsTool()  # tool present, but alert is irrelevant
+        state = _base_state(
+            service_name="checkout", alert_name="RedisCacheAvalanche", severity="P2"
+        )
+        result = collect_k8s(state, deps)
+        assert result["k8s_evidence"] == []  # gated out, no misleading pod state
+
+    def test_collect_db_skips_when_alert_not_relevant(self, db_session: Session) -> None:
+        from packages.agent.nodes.collect_db import collect_db
+        from packages.tools.db_diagnostics import DbDiagnosticsTool
+
+        deps = _make_deps(db_session)
+        deps.db_diagnostics_tool = DbDiagnosticsTool()
+        state = _base_state(alert_name="CertificateExpiry", severity="P3")
+        result = collect_db(state, deps)
+        assert result["db_evidence"] == []
+
+    def test_collect_k8s_collects_fixture_evidence(self, db_session: Session) -> None:
+        from packages.agent.nodes.collect_k8s import collect_k8s
+        from packages.common.time import utc_now
+        from packages.db.models import AgentRun, Incident
+        from packages.tools.k8s import K8sDiagnosticsTool
+
+        db_session.add(
+            Incident(
+                incident_id="inc_k8s",
+                fingerprint="fp_k8s",
+                source="mock",
+                service="checkout",
+                severity="P2",
+                alert_name="PodRestartLoop",
+                status="diagnosing",
+                starts_at=utc_now(),
+                labels={},
+                annotations={},
+            )
+        )
+        db_session.add(AgentRun(agent_run_id="run_k8s", incident_id="inc_k8s", status="running"))
+        db_session.flush()
+
+        deps = _make_deps(db_session)
+        deps.k8s_tool = K8sDiagnosticsTool()  # fixture backend
+        state = _base_state(
+            incident_id="inc_k8s",
+            agent_run_id="run_k8s",
+            service_name="checkout",
+            alert_name="PodRestartLoop",
+            severity="P2",
+        )
+        result = collect_k8s(state, deps)
+
+        assert result["phase"] == "k8s_collected"
+        assert result["k8s_evidence"]
+        assert result["k8s_evidence"][0]["evidence_id"].startswith("evi_")
+
+    def test_collect_db_collects_fixture_evidence(self, db_session: Session) -> None:
+        from packages.agent.nodes.collect_db import collect_db
+        from packages.common.time import utc_now
+        from packages.db.models import AgentRun, Incident
+        from packages.tools.db_diagnostics import DbDiagnosticsTool
+
+        db_session.add(
+            Incident(
+                incident_id="inc_db",
+                fingerprint="fp_db",
+                source="mock",
+                service="checkout",
+                severity="P2",
+                alert_name="DatabaseConnectionExhaustion",
+                status="diagnosing",
+                starts_at=utc_now(),
+                labels={},
+                annotations={},
+            )
+        )
+        db_session.add(AgentRun(agent_run_id="run_db", incident_id="inc_db", status="running"))
+        db_session.flush()
+
+        deps = _make_deps(db_session)
+        deps.db_diagnostics_tool = DbDiagnosticsTool()  # fixture backend
+        state = _base_state(
+            incident_id="inc_db",
+            agent_run_id="run_db",
+            alert_name="DatabaseConnectionExhaustion",
+            severity="P2",
+        )
+        result = collect_db(state, deps)
+
+        assert result["phase"] == "db_collected"
+        assert result["db_evidence"]
+        assert result["db_evidence"][0]["evidence_id"].startswith("evi_")
+
+
 class TestGuardrailCheckNode:
     def test_classifies_l0_actions(self, db_session: Session) -> None:
         deps = _make_deps(db_session)

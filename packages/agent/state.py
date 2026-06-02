@@ -19,6 +19,10 @@ class IncidentState(TypedDict, total=False):
     logs_evidence: list[dict[str, Any]]
     traces_evidence: list[dict[str, Any]]
     deployment_evidence: list[dict[str, Any]]
+    # Phase 2.2/2.3 read-only diagnosis evidence (empty when those tools are
+    # not provided, e.g. in the eval harness).
+    k8s_evidence: list[dict[str, Any]]
+    db_evidence: list[dict[str, Any]]
     runbook_context: list[dict[str, Any]]
     memory_context: list[dict[str, Any]]
     hypotheses: list[dict[str, Any]]

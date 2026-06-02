@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import ceil, isfinite
 from statistics import fmean
 from typing import Any, Literal
@@ -23,6 +23,14 @@ MetricType = Literal[
     "memory",
     "db_connections",
     "cache_hit_rate",
+    # Phase 2.4 fault catalog expansion.
+    "cpu_throttle",
+    "disk_avail",
+    "cert_expiry_days",
+    "dns_error_rate",
+    "queue_lag",
+    "rate_limit_hits",
+    "slo_burn_rate",
 ]
 
 
@@ -57,11 +65,19 @@ class MetricsTool:
         client: httpx.Client | None = None,
         timeout_seconds: float = 2.0,
         cache: RequestLocalToolCache | None = None,
+        service_label: str = "service",
+        step_seconds: int = 30,
+        max_window_seconds: int = 3600,
+        max_shards: int = 6,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.client = client
         self.timeout_seconds = timeout_seconds
         self.cache = cache
+        self.service_label = service_label
+        self.step_seconds = step_seconds
+        self.max_window_seconds = max_window_seconds
+        self.max_shards = max_shards
 
     def run(self, query: BaseModel) -> ToolResult:
         metrics_query = MetricsQuery.model_validate(query)
@@ -78,7 +94,7 @@ class MetricsTool:
         if cached is not None:
             return cached.model_copy(update={"duration_ms": elapsed_ms(started_at)})
 
-        promql = _promql(metrics_query.metric_type, metrics_query.service)
+        promql = _promql(metrics_query.metric_type, metrics_query.service, self.service_label)
         try:
             payload = self._query_range(metrics_query, promql)
             values = _extract_values(payload)
@@ -147,11 +163,53 @@ class MetricsTool:
         return result
 
     def _query_range(self, query: MetricsQuery, promql: str) -> dict[str, Any]:
+        # Split large windows into bounded shards so a single request never asks
+        # Prometheus for an unbounded series (Phase 2.1 query safety). Values
+        # from all shards are merged into one Prometheus-shaped payload.
+        shards, step = self._plan_shards(query.start, query.end)
+        merged: list[float] = []
+        for shard_start, shard_end in shards:
+            payload = self._query_shard(promql, shard_start, shard_end, step)
+            merged.extend(_extract_values(payload))
+        return {"data": {"result": [{"values": [[0, value] for value in merged]}]}}
+
+    def _plan_shards(
+        self, start: datetime, end: datetime
+    ) -> tuple[list[tuple[datetime, datetime]], int]:
+        """Plan shards covering the *entire* window.
+
+        When the window needs more than ``max_shards`` shards we widen each
+        shard and coarsen the step rather than truncating — covering the whole
+        window with bounded request count and points-per-request. Truncating
+        would silently drop data outside the first N shards and mislabel the
+        result as a complete success.
+        """
+        total = (end - start).total_seconds()
+        shard_window = float(self.max_window_seconds)
+        step = self.step_seconds
+        if total > shard_window:
+            needed = ceil(total / shard_window)
+            if needed > self.max_shards:
+                shard_window = total / self.max_shards
+                # Coarsen the step proportionally to keep points-per-shard bounded.
+                step = max(step, ceil(step * shard_window / self.max_window_seconds))
+        shards: list[tuple[datetime, datetime]] = []
+        cursor = start
+        span = timedelta(seconds=shard_window)
+        while cursor < end:
+            shard_end = min(cursor + span, end)
+            shards.append((cursor, shard_end))
+            cursor = shard_end
+        return shards, step
+
+    def _query_shard(
+        self, promql: str, start: datetime, end: datetime, step: int
+    ) -> dict[str, Any]:
         params: dict[str, str | int] = {
             "query": promql,
-            "start": int(query.start.timestamp()),
-            "end": int(query.end.timestamp()),
-            "step": "30s",
+            "start": int(start.timestamp()),
+            "end": int(end.timestamp()),
+            "step": f"{step}s",
         }
         if self.client is not None:
             response = self.client.get(
@@ -170,24 +228,46 @@ class MetricsTool:
         return payload
 
 
-def _promql(metric_type: MetricType, service: str) -> str:
+def _promql(metric_type: MetricType, service: str, service_label: str = "service") -> str:
     escaped = service.replace("\\", "\\\\").replace('"', '\\"')
+    label = service_label
+    sel = f'{label}="{escaped}"'
     templates: dict[str, str] = {
         "latency": (
             "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket"
-            '{{service="{service}"}}[5m])) by (le))'
+            f"{{{sel}}}[5m])) by (le))"
         ),
         "error_rate": (
-            'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[5m])) '
-            '/ clamp_min(sum(rate(http_requests_total{{service="{service}"}}[5m])), 1)'
+            f'sum(rate(http_requests_total{{{sel},status=~"5.."}}[5m])) '
+            f"/ clamp_min(sum(rate(http_requests_total{{{sel}}}[5m])), 1)"
         ),
-        "qps": 'sum(rate(http_requests_total{{service="{service}"}}[5m]))',
-        "cpu": 'sum(rate(process_cpu_seconds_total{{service="{service}"}}[5m]))',
-        "memory": 'process_resident_memory_bytes{{service="{service}"}}',
-        "db_connections": 'db_connections_active{{service="{service}"}}',
-        "cache_hit_rate": 'redis_cache_hit_rate{{service="{service}"}}',
+        "qps": f"sum(rate(http_requests_total{{{sel}}}[5m]))",
+        "cpu": f"sum(rate(process_cpu_seconds_total{{{sel}}}[5m]))",
+        "memory": f"process_resident_memory_bytes{{{sel}}}",
+        "db_connections": f"db_connections_active{{{sel}}}",
+        "cache_hit_rate": f"redis_cache_hit_rate{{{sel}}}",
+        # Phase 2.4 fault catalog.
+        "cpu_throttle": (
+            f"sum(rate(container_cpu_cfs_throttled_periods_total{{{sel}}}[5m])) "
+            f"/ clamp_min(sum(rate(container_cpu_cfs_periods_total{{{sel}}}[5m])), 1)"
+        ),
+        "disk_avail": (
+            f"min(node_filesystem_avail_bytes{{{sel}}}) "
+            f"/ clamp_min(min(node_filesystem_size_bytes{{{sel}}}), 1)"
+        ),
+        "cert_expiry_days": f"min(tls_cert_expiry_seconds{{{sel}}}) / 86400",
+        "dns_error_rate": (
+            f'sum(rate(coredns_dns_responses_total{{{sel},rcode!="NOERROR"}}[5m])) '
+            f"/ clamp_min(sum(rate(coredns_dns_responses_total{{{sel}}}[5m])), 1)"
+        ),
+        "queue_lag": f"max(kafka_consumergroup_lag{{{sel}}})",
+        "rate_limit_hits": f"sum(rate(rate_limit_hits_total{{{sel}}}[5m]))",
+        "slo_burn_rate": (
+            f'sum(rate(http_requests_total{{{sel},status=~"5.."}}[1h])) '
+            f"/ clamp_min(sum(rate(http_requests_total{{{sel}}}[1h])), 1) / 0.001"
+        ),
     }
-    return templates[metric_type].format(service=escaped)
+    return templates[metric_type]
 
 
 def _extract_values(payload: dict[str, Any]) -> list[float]:

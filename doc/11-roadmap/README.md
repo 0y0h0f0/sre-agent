@@ -16,12 +16,12 @@ M1-M7 全部完成，MVP 已具备：
 MVP 明确限制（`00-overview/scope.md`）：单租户、1 个 demo-service、4 类固定故障；不做 RBAC/SSO、不操作真实云资源、不做模型微调、不删数据。
 
 **进行中**：
-- Phase 1.1（LLM Provider factory）已落地——`packages/agent/llm/` 提供 fake / vllm / openai / deepseek / anthropic adapter，`_build_deps()` 经 `build_llm(settings)` 构造，`llm_provider=fake` 保持全部测试确定性。
-- Phase 1.2（推理深度分层）已落地——`packages/agent/llm/reasoning.py` 按 `llm_reasoning_nodes` 配置逐节点开启深度推理，`diagnose` 产出可审计 rationale 并记录 LLM 调用元数据，不持久化原始 CoT。
-- Phase 1.3（证据交叉验证）已落地——`packages/agent/evidence_validation.py` 融合 metrics/logs/traces/deployment 信号，多源印证提升置信度、信号矛盾置 `needs_human_review`、缺失源降级不中断。
-- Phase 1.4（级联故障分析）已落地——`packages/agent/topology.py` 提供服务依赖图、故障传播建模（根服务定位）与批量 incident 关联提级；`diagnose` 接入 `cascade_analysis`（informational）。
+- Phase 1.1（LLM Provider factory）代码已落地——`packages/agent/llm/` 提供 fake / vllm / openai / deepseek / anthropic adapter，`_build_deps()` 经 `build_llm(settings)` 构造，`llm_provider=fake` 保持全部测试确定性。
+- Phase 1.2（推理深度分层）代码已落地——`packages/agent/llm/reasoning.py` 按 `llm_reasoning_nodes` 配置逐节点开启深度推理，`diagnose` 产出可审计 rationale 并记录 LLM 调用元数据，不持久化原始 CoT。
+- Phase 1.3（证据交叉验证）代码已落地——`packages/agent/evidence_validation.py` 融合 metrics/logs/traces/deployment 信号，多源印证提升置信度、信号矛盾置 `needs_human_review`、缺失源降级不中断。
+- Phase 1.4（级联故障分析）代码已落地——`packages/agent/topology.py` 提供服务依赖图、故障传播建模（根服务定位）与批量 incident 关联提级；`diagnose` 接入 `cascade_analysis`（informational）。
 
-**Phase 1 全部子项（1.1-1.4）已落地**。详见 `phase-1-intelligent-diagnosis.md` 的实现状态。待真实环境验证项：vLLM/云端 smoke 与深度推理延迟实测、多服务真实拓扑下的级联与批量关联（依赖 Phase 2 真实数据源接入）。
+**Phase 1 尚未完成验收**。完成边界以真实 provider smoke 通过为准：至少一个本地 `vllm` 或云端 API provider 跑通端到端诊断，并记录 provider/model/token metadata、结构化 rationale、evidence_id 引用、延迟和成本/资源结果。FakeLLM、MockTransport 和纯单测只算代码落地，不算 Phase 1 完成。
 
 ## 阶段索引
 
@@ -54,7 +54,7 @@ Phase 8: 前端增强          ← 体验优化，从能用到好用
 
 | 里程碑 | 交付内容 | 验收标准 | 预计工作量 |
 | --- | --- | --- | --- |
-| P1 完成 | LLM Provider factory + Qwen2.5-7B 本地 smoke + 云端 API 适配 + 推理分层 | `fake` 测试保持确定性通过；`vllm` 端到端 smoke 通过；diagnose 输出结构化 rationale | 3-4 周 |
+| P1 完成 | LLM Provider factory + Qwen2.5-7B 本地 smoke + 云端 API 适配 + 推理分层 | `fake` 测试保持确定性通过；至少一个真实 provider 端到端 smoke 通过；diagnose 输出结构化 rationale 且引用 evidence_id | 3-4 周 |
 | P2 完成 | Prometheus/Loki 查询增强 + Trace/Git 真实适配器 + K8s 只读 + 5 种新故障 | 至少 1 个非 demo 可观测后端接入；生产 K8s 写操作默认不可执行 | 3-4 周 |
 | P3 完成 | Alertmanager 对接 + 邮件通知完整闭环 | 一条真实告警 → 自动诊断 → 邮件推送；审批邮件能打开指定 approval | 1-2 周 |
 | P4 完成 | 混合检索 + Reranker | 4 类 MVP 故障 Runbook Top-3 命中率 > 80% | 1-2 周 |

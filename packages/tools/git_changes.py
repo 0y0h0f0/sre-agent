@@ -1,17 +1,21 @@
-"""Git/deployment change lookup tool backed by demo fixtures."""
+"""Git/deployment change lookup tool backed by a pluggable backend (Phase 2.1).
+
+The fixture backend keeps MVP behaviour; GitHub/Argo CD backends query real
+deployment history. Window filtering and summarization live here.
+"""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
-from typing import Any
 
+import httpx
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from packages.common.time import ensure_utc
 from packages.tools.base import ToolResult, compact_summary, elapsed_ms, start_timer
 from packages.tools.cache import RequestLocalToolCache, build_cache_key
+from packages.tools.deployment_backends import DeploymentBackend, FixtureDeploymentBackend
 
 
 class GitChangeQuery(BaseModel):
@@ -40,11 +44,16 @@ class GitChangeTool:
     def __init__(
         self,
         *,
-        fixture_path: str | Path = "demo/faults/git_changes.json",
+        backend: DeploymentBackend | None = None,
+        fixture_path: str | None = None,
         timeout_seconds: float = 2.0,
         cache: RequestLocalToolCache | None = None,
     ) -> None:
-        self.fixture_path = Path(fixture_path)
+        if backend is None:
+            backend = FixtureDeploymentBackend(
+                fixture_path=fixture_path or "demo/faults/git_changes.json"
+            )
+        self.backend = backend
         self.timeout_seconds = timeout_seconds
         self.cache = cache
 
@@ -58,13 +67,14 @@ class GitChangeTool:
             start=git_query.start,
             end=git_query.end,
             bucket_seconds=600,
+            datasource=self.backend.name,
         )
         cached = self.cache.get(cache_key) if self.cache else None
         if cached is not None:
             return cached.model_copy(update={"duration_ms": elapsed_ms(started_at)})
 
         try:
-            changes = self._load_changes()
+            changes = self.backend.fetch_changes(git_query.service, git_query.start, git_query.end)
             matching = [
                 change
                 for change in changes
@@ -91,7 +101,7 @@ class GitChangeTool:
                 evidence=[
                     {
                         "type": "git",
-                        "source": "demo-git-fixture",
+                        "source": self.backend.name,
                         "title": f"deployment changes for {git_query.service}",
                         "payload": data,
                     }
@@ -101,11 +111,27 @@ class GitChangeTool:
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
             )
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        except httpx.TimeoutException as exc:
+            result = ToolResult(
+                status="timeout",
+                data={},
+                summary=f"deployment backend timed out for {git_query.service}",
+                cache_key=cache_key,
+                duration_ms=elapsed_ms(started_at),
+                error_message=str(exc),
+            )
+        except (
+            httpx.HTTPError,
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
             result = ToolResult(
                 status="degraded",
                 data={},
-                summary=f"git change fixture unavailable for {git_query.service}",
+                summary=f"deployment backend unavailable for {git_query.service}",
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
                 error_message=str(exc),
@@ -114,14 +140,6 @@ class GitChangeTool:
         if self.cache and result.status in {"succeeded", "degraded"}:
             self.cache.set(cache_key, result)
         return result
-
-    def _load_changes(self) -> list[dict[str, Any]]:
-        payload = json.loads(self.fixture_path.read_text(encoding="utf-8"))
-        changes = payload.get("changes", [])
-        if not isinstance(changes, list):
-            msg = "changes must be a list"
-            raise ValueError(msg)
-        return [change for change in changes if isinstance(change, dict)]
 
 
 def _parse_datetime(value: str) -> datetime:

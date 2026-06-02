@@ -58,15 +58,24 @@ class OpenAICompatibleAdapter:
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
         }
-        if thinking or self.reasoning_enabled:
-            # OpenAI/DeepSeek/vLLM expose reasoning depth via reasoning_effort;
-            # unknown servers ignore the extra field.
+        if self.provider == "deepseek":
+            # DeepSeek thinking defaults to enabled, so standard nodes must opt out
+            # explicitly. The OpenAI SDK calls this via extra_body; raw HTTP sends
+            # the provider extension as a normal request field.
+            payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
+            if thinking:
+                payload["reasoning_effort"] = _deepseek_effort(self.reasoning_effort)
+        elif thinking:
+            # Other OpenAI-compatible reasoning endpoints use reasoning_effort when
+            # the node-level scheduler requests deep reasoning.
             payload["reasoning_effort"] = self.reasoning_effort
         data = self._post("/chat/completions", payload)
         choice = (data.get("choices") or [{}])[0]
-        content = str(choice.get("message", {}).get("content", ""))
+        content = choice.get("message", {}).get("content", "")
+        if content is None:
+            content = ""
         self._record(data, choice)
-        return content
+        return str(content)
 
     def generate_json(
         self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
@@ -104,3 +113,10 @@ class OpenAICompatibleAdapter:
         if reasoning:
             meta["reasoning_summary"] = str(reasoning)[:500]
         self.last_metadata = meta
+
+
+def _deepseek_effort(value: str) -> str:
+    effort = value.strip().lower()
+    if effort in {"max", "xhigh"}:
+        return "max"
+    return "high"

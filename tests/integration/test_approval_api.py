@@ -270,6 +270,62 @@ class TestApprovalApproveAPI:
         assert resp.status_code == 409
 
 
+class TestBatchApprovalResume:
+    """A run with multiple approvals must only resume once all are decided."""
+
+    def _two_approval_run(self, db_session: Session) -> tuple[str, list[str]]:
+        inc = _create_incident(db_session)
+        run_id = new_id("run_")
+        a1 = _create_action(
+            db_session, inc.incident_id, run_id, type="scale_deployment", risk_level="L2"
+        )
+        a2 = _create_action(
+            db_session, inc.incident_id, run_id, type="restart_pod", risk_level="L2"
+        )
+        p1 = _create_approval(db_session, a1.action_id, inc.incident_id, run_id)
+        p2 = _create_approval(db_session, a2.action_id, inc.incident_id, run_id)
+        db_session.commit()
+        return run_id, [p1.approval_id, p2.approval_id]
+
+    def test_first_approval_does_not_resume(
+        self, client: TestClient, db_session: Session, fake_resume_enqueue
+    ) -> None:
+        _, [p1, p2] = self._two_approval_run(db_session)
+
+        resp = client.post(f"/api/approvals/{p1}/approve", json={"approver": "sre"})
+        assert resp.status_code == 200
+        # Sibling p2 is still waiting → no resume yet (no stranding).
+        assert fake_resume_enqueue.calls == []
+
+        resp = client.post(f"/api/approvals/{p2}/approve", json={"approver": "sre"})
+        assert resp.status_code == 200
+        # Whole batch decided → exactly one resume.
+        assert len(fake_resume_enqueue.calls) == 1
+
+    def test_resume_fires_when_last_is_rejected(
+        self, client: TestClient, db_session: Session, fake_resume_enqueue
+    ) -> None:
+        _, [p1, p2] = self._two_approval_run(db_session)
+
+        client.post(f"/api/approvals/{p1}/approve", json={"approver": "sre"})
+        assert fake_resume_enqueue.calls == []
+
+        client.post(f"/api/approvals/{p2}/reject", json={"approver": "sre"})
+        assert len(fake_resume_enqueue.calls) == 1
+
+    def test_single_approval_resumes_immediately(
+        self, client: TestClient, db_session: Session, fake_resume_enqueue
+    ) -> None:
+        inc = _create_incident(db_session)
+        run_id = new_id("run_")
+        action = _create_action(db_session, inc.incident_id, run_id, risk_level="L2")
+        approval = _create_approval(db_session, action.action_id, inc.incident_id, run_id)
+        db_session.commit()
+
+        client.post(f"/api/approvals/{approval.approval_id}/approve", json={"approver": "sre"})
+        assert len(fake_resume_enqueue.calls) == 1
+
+
 class TestApprovalRejectAPI:
     def test_reject_success(self, client: TestClient, db_session: Session) -> None:
         inc = _create_incident(db_session)

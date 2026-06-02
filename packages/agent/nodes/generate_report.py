@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import json
 
+from packages.agent.llm.reasoning import (
+    capture_metadata,
+    record_llm_call,
+    should_use_deep_reasoning,
+)
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
 from packages.common.time import utc_now
 from packages.db.repositories.reports import IncidentReportRepository
+
+_NODE_NAME = "generate_report"
 
 
 def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
@@ -56,11 +63,26 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
             f"Errors: {json.dumps(state.get('errors', []))}\n"
         )
 
+        thinking = should_use_deep_reasoning(deps.settings, _NODE_NAME)
         try:
-            raw = deps.llm.invoke([{"role": "user", "content": prompt}])
+            raw = deps.llm.invoke([{"role": "user", "content": prompt}], thinking=thinking)
             report_data = json.loads(raw)
+            record_llm_call(state, _NODE_NAME, capture_metadata(deps.llm))
         except Exception:
             report_data = _fallback_report(state, root_cause, actions)
+
+        # Surface the deterministic cross-validation review flag (Phase 1.3).
+        # It is authoritative, so it is injected here rather than trusted to the
+        # LLM output, and a follow-up is added so reviewers can act on it.
+        report_data = dict(report_data)
+        needs_review = bool(state.get("needs_human_review", False))
+        report_data["needs_human_review"] = needs_review
+        if needs_review:
+            follow_ups = list(report_data.get("follow_ups", []) or [])
+            note = "Manual review required: evidence sources conflict (cross-validation)."
+            if note not in follow_ups:
+                follow_ups.append(note)
+            report_data["follow_ups"] = follow_ups
 
         repo = IncidentReportRepository(deps.db)
         version = repo.next_version(state["incident_id"])

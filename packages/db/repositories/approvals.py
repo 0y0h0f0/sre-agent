@@ -62,6 +62,24 @@ class ApprovalRepository:
         )
         return self.db.scalars(stmt).all()
 
+    def has_waiting_for_run(self, agent_run_id: str) -> bool:
+        """Whether the run still has any undecided approval in its current batch.
+
+        Used to gate the LangGraph resume: a batch may contain several L2/L3
+        approvals, and the graph applies them all in one resume. Resuming after
+        only the first decision would execute the approved action and finalize
+        the run, stranding the still-waiting siblings.
+        """
+        stmt = (
+            select(func.count())
+            .select_from(Approval)
+            .where(
+                Approval.agent_run_id == agent_run_id,
+                Approval.status == "waiting",
+            )
+        )
+        return int(self.db.scalar(stmt) or 0) > 0
+
     def list_with_filters(
         self,
         *,

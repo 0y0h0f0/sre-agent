@@ -157,6 +157,55 @@ class TestHumanApprovalNode:
         assert interrupted[0]["type"] == "approval_required"
         assert len(interrupted[0]["approval_ids"]) == 1
 
+    def test_auto_approve_never_approves_l3(self, db_session: Session) -> None:
+        """No-checkpointer auto-approve must NOT approve L3 actions.
+
+        L3 (rollback / rate-limit) requires a human second confirmation and may
+        never be auto-approved. The L2 action is auto-approved; the L3 action
+        stays ``waiting`` in the DB and keeps ``requires_approval`` set so
+        ``execute_action`` skips it.
+        """
+        from packages.db.repositories.approvals import ApprovalRepository
+
+        deps = _make_deps(db_session)
+        state = _base_state(
+            incident_id="inc_h1",
+            agent_run_id="run_h1",
+            _interrupts_enabled=False,
+            recommended_actions=[
+                {
+                    "type": "restart_pod",
+                    "target": "checkout",
+                    "params": {},
+                    "requires_approval": True,
+                    "risk_level": "L2",
+                    "reason": "pod crash",
+                },
+                {
+                    "type": "rollback_release",
+                    "target": "checkout",
+                    "params": {},
+                    "requires_approval": True,
+                    "risk_level": "L3",
+                    "reason": "bad deploy",
+                },
+            ],
+        )
+
+        result = human_approval(state, deps)
+        assert result["phase"] == "approval_approved"
+
+        approval_repo = ApprovalRepository(db_session)
+        approvals = approval_repo.list_for_incident("inc_h1")
+        by_action_risk = {a["action_id"]: a["risk_level"] for a in result["recommended_actions"]}
+        statuses = {by_action_risk[a.action_id]: a.status for a in approvals}
+        assert statuses["L2"] == "approved"
+        assert statuses["L3"] == "waiting"
+
+        actions_by_risk = {a["risk_level"]: a for a in result["recommended_actions"]}
+        assert actions_by_risk["L2"]["requires_approval"] is False
+        assert actions_by_risk["L3"]["requires_approval"] is True
+
 
 class TestHumanApprovalResume:
     """Resume path must honor the actual per-approval DB decisions.
@@ -374,3 +423,35 @@ class TestExecuteActionNode:
         result = execute_action(state, deps)
         assert len(result["execution_results"]) == 1
         assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
+
+
+class TestGenerateReportReviewFlag:
+    """The dangling cross-validation flag must surface in the report (M4)."""
+
+    def test_report_surfaces_needs_human_review(self, db_session: Session) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+
+        deps = _make_deps(db_session)
+        state = _base_state(
+            incident_id="inc_m4",
+            agent_run_id="run_m4",
+            needs_human_review=True,
+            root_cause={"summary": "pool exhausted", "confidence": 0.7},
+        )
+        result = generate_report(state, deps)
+        report = result["incident_report"]
+        assert report["needs_human_review"] is True
+        assert any("review" in str(f).lower() for f in report.get("follow_ups", []))
+
+    def test_report_omits_review_note_when_not_flagged(self, db_session: Session) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+
+        deps = _make_deps(db_session)
+        state = _base_state(
+            incident_id="inc_m4b",
+            agent_run_id="run_m4b",
+            needs_human_review=False,
+            root_cause={"summary": "pool exhausted", "confidence": 0.7},
+        )
+        result = generate_report(state, deps)
+        assert result["incident_report"]["needs_human_review"] is False

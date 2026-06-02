@@ -18,6 +18,7 @@
 12. `09-evals/`：故障评测集与指标计算。
 13. `10-codegen/`：代码生成顺序、模块清单、验收检查。
 14. `10-codegen/documentation-quality-gate.md`：代码生成前的文档质量门禁。
+15. `11-roadmap/`：MVP 之后的拓展计划（Phase 1-8），来源于 `tzplan.md`。
 
 ## 代码生成原则
 
@@ -42,6 +43,7 @@ doc/
   08-deploy/
   09-evals/
   10-codegen/
+  11-roadmap/
 ```
 
 ## 强制边界

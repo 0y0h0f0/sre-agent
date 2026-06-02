@@ -23,6 +23,11 @@ class IncidentState(TypedDict, total=False):
     memory_context: list[dict[str, Any]]
     hypotheses: list[dict[str, Any]]
     root_cause: dict[str, Any]
+    diagnosis_rationale: dict[str, Any]
+    llm_calls: list[dict[str, Any]]
+    cross_validation: dict[str, Any]
+    needs_human_review: bool
+    cascade_analysis: dict[str, Any]
     recommended_actions: list[dict[str, Any]]
     approval_status: dict[str, Any]
     execution_results: list[dict[str, Any]]

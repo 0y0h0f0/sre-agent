@@ -191,7 +191,9 @@ _ACTIONS_MAP: dict[str, list[dict[str, Any]]] = {
 class FakeLLM:
     """Deterministic fake LLM keyed by alert_name. No randomness, no network."""
 
-    def invoke(self, messages: list[dict[str, Any]]) -> str:
+    def invoke(
+        self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
+    ) -> str:
         alert_name = self._extract_alert_name(messages)
         content = str(messages)
         if "report" in content.lower():
@@ -202,7 +204,9 @@ class FakeLLM:
             return json.dumps(_ACTIONS_MAP.get(alert_name, _ACTIONS_MAP["High5xxAfterDeploy"]))
         return json.dumps(_DIAGNOSIS_MAP.get(alert_name, _DIAGNOSIS_MAP["High5xxAfterDeploy"]))
 
-    def generate_json(self, prompt: str, output_schema: type[BaseModel]) -> Any:
+    def generate_json(
+        self, prompt: str, output_schema: type[BaseModel], *, thinking: bool = False, **kwargs: Any
+    ) -> Any:
         alert_name = self._extract_alert_name_from_text(prompt)
         origin = get_origin(output_schema)
         if origin is list:

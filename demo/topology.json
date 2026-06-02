@@ -1,0 +1,9 @@
+{
+  "services": {
+    "checkout": ["payments", "postgres", "redis", "inventory"],
+    "payments": ["postgres"],
+    "inventory": ["postgres"],
+    "postgres": [],
+    "redis": []
+  }
+}

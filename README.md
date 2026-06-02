@@ -81,8 +81,8 @@ Incident Report + UI display
 ## Directory Structure
 
 ```
-apps/
   api/          FastAPI routers, schemas, services
+apps/
   worker/       Celery app and tasks
   web/          React + TypeScript + Vite console
 packages/
@@ -105,6 +105,7 @@ tests/
   integration/  Integration tests
   contract/     API contract tests
 doc/            Detailed implementation specs
+  11-roadmap/   Post-MVP expansion plan (Phase 1-8)
 ```
 
 ## Tech Stack
@@ -161,3 +162,21 @@ Run the local evaluation suites with:
 python -m packages.evals.runner --suite smoke
 python -m packages.evals.runner --suite full --output reports/eval-full.json
 ```
+
+## Roadmap
+
+M1-M7 (MVP) are complete. The post-MVP expansion plan is tracked in `doc/11-roadmap/`
+(source: `tzplan.md`), covering eight phases from "demo" to "production-grade":
+
+| Phase | Theme |
+|-------|-------|
+| 1 | Intelligent diagnosis upgrade (real LLM provider factory, layered reasoning) |
+| 2 | Tool layer productionization (real Trace/Git/K8s/DB backends) |
+| 3 | Alert sources & email notifications (closed loop) |
+| 4 | Runbook RAG enhancement (hybrid retrieval, reranker) |
+| 5 | Memory & continuous learning |
+| 6 | Collaboration & approval workflow |
+| 7 | Ops & engineering (RBAC, observability, HA) |
+| 8 | Frontend enhancement (realtime progress, visualization, mobile) |
+
+See `doc/11-roadmap/README.md` for priorities, milestones, and risk tracking.

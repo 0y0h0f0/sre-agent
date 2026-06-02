@@ -28,6 +28,7 @@ class _FakeTool:
 def test_worker_records_nodes_and_tool_calls(monkeypatch, db_session) -> None:
     for tool_name in ("MetricsTool", "LogsTool", "TraceTool", "GitChangeTool", "RunbookSearchTool"):
         monkeypatch.setattr(tasks, tool_name, _FakeTool)
+    monkeypatch.setattr(tasks, "_build_checkpointer", lambda settings: None)
 
     payload = AlertCreateRequest(
         source="mock",

@@ -7,8 +7,11 @@ The source of truth is:
 1. `doc/README.md`
 2. The detailed documents under `doc/`
 3. `plan.md` as the high-level planning background
+4. `tzplan.md` and `doc/11-roadmap/` as the **post-MVP** expansion roadmap (background only, not MVP scope)
 
 For implementation details, prefer the more specific `doc/` files and this `agent.md` over older high-level wording in `plan.md`. Do not invent a different architecture when implementation details are already specified.
+
+`tzplan.md` / `doc/11-roadmap/` describe planned future work (Phase 1-8), not current behavior. They never override the Mandatory Boundaries below. Do not implement roadmap items — especially ones that relax scope (real LLM as a CI gate, real K8s/cloud writes, RBAC/SSO, model fine-tuning) — unless the user explicitly asks for that specific slice.
 
 ## Project Summary
 
@@ -71,6 +74,7 @@ Before implementing a module, read the matching document:
 - Implementation sequence: `doc/10-codegen/implementation-order.md`
 - Module checklist: `doc/10-codegen/module-checklists.md`
 - Documentation quality gate: `doc/10-codegen/documentation-quality-gate.md`
+- Post-MVP roadmap (background only): `doc/11-roadmap/README.md`
 
 If implementation guidance conflicts, prefer the more specific document. If still ambiguous, prefer the safer option: mock executor, FakeLLM, no real external writes, explicit schema, and stronger tests.
 

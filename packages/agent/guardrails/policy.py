@@ -27,10 +27,15 @@ _RISK_TABLE: dict[str, tuple[str, bool, str]] = {
     "modify_database": ("L4", False, "destructive — always rejected"),
 }
 
-_FORBIDDEN = {"delete", "drop", "truncate", "modify_database", "flush", "all"}
+_FORBIDDEN = {"delete", "drop", "truncate", "modify_database", "flush"}
 # Match forbidden keywords as whole tokens. A naive substring check wrongly
-# flags legitimate targets/params: "all" matches "wall-service", "install",
-# "fallback"; "drop" matches "dropdown"; "delete" matches "deleted".
+# flags legitimate targets/params: "drop" matches "dropdown"; "delete" matches
+# "deleted"; "flush" matches "flushing".
+#
+# "all" is deliberately NOT forbidden: it is not destructive on its own and
+# appears in legitimate targets/params ("all-regions", "all_tenants",
+# "rollout-all"). Genuinely destructive variants are already caught by their
+# real verb — "delete_all" matches "delete", "drop_all" matches "drop".
 #
 # Tokens are delimited by any non-alphanumeric char (space, "_", "-", quotes,
 # braces). Using alphanumeric lookarounds rather than \b means underscore and

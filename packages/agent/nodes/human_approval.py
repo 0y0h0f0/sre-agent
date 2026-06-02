@@ -138,14 +138,30 @@ def _auto_approve(
     approval_ids: list[str],
     approval_repo: ApprovalRepository,
 ) -> IncidentState:
-    """Approve every pending approval in the batch (dev/test, no human in loop)."""
+    """Approve pending approvals in the batch (dev/test, no human in loop).
+
+    L3 actions (rollback / rate-limit) are NEVER auto-approved: they require an
+    explicit human second confirmation. Their approvals stay ``waiting`` and the
+    action keeps ``requires_approval`` set, so ``execute_action`` skips them.
+    """
+    # Map each persisted approval to its action's risk level so L3 can be
+    # excluded regardless of approval/action ordering.
+    risk_by_action_id = {
+        a.get("action_id"): str(a.get("risk_level", "")).upper() for a in approval_actions
+    }
     for approval_id in approval_ids:
         existing = approval_repo.get_by_public_id(approval_id)
-        if existing is not None and existing.status == "waiting":
-            approval_repo.update_decision(
-                approval_id, status="approved", approver="eval-auto-approver"
-            )
+        if existing is None or existing.status != "waiting":
+            continue
+        if risk_by_action_id.get(existing.action_id) == "L3":
+            # Leave waiting — auto-approval must not bypass L3 second confirmation.
+            continue
+        approval_repo.update_decision(
+            approval_id, status="approved", approver="eval-auto-approver"
+        )
     for action in approval_actions:
+        if str(action.get("risk_level", "")).upper() == "L3":
+            continue
         action["requires_approval"] = False
     return {
         **state,

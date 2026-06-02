@@ -172,9 +172,10 @@ class ApprovalService:
         self.actions.update_status(action.action_id, ActionStatus.APPROVED.value)
         self.db.flush()
 
-        # Resume the LangGraph workflow
-        if self.enqueue_resume is not None:
-            self.enqueue_resume(approval.agent_run_id, "approved")
+        # Resume only once the whole batch is decided. Resuming after the first
+        # decision would execute the approved action and finalize the run,
+        # leaving sibling approvals stranded (approved-but-never-executed).
+        self._maybe_resume(approval.agent_run_id, "approved")
 
         return ApprovalDecisionResponse(
             approval_id=approval.approval_id,
@@ -200,9 +201,8 @@ class ApprovalService:
         self.actions.update_status(approval.action_id, ActionStatus.REJECTED.value)
         self.db.flush()
 
-        # Resume the LangGraph workflow to generate alternatives
-        if self.enqueue_resume is not None:
-            self.enqueue_resume(approval.agent_run_id, "rejected")
+        # Resume only once the whole batch is decided (see approve()).
+        self._maybe_resume(approval.agent_run_id, "rejected")
 
         return ApprovalDecisionResponse(
             approval_id=approval.approval_id,
@@ -210,6 +210,14 @@ class ApprovalService:
             status=ApprovalStatus.REJECTED,
             agent_run_id=approval.agent_run_id,
         )
+
+    def _maybe_resume(self, agent_run_id: str, decision: str) -> None:
+        """Enqueue a resume only when no approval in the run is still waiting."""
+        if self.enqueue_resume is None:
+            return
+        if self.approvals.has_waiting_for_run(agent_run_id):
+            return
+        self.enqueue_resume(agent_run_id, decision)
 
     def _require_approval(self, approval_id: str) -> Approval:
         approval = self.approvals.get_by_public_id(approval_id)

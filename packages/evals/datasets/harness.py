@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.api.schemas.alerts import AlertCreateRequest
-from packages.agent.fake_llm import FakeLLM
+from packages.agent.llm import FakeLLMAdapter
 from packages.agent.runner import AgentRunner
 from packages.agent.schemas import AgentDeps
 from packages.common.ids import new_id
@@ -503,7 +503,7 @@ def _build_deps(
         ),
         memory_store=MemoryStore(session),
         context_builder=ContextBuilder(),
-        llm=FakeLLM(),
+        llm=FakeLLMAdapter(),
         node_tracer=_node_tracer(session, agent_run_id),
         tool_call_recorder=_tool_call_recorder(session, agent_run_id),
     )

@@ -16,3 +16,8 @@ apps/web/test-results/
 
 # Local env
 .env
+plan.md
+tzplan.md
+
+# Generated eval reports
+reports/

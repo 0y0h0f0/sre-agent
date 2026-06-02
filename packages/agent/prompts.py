@@ -34,6 +34,10 @@ Time window: {time_window}
 
 {memory_block}
 
+Reason step by step from evidence to hypotheses to root cause. For each
+hypothesis, cite supporting_evidence_ids and explain its rank in rank_explanation.
+For root_cause, cite evidence_ids and explain why it was chosen over alternatives.
+
 Output JSON with: hypotheses, root_cause, evidence_ids, missing_evidence.
 """
 

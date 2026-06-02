@@ -54,7 +54,7 @@ def test_risk_matrix(action_type, expected_level, expects_approval, expects_allo
 # Forbidden keyword detection
 # ---------------------------------------------------------------------------
 
-_FORBIDDEN_KEYWORDS = ["delete", "drop", "truncate", "modify_database", "flush", "all"]
+_FORBIDDEN_KEYWORDS = ["delete", "drop", "truncate", "modify_database", "flush"]
 
 
 @pytest.mark.parametrize("kw", _FORBIDDEN_KEYWORDS)
@@ -81,6 +81,34 @@ def test_forbidden_in_type_escalates_to_l4(kw):
 def test_forbidden_keyword_case_insensitive():
     decision = classify_risk_level({"type": "restart_pod", "target": "DELETE", "params": {}})
     assert decision.risk_level == "L4"
+
+
+# "all" must NOT be a forbidden keyword: it is non-destructive on its own and
+# appears in legitimate scoping targets/params. Regression for false L4.
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("target", "all-regions"),
+        ("target", "all_tenants"),
+        ("target", "rollout-all"),
+        ("params", {"scope": "all"}),
+    ],
+)
+def test_all_token_does_not_escalate_to_l4(field, value):
+    action = {"type": "scale_deployment", "target": "svc", "params": {}}
+    action[field] = value
+    decision = classify_risk_level(action)
+    assert decision.risk_level != "L4"
+    assert decision.allowed
+
+
+# A genuinely destructive verb combined with "all" still escalates via its verb.
+def test_delete_all_still_escalates_to_l4():
+    decision = classify_risk_level(
+        {"type": "restart_pod", "target": "delete_all", "params": {}}
+    )
+    assert decision.risk_level == "L4"
+    assert not decision.allowed
 
 
 # ---------------------------------------------------------------------------

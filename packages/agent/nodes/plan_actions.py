@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from packages.agent.llm.reasoning import (
+    capture_metadata,
+    format_call_metadata,
+    record_llm_call,
+    should_use_deep_reasoning,
+)
 from packages.agent.schemas import AgentDeps, PlannedAction
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
 from packages.common.time import utc_now
+
+_NODE_NAME = "plan_actions"
 
 
 def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
@@ -14,10 +22,13 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
     try:
         root_cause = state.get("root_cause", {})
         prompt = f"Plan actions for {state.get('alert_name', '')}: {root_cause.get('summary', '')}"
+        thinking = should_use_deep_reasoning(deps.settings, _NODE_NAME)
 
+        meta: dict[str, object] = {}
         try:
-            models = deps.llm.generate_json(prompt, list[PlannedAction])
+            models = deps.llm.generate_json(prompt, list[PlannedAction], thinking=thinking)
             actions = [a.model_dump() for a in models]
+            meta = capture_metadata(deps.llm)
         except Exception:
             from packages.agent.fake_llm import _ACTIONS_MAP
 
@@ -25,6 +36,9 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
                 state.get("alert_name", ""), _ACTIONS_MAP["High5xxAfterDeploy"]
             )
             actions = fallback
+
+        record_llm_call(state, _NODE_NAME, meta)
+        meta_summary = format_call_metadata(meta)
 
         deps.node_tracer(
             node_id=node_id,
@@ -34,7 +48,7 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
             started_at=started_at,
             finished_at=utc_now(),
             input_summary=root_cause.get("summary", "")[:80],
-            output_summary=f"proposed {len(actions)} actions",
+            output_summary=f"proposed {len(actions)} actions {meta_summary}".strip(),
         )
         return {**state, "recommended_actions": actions, "phase": "actions_planned"}
     except Exception as exc:

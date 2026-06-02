@@ -45,6 +45,18 @@ class AgentRunRepository:
         stmt = select(AgentRun).where(AgentRun.agent_run_id == agent_run_id)
         return self.db.scalar(stmt)
 
+    def get_for_update(self, agent_run_id: str) -> AgentRun | None:
+        """Fetch a run with a row-level lock to serialize concurrent workers.
+
+        Celery delivers tasks at-least-once, so two workers can pick up the same
+        run. ``SELECT ... FOR UPDATE`` makes the status check + state transition
+        atomic: the loser blocks until the winner commits, then observes the
+        already-advanced status and short-circuits. On sqlite (tests) the lock
+        clause is a harmless no-op.
+        """
+        stmt = select(AgentRun).where(AgentRun.agent_run_id == agent_run_id).with_for_update()
+        return self.db.scalar(stmt)
+
     def get_latest_for_incident(self, incident_id: str) -> AgentRun | None:
         stmt = (
             select(AgentRun)

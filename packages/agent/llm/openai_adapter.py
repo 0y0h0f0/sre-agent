@@ -1,0 +1,106 @@
+"""OpenAI-compatible adapter — covers local vLLM and OpenAI/DeepSeek APIs.
+
+All three speak the OpenAI ``/chat/completions`` schema, so a single adapter
+serves roadmap Phase 1 scenarios A (local vLLM) and B (cloud OpenAI/DeepSeek).
+Network access is lazy; tests inject an ``httpx.Client`` built on a mock
+transport so no real endpoint is contacted.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from packages.agent.llm.base import LLMCallMetadata, extract_json, parse_into_schema
+
+_JSON_SYSTEM_PROMPT = (
+    "You are an SRE diagnosis assistant. Respond with a single valid JSON object "
+    "or array only — no prose, no Markdown fences."
+)
+
+
+class OpenAICompatibleAdapter:
+    """Adapter for any OpenAI-compatible chat completions endpoint."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        api_key: str | None = None,
+        provider_name: str = "vllm",
+        timeout_seconds: float = 30.0,
+        max_tokens: int = 512,
+        temperature: float = 0.1,
+        reasoning_enabled: bool = False,
+        reasoning_effort: str = "medium",
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.provider = provider_name
+        self.timeout_seconds = timeout_seconds
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.reasoning_enabled = reasoning_enabled
+        self.reasoning_effort = reasoning_effort
+        self._client = client
+        self.last_metadata: LLMCallMetadata = {}
+
+    def invoke(
+        self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
+    ) -> str:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+        }
+        if thinking or self.reasoning_enabled:
+            # OpenAI/DeepSeek/vLLM expose reasoning depth via reasoning_effort;
+            # unknown servers ignore the extra field.
+            payload["reasoning_effort"] = self.reasoning_effort
+        data = self._post("/chat/completions", payload)
+        choice = (data.get("choices") or [{}])[0]
+        content = str(choice.get("message", {}).get("content", ""))
+        self._record(data, choice)
+        return content
+
+    def generate_json(
+        self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
+    ) -> Any:
+        messages = [
+            {"role": "system", "content": _JSON_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        raw = self.invoke(messages, thinking=thinking)
+        return parse_into_schema(extract_json(raw), output_schema)
+
+    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        if self._client is not None:
+            response = self._client.post(
+                path, json=payload, headers=headers, timeout=self.timeout_seconds
+            )
+        else:
+            with httpx.Client(base_url=self.base_url, timeout=self.timeout_seconds) as client:
+                response = client.post(path, json=payload, headers=headers)
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+    def _record(self, data: dict[str, Any], choice: dict[str, Any]) -> None:
+        usage = data.get("usage") or {}
+        meta: LLMCallMetadata = {
+            "provider": self.provider,
+            "model": str(data.get("model", self.model)),
+            "finish_reason": str(choice.get("finish_reason", "")),
+        }
+        if usage:
+            meta["usage"] = {k: int(v) for k, v in usage.items() if isinstance(v, int | float)}
+        reasoning = choice.get("message", {}).get("reasoning_content")
+        if reasoning:
+            meta["reasoning_summary"] = str(reasoning)[:500]
+        self.last_metadata = meta

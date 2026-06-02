@@ -8,10 +8,10 @@ from sqlalchemy.orm import Session
 
 from apps.api.schemas.common import AgentRunStatus, IncidentStatus
 from apps.worker.celery_app import celery_app
-from packages.agent.fake_llm import FakeLLM
+from packages.agent.llm import build_llm
 from packages.agent.runner import AgentRunner
 from packages.agent.schemas import AgentDeps
-from packages.common.errors import NotFoundError
+from packages.common.errors import DependencyUnavailableError, NotFoundError
 from packages.common.ids import new_id
 from packages.common.settings import get_settings
 from packages.db.models import AgentRunNode
@@ -66,15 +66,22 @@ def run_incident_diagnosis_logic(
     incident = incidents.get_by_public_id(incident_id)
     if incident is None:
         raise NotFoundError("incident", incident_id)
-    run = runs.get_by_public_id(agent_run_id)
+    # Lock the run row so a redelivered task cannot claim it concurrently.
+    run = runs.get_for_update(agent_run_id)
     if run is None:
         raise NotFoundError("agent_run", agent_run_id)
     if run.status in TERMINAL_RUN_STATUSES:
         return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
+    # Already in flight (RUNNING) or paused for a human (WAITING_APPROVAL):
+    # a duplicate delivery must not restart the graph or re-create approvals.
+    if run.status in (AgentRunStatus.RUNNING.value, AgentRunStatus.WAITING_APPROVAL.value):
+        return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
 
+    # Claim the run and commit immediately to release the row lock; a competing
+    # worker then observes RUNNING above and short-circuits.
     runs.mark_running(run)
     incident.status = IncidentStatus.DIAGNOSING.value
-    db.flush()
+    db.commit()
 
     checkpointer: Any | None = None
 
@@ -130,20 +137,44 @@ def run_incident_diagnosis_logic(
 
 
 def _build_checkpointer(settings: Any) -> Any:
-    """Create a PostgresSaver if a real database URL is configured."""
+    """Create a PostgresSaver when a real database is configured.
+
+    Returns ``None`` only when checkpointing is *intentionally* disabled
+    (sqlite / in-memory / dev), where auto-approval is acceptable. For a
+    configured real database, a build failure RAISES instead of returning
+    ``None``: without a checkpointer the graph cannot interrupt for approval and
+    would silently auto-approve every L2/L3 action. Failing closed here turns a
+    checkpointer outage into a failed run rather than a bypassed approval gate.
+    """
     db_url = settings.database_url
     if not db_url or "sqlite" in db_url or "memory" in db_url:
         return None
+
     try:
         from langgraph.checkpoint.postgres import PostgresSaver
 
         saver_context = PostgresSaver.from_conn_string(db_url)
         saver = saver_context.__enter__()
+    except Exception as exc:
+        raise DependencyUnavailableError(
+            "checkpointer",
+            "failed to initialize the approval checkpointer; refusing to run "
+            "without the human-approval gate",
+        ) from exc
+
+    try:
         saver.setup()
-        saver._codex_context_manager = saver_context  # type: ignore[attr-defined]
-        return saver
-    except Exception:
-        return None
+    except Exception as exc:
+        # Release the connection opened by __enter__ before failing closed.
+        saver_context.__exit__(type(exc), exc, exc.__traceback__)
+        raise DependencyUnavailableError(
+            "checkpointer",
+            "failed to initialize the approval checkpointer; refusing to run "
+            "without the human-approval gate",
+        ) from exc
+
+    saver._codex_context_manager = saver_context  # type: ignore[attr-defined]
+    return saver
 
 
 def _close_checkpointer(checkpointer: Any | None) -> None:
@@ -175,7 +206,7 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str) -> AgentDeps:
 
     memory_store = MemoryStore(db)
     context_builder = ContextBuilder()
-    llm = FakeLLM()
+    llm = build_llm(settings)
     tool_calls_repo = ToolCallRepository(db)
 
     def node_tracer(**kwargs: Any) -> None:
@@ -268,11 +299,17 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
     runs = AgentRunRepository(db)
     incidents = IncidentRepository(db)
 
-    run = runs.get_by_public_id(agent_run_id)
+    # Lock the run row so a redelivered resume cannot resume concurrently.
+    run = runs.get_for_update(agent_run_id)
     if run is None:
         raise NotFoundError("agent_run", agent_run_id)
     if run.status != AgentRunStatus.WAITING_APPROVAL.value:
         return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
+
+    # Claim the run (WAITING_APPROVAL -> RUNNING) and commit to release the lock;
+    # a competing resume then sees RUNNING and short-circuits as idempotent.
+    runs.mark_running(run)
+    db.commit()
 
     checkpointer: Any | None = None
 

@@ -1,10 +1,41 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 from apps.api.schemas.alerts import AlertCreateRequest
+from packages.db.models import Incident
 from packages.db.repositories.agent_runs import AgentRunRepository
-from packages.db.repositories.incidents import IncidentRepository
+from packages.db.repositories.incidents import TERMINAL_INCIDENT_STATUSES, IncidentRepository
+
+
+def _partial_index_terminal_statuses() -> set[str]:
+    """Extract the status literals from the open-fingerprint partial index."""
+    index = next(
+        i for i in Incident.__table__.indexes if i.name == "uq_incidents_open_fingerprint"
+    )
+    where_sql = str(index.dialect_options["postgresql"]["where"])
+    return set(re.findall(r"'([^']+)'", where_sql))
+
+
+def test_terminal_statuses_match_partial_index_where_clause() -> None:
+    """Dedup tuple and the DB partial index must agree on what "open" means.
+
+    ``get_open_by_fingerprint`` excludes ``TERMINAL_INCIDENT_STATUSES`` while the
+    unique partial index enforces one-open-incident-per-fingerprint via its own
+    ``status NOT IN (...)`` clause. If these drift, the app and the DB disagree:
+    either duplicate open incidents slip through or dedup silently over-matches.
+    Keep both definitions, plus the sqlite/postgres clauses, in lockstep.
+    """
+    app_terminal = set(TERMINAL_INCIDENT_STATUSES)
+    assert app_terminal == _partial_index_terminal_statuses()
+
+    index = next(
+        i for i in Incident.__table__.indexes if i.name == "uq_incidents_open_fingerprint"
+    )
+    sqlite_where = str(index.dialect_options["sqlite"]["where"])
+    postgres_where = str(index.dialect_options["postgresql"]["where"])
+    assert sqlite_where == postgres_where
 
 
 def test_incident_repository_filters_open_fingerprints(db_session) -> None:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from packages.agent.fake_llm import FakeLLM
 from packages.agent.graph import build_graph
+from packages.agent.llm import FakeLLMAdapter
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.settings import Settings
@@ -49,7 +49,7 @@ def test_graph_runs_end_to_end(db_session) -> None:
         runbook_search_tool=_fake_tool("runbook_search"),
         memory_store=MemoryStore(db_session),
         context_builder=ContextBuilder(),
-        llm=FakeLLM(),
+        llm=FakeLLMAdapter(),
         node_tracer=lambda **kw: None,
         tool_call_recorder=lambda **kw: None,
     )
@@ -108,7 +108,7 @@ def test_graph_handles_all_alert_types(db_session) -> None:
         runbook_search_tool=_fake_tool("runbook_search"),
         memory_store=MemoryStore(db_session),
         context_builder=ContextBuilder(),
-        llm=FakeLLM(),
+        llm=FakeLLMAdapter(),
         node_tracer=lambda **kw: None,
         tool_call_recorder=lambda **kw: None,
     )

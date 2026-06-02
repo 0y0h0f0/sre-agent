@@ -95,9 +95,15 @@ def _route_after_guardrail(state: IncidentState) -> str:
 
 def _route_after_approval(state: IncidentState) -> str:
     """Route based on human decision after interrupt."""
+    from packages.agent.nodes.human_approval import MAX_REPLAN_CYCLES
+
     phase = state.get("phase", "")
     if phase == "approval_approved":
         return "execute"
     if phase == "approval_rejected":
+        # Bound the reject -> replan cycle; give up to report after the cap so
+        # repeated rejections cannot loop until the graph recursion limit.
+        if int(state.get("_replan_count", 0)) >= MAX_REPLAN_CYCLES:
+            return "report"
         return "replan"
     return "report"

@@ -158,6 +158,147 @@ class TestHumanApprovalNode:
         assert len(interrupted[0]["approval_ids"]) == 1
 
 
+class TestHumanApprovalResume:
+    """Resume path must honor the actual per-approval DB decisions.
+
+    Regression coverage for two bugs:
+      1. A single approval must NOT auto-approve the whole batch.
+      2. A rejection must clear approval_decision (no infinite replan loop).
+    """
+
+    def _seed(self, db: Session, *, statuses: list[str]):
+        from packages.common.ids import new_id
+        from packages.common.time import utc_now
+        from packages.db.models import Action, AgentRun, Approval, Incident
+
+        inc_id = new_id("inc_")
+        run_id = new_id("run_")
+        db.add(
+            Incident(
+                incident_id=inc_id,
+                fingerprint=new_id("fp_"),
+                source="mock",
+                service="checkout",
+                severity="P1",
+                alert_name="HighErrorRate",
+                status="diagnosing",
+                starts_at=utc_now(),
+                labels={},
+                annotations={},
+            )
+        )
+        db.add(AgentRun(agent_run_id=run_id, incident_id=inc_id, status="waiting_approval"))
+        db.flush()
+
+        actions: list[dict] = []
+        approval_ids: list[str] = []
+        for status in statuses:
+            action_id = new_id("act_")
+            db.add(
+                Action(
+                    action_id=action_id,
+                    incident_id=inc_id,
+                    agent_run_id=run_id,
+                    type="restart_pod",
+                    risk_level="L2",
+                    status="waiting_approval",
+                    target="checkout",
+                    params={},
+                    reason="r",
+                )
+            )
+            apv_id = new_id("apv_")
+            db.add(
+                Approval(
+                    approval_id=apv_id,
+                    action_id=action_id,
+                    incident_id=inc_id,
+                    agent_run_id=run_id,
+                    status=status,
+                    requested_at=utc_now(),
+                )
+            )
+            actions.append(
+                {
+                    "type": "restart_pod",
+                    "target": "checkout",
+                    "params": {},
+                    "requires_approval": True,
+                    "allowed": True,
+                    "risk_level": "L2",
+                    "action_id": action_id,
+                }
+            )
+            approval_ids.append(apv_id)
+        db.flush()
+        return inc_id, run_id, actions, approval_ids
+
+    def test_single_approval_does_not_approve_whole_batch(self, db_session: Session) -> None:
+        inc_id, run_id, actions, approval_ids = self._seed(
+            db_session, statuses=["approved", "waiting"]
+        )
+        deps = _make_deps(db_session)
+        state = _base_state(
+            incident_id=inc_id,
+            agent_run_id=run_id,
+            recommended_actions=actions,
+            approval_status={"status": "waiting", "approval_ids": approval_ids},
+            approval_decision="approved",
+        )
+
+        result = human_approval(state, deps)
+
+        assert result["phase"] == "approval_approved"
+        # The approved action is executable...
+        assert result["recommended_actions"][0]["requires_approval"] is False
+        # ...but the still-waiting one must NOT be silently approved.
+        assert result["recommended_actions"][1]["requires_approval"] is True
+        # execute_action only runs allowed + not-requires-approval actions.
+        exec_result = execute_action(result, deps)
+        assert len(exec_result["execution_results"]) == 1
+
+    def test_rejection_clears_decision_and_counts_replan(self, db_session: Session) -> None:
+        inc_id, run_id, actions, approval_ids = self._seed(
+            db_session, statuses=["rejected", "rejected"]
+        )
+        deps = _make_deps(db_session)
+        state = _base_state(
+            incident_id=inc_id,
+            agent_run_id=run_id,
+            recommended_actions=actions,
+            approval_status={"status": "waiting", "approval_ids": approval_ids},
+            approval_decision="rejected",
+            _replan_count=0,
+        )
+
+        result = human_approval(state, deps)
+
+        assert result["phase"] == "approval_rejected"
+        # Decision cleared so the replanned batch gets a fresh approval round
+        # instead of re-reading a stale "rejected" and looping forever.
+        assert result["approval_decision"] == ""
+        assert result["_replan_count"] == 1
+        for action in result["recommended_actions"]:
+            assert action["allowed"] is False
+
+
+class TestRouteAfterApproval:
+    def test_replan_bounded_by_cap(self) -> None:
+        from packages.agent.graph import _route_after_approval
+        from packages.agent.nodes.human_approval import MAX_REPLAN_CYCLES
+
+        below = _base_state(phase="approval_rejected", _replan_count=MAX_REPLAN_CYCLES - 1)
+        assert _route_after_approval(below) == "replan"
+
+        at_cap = _base_state(phase="approval_rejected", _replan_count=MAX_REPLAN_CYCLES)
+        assert _route_after_approval(at_cap) == "report"
+
+    def test_approved_routes_to_execute(self) -> None:
+        from packages.agent.graph import _route_after_approval
+
+        assert _route_after_approval(_base_state(phase="approval_approved")) == "execute"
+
+
 class TestExecuteActionNode:
     def test_executes_l0_l1_actions(self, db_session: Session) -> None:
         deps = _make_deps(db_session)

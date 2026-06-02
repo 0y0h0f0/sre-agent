@@ -266,6 +266,7 @@ def resume_incident_after_approval(self: Any, agent_run_id: str, decision: str) 
 
 def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dict[str, Any]:
     runs = AgentRunRepository(db)
+    incidents = IncidentRepository(db)
 
     run = runs.get_by_public_id(agent_run_id)
     if run is None:
@@ -289,8 +290,28 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
             db.commit()
             raise TransientError(error_msg)
 
+        # The graph may pause again (e.g. a rejection triggered a fresh
+        # plan that needs a new approval round). Keep the run waiting.
+        if result["status"] == "waiting_approval":
+            _handle_waiting_approval(db, agent_run_id, result["state"])
+            db.commit()
+            return {
+                "agent_run_id": agent_run_id,
+                "status": AgentRunStatus.WAITING_APPROVAL.value,
+                "decision": decision,
+            }
+
         state_dict = _sanitize_state(result.get("state", {}))
         runs.mark_succeeded(run, state_dict)
+        # Finalize the incident: mitigated only if actions actually executed,
+        # otherwise resolved. Without this the incident stayed in DIAGNOSING
+        # forever and kept deduplicating future alerts.
+        incident = incidents.get_by_public_id(run.incident_id)
+        if incident is not None:
+            if result.get("state", {}).get("execution_results"):
+                incident.status = IncidentStatus.MITIGATED.value
+            else:
+                incident.status = IncidentStatus.RESOLVED.value
         db.commit()
         return {
             "agent_run_id": agent_run_id,

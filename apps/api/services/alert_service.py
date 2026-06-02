@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.alerts import AlertCreateRequest, AlertCreateResponse
+from apps.api.schemas.common import IncidentStatus
 from packages.common.errors import DependencyUnavailableError
 from packages.common.ids import new_id
 from packages.common.settings import Settings
@@ -50,6 +51,10 @@ class AlertService:
             celery_task_id = self.enqueue_diagnosis(incident_id, agent_run_id)
         except Exception as exc:  # pragma: no cover - specific clients vary
             self.agent_runs.mark_enqueue_failed(agent_run_id, str(exc))
+            # Move the incident to a terminal state. Leaving it OPEN would make
+            # every future alert with the same fingerprint deduplicate onto this
+            # incident that will never be diagnosed (no task was ever queued).
+            incident.status = IncidentStatus.FAILED.value
             self.db.commit()
             raise DependencyUnavailableError("celery", "failed to enqueue diagnosis task") from exc
 

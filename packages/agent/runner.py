@@ -53,6 +53,7 @@ class AgentRunner:
             "_needs_approval": False,
             "_all_l4": False,
             "approval_decision": "",
+            "_replan_count": 0,
             "_interrupts_enabled": self.checkpointer is not None,
         }
 

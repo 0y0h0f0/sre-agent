@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from packages.agent.schemas import GuardrailDecision
@@ -27,6 +28,17 @@ _RISK_TABLE: dict[str, tuple[str, bool, str]] = {
 }
 
 _FORBIDDEN = {"delete", "drop", "truncate", "modify_database", "flush", "all"}
+# Match forbidden keywords as whole tokens. A naive substring check wrongly
+# flags legitimate targets/params: "all" matches "wall-service", "install",
+# "fallback"; "drop" matches "dropdown"; "delete" matches "deleted".
+#
+# Tokens are delimited by any non-alphanumeric char (space, "_", "-", quotes,
+# braces). Using alphanumeric lookarounds rather than \b means underscore and
+# hyphen act as separators — so "delete_all" still matches "delete" — while
+# multi-word keywords like "modify_database" match only when bounded as a unit.
+_FORBIDDEN_PATTERN = re.compile(
+    r"(?<![a-z0-9])(" + "|".join(re.escape(kw) for kw in _FORBIDDEN) + r")(?![a-z0-9])"
+)
 # Note: "prod" intentionally excluded — it would block legitimate
 # production actions (e.g. restart_pod targeting "checkout-prod").
 # Production safety is enforced by L2/L3 approval requirements.
@@ -39,10 +51,13 @@ def classify_risk_level(action: dict[str, Any]) -> GuardrailDecision:
 
     target = str(action.get("target", "")).lower()
     params_str = str(action.get("params", {})).lower()
-    for kw in _FORBIDDEN:
-        if kw in f"{action_type} {target} {params_str}":
-            risk_level, needs_approval, reason = "L4", False, f"forbidden keyword '{kw}' — blocked"
-            break
+    match = _FORBIDDEN_PATTERN.search(f"{action_type} {target} {params_str}")
+    if match:
+        risk_level, needs_approval, reason = (
+            "L4",
+            False,
+            f"forbidden keyword '{match.group(1)}' — blocked",
+        )
 
     risk_hint = (action.get("risk_hint") or "").upper().strip()
     if risk_hint in ("L3", "L4") and _level(risk_hint) > _level(risk_level):

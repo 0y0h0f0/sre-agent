@@ -34,5 +34,6 @@ class IncidentState(TypedDict, total=False):
     _needs_approval: bool
     _all_l4: bool
     approval_decision: str
+    _replan_count: int
     _built_messages: list[dict[str, Any]]
     _interrupts_enabled: bool

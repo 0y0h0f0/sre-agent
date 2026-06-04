@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.api.schemas.alerts import AlertCreateRequest
-from packages.agent.llm import FakeLLMAdapter
+from packages.agent.llm import build_llm
 from packages.agent.runner import AgentRunner
 from packages.agent.schemas import AgentDeps
 from packages.common.ids import new_id
@@ -503,7 +504,7 @@ def _build_deps(
         ),
         memory_store=MemoryStore(session),
         context_builder=ContextBuilder(),
-        llm=FakeLLMAdapter(),
+        llm=build_llm(settings),
         node_tracer=_node_tracer(session, agent_run_id),
         tool_call_recorder=_tool_call_recorder(session, agent_run_id),
     )
@@ -826,16 +827,44 @@ def _git_commit() -> str:
 
 
 def _eval_settings() -> Settings:
-    return Settings(
-        database_url="sqlite+pysqlite:///:memory:",
-        redis_url="memory://redis",
-        celery_broker_url="memory://broker",
-        celery_result_backend="memory://backend",
-        llm_provider="fake",
-        llm_model="fake-diagnosis-model",
-        trace_fixture_path="demo/faults/traces.json",
-        git_changes_fixture_path="demo/faults/git_changes.json",
-    )
+    """Build eval settings.
+
+    Defaults to the deterministic ``fake`` provider so the standard test suite
+    stays offline and reproducible. A real-provider smoke is opt-in via env:
+    set ``LLM_PROVIDER`` (e.g. ``deepseek``) plus ``LLM_API_KEY`` / ``LLM_MODEL``
+    / ``LLM_BASE_URL`` and any reasoning flags. When unset, behavior is unchanged.
+    """
+    provider = os.getenv("LLM_PROVIDER", "fake").strip().lower()
+    overrides: dict[str, Any] = {
+        "database_url": "sqlite+pysqlite:///:memory:",
+        "redis_url": "memory://redis",
+        "celery_broker_url": "memory://broker",
+        "celery_result_backend": "memory://backend",
+        "llm_provider": provider,
+        "llm_model": os.getenv("LLM_MODEL", "fake-diagnosis-model"),
+        "trace_fixture_path": "demo/faults/traces.json",
+        "git_changes_fixture_path": "demo/faults/git_changes.json",
+    }
+    if provider != "fake":
+        # Honor real-provider config from the environment. llm_model has no useful
+        # fake default for a live run, so require it explicitly.
+        if not os.getenv("LLM_MODEL"):
+            raise ValueError("LLM_MODEL must be set when LLM_PROVIDER is not 'fake'")
+        if base_url := os.getenv("LLM_BASE_URL"):
+            overrides["llm_base_url"] = base_url
+        if api_key := os.getenv("LLM_API_KEY"):
+            overrides["llm_api_key"] = api_key
+        if (reasoning := os.getenv("LLM_REASONING_ENABLED")) is not None:
+            overrides["llm_reasoning_enabled"] = reasoning.strip().lower() in {"1", "true", "yes"}
+        if effort := os.getenv("LLM_REASONING_EFFORT"):
+            overrides["llm_reasoning_effort"] = effort
+        if nodes := os.getenv("LLM_REASONING_NODES"):
+            overrides["llm_reasoning_nodes"] = nodes
+        if max_tokens := os.getenv("LLM_MAX_TOKENS"):
+            overrides["llm_max_tokens"] = int(max_tokens)
+        if timeout := os.getenv("LLM_TIMEOUT_SECONDS"):
+            overrides["llm_timeout_seconds"] = float(timeout)
+    return Settings(**overrides)
 
 
 def asdict_case(case: EvalCaseResult) -> dict[str, Any]:

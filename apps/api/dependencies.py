@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -8,6 +9,7 @@ from packages.common.settings import Settings, get_settings
 from packages.db.session import get_session
 
 TaskEnqueue = Callable[[str, str], str]
+NotificationTaskEnqueue = Callable[[str, dict[str, Any]], str]
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -31,3 +33,9 @@ def get_resume_task_enqueue() -> ResumeTaskEnqueue:
     from apps.worker.tasks import enqueue_resume_task
 
     return enqueue_resume_task
+
+
+def get_notification_task_enqueue() -> NotificationTaskEnqueue:
+    from apps.worker.tasks import enqueue_email_notification_task
+
+    return enqueue_email_notification_task

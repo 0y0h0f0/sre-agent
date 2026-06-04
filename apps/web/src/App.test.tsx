@@ -200,6 +200,22 @@ test('renders agent run timeline, tool calls, and context summary', async () => 
   expect(screen.getByText('123')).toBeInTheDocument();
 });
 
+
+test('opens a direct linked approval route in the review dialog', async () => {
+  mockFetch({
+    'GET /api/approvals': () => jsonResponse({ items: [approval], total: 1, page: 1, page_size: 50 }),
+    'GET /api/approvals/apv_1': () => jsonResponse(approval),
+    'GET /api/actions/act_1': () => jsonResponse(actionDetail)
+  });
+
+  renderApp('/approvals/apv_1');
+
+  const dialog = await screen.findByRole('dialog', { name: 'Review action' });
+  expect(within(dialog).getByText('apv_1')).toBeInTheDocument();
+  expect(await within(dialog).findByText('checkout-api')).toBeInTheDocument();
+  expect(within(dialog).getByLabelText('Confirm action type')).toBeInTheDocument();
+});
+
 test('approves an L3 approval with secondary confirmation', async () => {
   let approvePayload: Record<string, unknown> | null = null;
   mockFetch({

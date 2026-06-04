@@ -634,6 +634,11 @@ pre {
   padding: 16px;
 }
 
+.approvalItem.selected {
+  background: #eef6ff;
+  box-shadow: inset 3px 0 0 #1769aa;
+}
+
 .approvalItem p {
   margin: 6px 0 8px;
 }

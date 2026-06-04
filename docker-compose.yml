@@ -110,6 +110,16 @@ services:
       GIT_CHANGES_FIXTURE_PATH: demo/faults/git_changes.json
       LLM_PROVIDER: fake
       EMBEDDING_PROVIDER: fake
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:-auto}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-30}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-sre-agent@example.local}
+      SRE_EMAIL_LIST: ${SRE_EMAIL_LIST:-}
+      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:5173}
+      NOTIFICATION_TIMEZONE: ${NOTIFICATION_TIMEZONE:-UTC}
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,6 +149,16 @@ services:
       GIT_CHANGES_FIXTURE_PATH: demo/faults/git_changes.json
       LLM_PROVIDER: fake
       EMBEDDING_PROVIDER: fake
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:-auto}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-30}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-sre-agent@example.local}
+      SRE_EMAIL_LIST: ${SRE_EMAIL_LIST:-}
+      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:5173}
+      NOTIFICATION_TIMEZONE: ${NOTIFICATION_TIMEZONE:-UTC}
     depends_on:
       api:
         condition: service_started
@@ -150,6 +170,41 @@ services:
         condition: service_started
       loki:
         condition: service_started
+    volumes:
+      - .:/app
+
+  beat:
+    build: .
+    command: celery -A apps.worker.tasks:celery_app beat --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+psycopg://sre:sre@postgres:5432/sre
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+      OTEL_COLLECTOR_URL: http://otel-collector:4318
+      TRACE_FIXTURE_PATH: demo/faults/traces.json
+      GIT_CHANGES_FIXTURE_PATH: demo/faults/git_changes.json
+      LLM_PROVIDER: fake
+      EMBEDDING_PROVIDER: fake
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:-auto}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-30}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-sre-agent@example.local}
+      SRE_EMAIL_LIST: ${SRE_EMAIL_LIST:-}
+      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:5173}
+      NOTIFICATION_TIMEZONE: ${NOTIFICATION_TIMEZONE:-UTC}
+    depends_on:
+      api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - .:/app
 

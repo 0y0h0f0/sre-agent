@@ -1,0 +1,11 @@
+<!doctype html>
+<html><body>
+  <h1>Incident report: {{ incident.incident_id }}</h1>
+  <p><strong>Service:</strong> {{ incident.service }} | <strong>Version:</strong> v{{ report.version }}</p>
+  <h2>Root cause</h2>
+  <p>{{ report.root_cause }}</p>
+  <h2>Impact</h2>
+  <p>{{ report.impact }}</p>
+  <p><a href="{{ report_url }}">Open report</a> | <a href="{{ incident_url }}">Open incident</a></p>
+  <pre>{{ report.body_markdown }}</pre>
+</body></html>

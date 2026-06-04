@@ -3,7 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from apps.api.dependencies import get_db
+from apps.api.dependencies import (
+    NotificationTaskEnqueue,
+    get_db,
+    get_notification_task_enqueue,
+)
 from apps.api.schemas.reports import IncidentReportResponse
 from apps.api.services.report_service import ReportService
 
@@ -26,5 +30,6 @@ def get_incident_report(
 def regenerate_incident_report(
     incident_id: str,
     db: Session = Depends(get_db),
+    enqueue_notification: NotificationTaskEnqueue = Depends(get_notification_task_enqueue),
 ) -> IncidentReportResponse:
-    return ReportService(db).regenerate(incident_id)
+    return ReportService(db, enqueue_notification).regenerate(incident_id)

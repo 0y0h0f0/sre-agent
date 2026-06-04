@@ -1,0 +1,10 @@
+<!doctype html>
+<html><body>
+  <h1>{{ heading }}</h1>
+  <p><strong>Service:</strong> {{ incident.service }} | <strong>Risk:</strong> {{ action.risk_level }}</p>
+  <p><strong>Action:</strong> {{ action.type }} on {{ action.target }}</p>
+  <p>{{ action.reason }}</p>
+  {% if action.rollback_plan %}<p><strong>Rollback:</strong> {{ action.rollback_plan }}</p>{% endif %}
+  {% if action.risk_level == 'L3' %}<p>This L3 action requires risk_ack=true plus exact action type and target confirmation.</p>{% endif %}
+  <p><a href="{{ approval_url }}">Review approval</a> | <a href="{{ incident_url }}">Open incident</a></p>
+</body></html>

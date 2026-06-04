@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -15,13 +16,21 @@ from packages.db.repositories.agent_runs import AgentRunRepository
 from packages.db.repositories.incidents import IncidentRepository
 
 TaskEnqueue = Callable[[str, str], str]
+NotificationTaskEnqueue = Callable[[str, dict[str, Any]], str]
 
 
 class AlertService:
-    def __init__(self, db: Session, settings: Settings, enqueue_diagnosis: TaskEnqueue) -> None:
+    def __init__(
+        self,
+        db: Session,
+        settings: Settings,
+        enqueue_diagnosis: TaskEnqueue,
+        enqueue_notification: NotificationTaskEnqueue | None = None,
+    ) -> None:
         self.db = db
         self.settings = settings
         self.enqueue_diagnosis = enqueue_diagnosis
+        self.enqueue_notification = enqueue_notification
         self.incidents = IncidentRepository(db)
         self.agent_runs = AgentRunRepository(db)
 
@@ -60,6 +69,7 @@ class AlertService:
 
         self.agent_runs.set_task_id(agent_run_id, celery_task_id)
         self.db.commit()
+        self._enqueue_notification("new_incident", {"incident_id": incident_id})
         return AlertCreateResponse(
             incident_id=incident_id,
             agent_run_id=agent_run_id,
@@ -67,6 +77,15 @@ class AlertService:
             status="queued",
             deduplicated=False,
         )
+
+    def _enqueue_notification(self, notification_type: str, payload: dict[str, Any]) -> None:
+        if self.enqueue_notification is None:
+            return
+        try:
+            self.enqueue_notification(notification_type, payload)
+        except Exception:
+            # Notification enqueue failures must not block alert ingestion.
+            return
 
     def _deduplicated_response(self, incident: Incident) -> AlertCreateResponse:
         latest_run = self.agent_runs.get_latest_for_incident(incident.incident_id)

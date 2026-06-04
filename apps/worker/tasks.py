@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.common import AgentRunStatus, IncidentStatus
+from apps.api.services.email_service import EmailNotificationService
 from apps.worker.celery_app import celery_app
 from packages.agent.llm import build_llm
 from packages.agent.runner import AgentRunner
@@ -16,6 +17,7 @@ from packages.common.ids import new_id
 from packages.common.settings import get_settings
 from packages.db.models import AgentRunNode
 from packages.db.repositories.agent_runs import TERMINAL_RUN_STATUSES, AgentRunRepository
+from packages.db.repositories.email_logs import EmailLogRepository
 from packages.db.repositories.incidents import IncidentRepository
 from packages.db.repositories.runbooks import RunbookChunkRepository
 from packages.db.repositories.tool_calls import ToolCallRepository
@@ -52,6 +54,22 @@ def enqueue_diagnosis_task(incident_id: str, agent_run_id: str) -> str:
 def enqueue_resume_task(agent_run_id: str, decision: str) -> str:
     """Enqueue a task to resume the graph after approval/rejection."""
     async_result = resume_incident_after_approval.delay(agent_run_id, decision)
+    return str(async_result.id)
+
+
+def enqueue_email_notification_task(notification_type: str, payload: dict[str, Any]) -> str:
+    with SessionLocal() as db:
+        queued = EmailNotificationService(db, get_settings()).queue_event(
+            notification_type, payload
+        )
+        email_log_id = str(queued["email_log_id"])
+
+    try:
+        async_result = send_email_notification.delay(email_log_id, notification_type, payload)
+    except Exception as exc:
+        with SessionLocal() as db:
+            EmailNotificationService(db, get_settings()).mark_enqueue_failed(email_log_id, str(exc))
+        raise
     return str(async_result.id)
 
 
@@ -106,6 +124,8 @@ def run_incident_diagnosis_logic(
             _sync_incident_diagnosis(incident, result.get("state", {}))
             _handle_waiting_approval(db, agent_run_id, result["state"])
             db.commit()
+            _notify_diagnosis_complete(incident_id, agent_run_id, db=db)
+            _notify_approval_requests(result["state"], db=db)
             return {
                 "incident_id": incident_id,
                 "agent_run_id": agent_run_id,
@@ -127,6 +147,8 @@ def run_incident_diagnosis_logic(
         else:
             incident.status = IncidentStatus.RESOLVED.value
         db.commit()
+        _notify_diagnosis_complete(incident_id, agent_run_id, db=db)
+        _notify_report_generated(state_dict, db=db)
         return {
             "incident_id": incident_id,
             "agent_run_id": agent_run_id,
@@ -289,9 +311,12 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str) -> AgentDeps:
 
 def _sync_incident_diagnosis(incident: Any, state: dict[str, Any]) -> None:
     root_cause = state.get("root_cause")
-    if not isinstance(root_cause, dict):
-        return
-    summary = root_cause.get("summary")
+    summary = root_cause.get("summary") if isinstance(root_cause, dict) else None
+    if not summary:
+        report = state.get("incident_report")
+        summary = report.get("root_cause") if isinstance(report, dict) else None
+    if not summary:
+        summary = state.get("diagnosis_rationale")
     if summary:
         incident.root_cause_summary = str(summary)
 
@@ -371,6 +396,8 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
                 _sync_incident_diagnosis(incident, result.get("state", {}))
             _handle_waiting_approval(db, agent_run_id, result["state"])
             db.commit()
+            _notify_diagnosis_complete(run.incident_id, agent_run_id, db=db)
+            _notify_approval_requests(result["state"], db=db)
             return {
                 "agent_run_id": agent_run_id,
                 "status": AgentRunStatus.WAITING_APPROVAL.value,
@@ -390,6 +417,8 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
             else:
                 incident.status = IncidentStatus.RESOLVED.value
         db.commit()
+        _notify_diagnosis_complete(run.incident_id, agent_run_id, db=db)
+        _notify_report_generated(state_dict, db=db)
         return {
             "agent_run_id": agent_run_id,
             "status": AgentRunStatus.SUCCEEDED.value,
@@ -405,3 +434,101 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
         raise
     finally:
         _close_checkpointer(checkpointer)
+
+
+def _notify_diagnosis_complete(
+    incident_id: str, agent_run_id: str, *, db: Session | None = None
+) -> None:
+    if _email_event_exists(
+        db,
+        notification_type="diagnosis_complete",
+        related_agent_run_id=agent_run_id,
+    ):
+        return
+    _enqueue_notification_event(
+        "diagnosis_complete",
+        {"incident_id": incident_id, "agent_run_id": agent_run_id},
+    )
+
+
+def _notify_approval_requests(state: dict[str, Any], *, db: Session | None = None) -> None:
+    approval_status = state.get("approval_status")
+    if not isinstance(approval_status, dict):
+        return
+    approval_ids = approval_status.get("approval_ids")
+    if not isinstance(approval_ids, list):
+        return
+    for approval_id in approval_ids:
+        approval_id_str = str(approval_id)
+        if _email_event_exists(
+            db,
+            notification_type="approval_request",
+            related_approval_id=approval_id_str,
+        ):
+            continue
+        _enqueue_notification_event("approval_request", {"approval_id": approval_id_str})
+
+
+def _notify_report_generated(state: dict[str, Any], *, db: Session | None = None) -> None:
+    report = state.get("incident_report")
+    if not isinstance(report, dict):
+        return
+    report_id = report.get("report_id")
+    if not report_id:
+        return
+    report_id_str = str(report_id)
+    if _email_event_exists(
+        db, notification_type="incident_report", related_report_id=report_id_str
+    ):
+        return
+    _enqueue_notification_event("incident_report", {"report_id": report_id_str})
+
+
+def _email_event_exists(db: Session | None, **criteria: Any) -> bool:
+    if db is None:
+        return False
+    return EmailLogRepository(db).exists_for_event(**criteria)
+
+
+def _enqueue_notification_event(notification_type: str, payload: dict[str, Any]) -> None:
+    try:
+        enqueue_email_notification_task(notification_type, payload)
+    except Exception:
+        return
+
+
+@celery_app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]
+def send_email_notification(
+    self: Any, email_log_id: str, notification_type: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    attempt = int(getattr(self.request, "retries", 0)) + 1
+    with SessionLocal() as db:
+        result = EmailNotificationService(db, get_settings()).send_queued_event(
+            email_log_id, notification_type, payload, attempt=attempt
+        )
+
+    if result.get("retryable") and int(getattr(self.request, "retries", 0)) < 3:
+        raise self.retry(countdown=5, exc=TransientError(str(result.get("error", "email failed"))))
+    return result
+
+
+@celery_app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]
+def send_daily_incident_summary(
+    self: Any, summary_date: str | None = None, email_log_id: str | None = None
+) -> dict[str, Any]:
+    payload = {"date": summary_date} if summary_date else {}
+    attempt = int(getattr(self.request, "retries", 0)) + 1
+    with SessionLocal() as db:
+        service = EmailNotificationService(db, get_settings())
+        if email_log_id is None:
+            queued = service.queue_event("daily_summary", payload)
+            email_log_id = str(queued["email_log_id"])
+        result = service.send_queued_event(email_log_id, "daily_summary", payload, attempt=attempt)
+
+    if result.get("retryable") and int(getattr(self.request, "retries", 0)) < 3:
+        raise self.retry(
+            args=(summary_date, email_log_id),
+            countdown=5,
+            exc=TransientError(str(result.get("error", "email failed"))),
+        )
+    return result

@@ -11,6 +11,7 @@ coverage.xml
 node_modules/
 apps/web/node_modules/
 apps/web/coverage/
+apps/web/.vite-cache/
 apps/web/playwright-report/
 apps/web/test-results/
 

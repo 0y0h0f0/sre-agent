@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -60,53 +61,40 @@ class ApprovalService:
             page_size=page_size,
         )
         return PaginatedResponse(
-            items=[
-                ApprovalItem(
-                    approval_id=item["approval_id"],
-                    action_id=item["action_id"],
-                    incident_id=item["incident_id"],
-                    agent_run_id=item["agent_run_id"],
-                    service=item["service"],
-                    action_type=item["action_type"],
-                    risk_level=RiskLevel(item["risk_level"]),
-                    approval_status=ApprovalStatus(item["approval_status"]),
-                    action_status=ActionStatus(item["action_status"]),
-                    reason=item["reason"],
-                    rollback_plan=item.get("rollback_plan"),
-                    requested_at=item["requested_at"],
-                    decided_at=item.get("decided_at"),
-                    approver=item.get("approver"),
-                    comment=item.get("comment"),
-                )
-                for item in items
-            ],
+            items=[self._approval_item(item) for item in items],
             total=total,
             page=page,
             page_size=page_size,
         )
 
+    def get_approval(self, approval_id: str) -> ApprovalItem:
+        item = self.approvals.get_display_item(approval_id)
+        if item is None:
+            raise NotFoundError("approval", approval_id)
+        return self._approval_item(item)
+
     def list_for_incident(self, incident_id: str) -> list[ApprovalItem]:
         items, _ = self.approvals.list_with_filters(incident_id=incident_id, page_size=500)
-        return [
-            ApprovalItem(
-                approval_id=item["approval_id"],
-                action_id=item["action_id"],
-                incident_id=item["incident_id"],
-                agent_run_id=item["agent_run_id"],
-                service=item["service"],
-                action_type=item["action_type"],
-                risk_level=RiskLevel(item["risk_level"]),
-                approval_status=ApprovalStatus(item["approval_status"]),
-                action_status=ActionStatus(item["action_status"]),
-                reason=item["reason"],
-                rollback_plan=item.get("rollback_plan"),
-                requested_at=item["requested_at"],
-                decided_at=item.get("decided_at"),
-                approver=item.get("approver"),
-                comment=item.get("comment"),
-            )
-            for item in items
-        ]
+        return [self._approval_item(item) for item in items]
+
+    def _approval_item(self, item: dict[str, Any]) -> ApprovalItem:
+        return ApprovalItem(
+            approval_id=str(item["approval_id"]),
+            action_id=str(item["action_id"]),
+            incident_id=str(item["incident_id"]),
+            agent_run_id=str(item["agent_run_id"]),
+            service=str(item["service"]),
+            action_type=str(item["action_type"]),
+            risk_level=RiskLevel(str(item["risk_level"])),
+            approval_status=ApprovalStatus(str(item["approval_status"])),
+            action_status=ActionStatus(str(item["action_status"])),
+            reason=str(item["reason"]),
+            rollback_plan=item.get("rollback_plan"),
+            requested_at=item["requested_at"],
+            decided_at=item.get("decided_at"),
+            approver=item.get("approver"),
+            comment=item.get("comment"),
+        )
 
     def approve(self, approval_id: str, request: ApproveRequest) -> ApprovalDecisionResponse:
         approval = self._require_approval(approval_id)

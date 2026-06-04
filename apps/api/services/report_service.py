@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -12,10 +13,15 @@ from packages.db.repositories.incidents import IncidentRepository
 from packages.db.repositories.incidents_read import IncidentReadRepository
 from packages.db.repositories.reports import IncidentReportRepository
 
+NotificationTaskEnqueue = Callable[[str, dict[str, Any]], str]
+
 
 class ReportService:
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self, db: Session, enqueue_notification: NotificationTaskEnqueue | None = None
+    ) -> None:
         self.db = db
+        self.enqueue_notification = enqueue_notification
         self.incidents = IncidentRepository(db)
         self.reads = IncidentReadRepository(db)
         self.agent_runs = AgentRunRepository(db)
@@ -74,7 +80,16 @@ class ReportService:
             body_markdown=body_markdown,
         )
         self.db.commit()
+        self._enqueue_notification("incident_report", {"report_id": report.report_id})
         return self._schema(report)
+
+    def _enqueue_notification(self, notification_type: str, payload: dict[str, Any]) -> None:
+        if self.enqueue_notification is None:
+            return
+        try:
+            self.enqueue_notification(notification_type, payload)
+        except Exception:
+            return
 
     def _require_incident(self, incident_id: str) -> Incident:
         incident = self.incidents.get_by_public_id(incident_id)

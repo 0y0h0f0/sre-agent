@@ -1,0 +1,9 @@
+<!doctype html>
+<html><body>
+  <h1>New incident: {{ incident.alert_name }}</h1>
+  <p><strong>Severity:</strong> {{ incident.severity }} | <strong>Service:</strong> {{ incident.service }}</p>
+  <p><strong>Fingerprint:</strong> {{ incident.fingerprint }}</p>
+  <p><strong>Started:</strong> {{ incident.starts_at }}</p>
+  <p><a href="{{ incident_url }}">Open incident</a></p>
+  {% if incident.annotations %}<h2>Annotations</h2><pre>{{ incident.annotations }}</pre>{% endif %}
+</body></html>

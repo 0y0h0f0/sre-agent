@@ -22,6 +22,8 @@ dependencies = [
   "httpx>=0.27",
   "langgraph>=0.2",
   "langgraph-checkpoint-postgres>=2.0",
+  "aiosmtplib>=3.0",
+  "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +41,9 @@ include = ["apps*", "packages*"]
 testpaths = ["tests"]
 addopts = "-ra"
 pythonpath = ["."]
+markers = [
+  "real_email: sends a real email through configured SMTP; skipped unless RUN_REAL_EMAIL_TEST=true",
+]
 
 [tool.ruff]
 line-length = 100

@@ -80,6 +80,19 @@ class ApprovalRepository:
         )
         return int(self.db.scalar(stmt) or 0) > 0
 
+    def get_display_item(self, approval_id: str) -> dict[str, Any] | None:
+        stmt = (
+            select(Approval, Action, Incident.service)
+            .join(Action, Approval.action_id == Action.action_id)
+            .join(Incident, Approval.incident_id == Incident.incident_id)
+            .where(Approval.approval_id == approval_id)
+        )
+        row = self.db.execute(stmt).first()
+        if row is None:
+            return None
+        approval, action, svc = row
+        return self._display_item(approval, action, svc)
+
     def list_with_filters(
         self,
         *,
@@ -124,28 +137,27 @@ class ApprovalRepository:
         )
         rows = self.db.execute(stmt).all()
 
-        items: list[dict[str, Any]] = []
-        for approval, action, svc in rows:
-            items.append(
-                {
-                    "approval_id": approval.approval_id,
-                    "action_id": action.action_id,
-                    "incident_id": approval.incident_id,
-                    "agent_run_id": approval.agent_run_id,
-                    "service": svc,
-                    "action_type": action.type,
-                    "risk_level": action.risk_level,
-                    "approval_status": approval.status,
-                    "action_status": action.status,
-                    "reason": action.reason,
-                    "rollback_plan": action.rollback_plan,
-                    "requested_at": approval.requested_at,
-                    "decided_at": approval.decided_at,
-                    "approver": approval.approver,
-                    "comment": approval.comment,
-                }
-            )
+        items = [self._display_item(approval, action, svc) for approval, action, svc in rows]
         return items, total
+
+    def _display_item(self, approval: Approval, action: Action, service: str) -> dict[str, Any]:
+        return {
+            "approval_id": approval.approval_id,
+            "action_id": action.action_id,
+            "incident_id": approval.incident_id,
+            "agent_run_id": approval.agent_run_id,
+            "service": service,
+            "action_type": action.type,
+            "risk_level": action.risk_level,
+            "approval_status": approval.status,
+            "action_status": action.status,
+            "reason": action.reason,
+            "rollback_plan": action.rollback_plan,
+            "requested_at": approval.requested_at,
+            "decided_at": approval.decided_at,
+            "approver": approval.approver,
+            "comment": approval.comment,
+        }
 
     def get_approved_for_action(self, action_id: str) -> Approval | None:
         """Find an approved approval for the given action."""

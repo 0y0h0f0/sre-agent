@@ -48,6 +48,7 @@ class Incident(Base):
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     labels: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
     annotations: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
     root_cause_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -327,6 +328,35 @@ class IncidentReport(Base):
     )
 
 
+class EmailLog(Base):
+    __tablename__ = "email_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email_log_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    notification_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    recipients: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
+    recipient_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    related_incident_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    related_agent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    related_approval_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    related_report_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RunbookChunk(Base):
     __tablename__ = "runbook_chunks"
 
@@ -431,6 +461,7 @@ class EvalCase(Base):
 
 
 Index("ix_incidents_service_created_at", Incident.service, Incident.created_at.desc())
+Index("ix_email_log_created_at", EmailLog.created_at.desc())
 Index("ix_incidents_status_severity", Incident.status, Incident.severity)
 Index(
     "uq_incidents_open_fingerprint",

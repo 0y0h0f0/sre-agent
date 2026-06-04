@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from apps.api.dependencies import (
     get_app_settings,
     get_db,
+    get_notification_task_enqueue,
     get_resume_task_enqueue,
     get_task_enqueue,
 )
@@ -37,6 +38,15 @@ class FakeResumeEnqueue:
     def __call__(self, agent_run_id: str, decision: str) -> str:
         self.calls.append((agent_run_id, decision))
         return f"resume-task-{len(self.calls)}"
+
+
+class FakeNotificationEnqueue:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def __call__(self, notification_type: str, payload: dict) -> str:
+        self.calls.append((notification_type, payload))
+        return f"email-task-{len(self.calls)}"
 
 
 @pytest.fixture()
@@ -67,6 +77,11 @@ def fake_resume_enqueue() -> FakeResumeEnqueue:
 
 
 @pytest.fixture()
+def fake_notification_enqueue() -> FakeNotificationEnqueue:
+    return FakeNotificationEnqueue()
+
+
+@pytest.fixture()
 def test_settings() -> Settings:
     return Settings(
         database_url="sqlite+pysqlite:///:memory:",
@@ -81,6 +96,7 @@ def client(
     db_session: Session,
     fake_enqueue: FakeEnqueue,
     fake_resume_enqueue: FakeResumeEnqueue,
+    fake_notification_enqueue: FakeNotificationEnqueue,
     test_settings: Settings,
 ) -> Generator[TestClient, None, None]:
     app = create_app()
@@ -91,6 +107,7 @@ def client(
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_task_enqueue] = lambda: fake_enqueue
     app.dependency_overrides[get_resume_task_enqueue] = lambda: fake_resume_enqueue
+    app.dependency_overrides[get_notification_task_enqueue] = lambda: fake_notification_enqueue
     app.dependency_overrides[get_app_settings] = lambda: test_settings
     with TestClient(app) as test_client:
         yield test_client

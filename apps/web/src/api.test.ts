@@ -4,6 +4,7 @@ import {
   ApiError,
   approveApproval,
   getAgentRun,
+  getApproval,
   getIncident,
   getIncidentReport,
   listApprovals,
@@ -84,6 +85,32 @@ test('api client surfaces standard error envelopes', async () => {
     requestId: 'req-404',
     status: 404
   } satisfies Partial<ApiError>);
+});
+
+
+test('getApproval calls the direct approval endpoint', async () => {
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    jsonResponse({
+      approval_id: 'apv_1',
+      action_id: 'act_1',
+      incident_id: 'inc_1',
+      agent_run_id: 'run_1',
+      service: 'checkout-api',
+      action_type: 'rollback_release',
+      risk_level: 'L3',
+      approval_status: 'waiting',
+      action_status: 'waiting_approval',
+      reason: 'rollback needs confirmation',
+      rollback_plan: null,
+      requested_at: '2026-06-01T00:04:00Z',
+      decided_at: null,
+      approver: null,
+      comment: null
+    })
+  );
+
+  await expect(getApproval('apv_1')).resolves.toMatchObject({ approval_id: 'apv_1' });
+  expect(String(fetchMock.mock.calls[0][0])).toBe('/api/approvals/apv_1');
 });
 
 test('approveApproval posts L3 confirmation fields', async () => {

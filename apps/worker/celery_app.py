@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from celery.schedules import crontab
 
 from packages.common.settings import get_settings
 
@@ -22,4 +23,11 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     task_always_eager=settings.celery_task_always_eager,
+    timezone=settings.notification_timezone,
+    beat_schedule={
+        "daily-incident-summary": {
+            "task": "apps.worker.tasks.send_daily_incident_summary",
+            "schedule": crontab(hour=9, minute=0),
+        },
+    },
 )

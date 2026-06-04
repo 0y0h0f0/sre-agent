@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { FormEvent, ReactNode } from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, NavLink, Route, Routes, useParams, useSearchParams } from 'react-router-dom';
 
 import {
@@ -29,6 +29,7 @@ import {
   approveApproval,
   getAction,
   getAgentRun,
+  getApproval,
   getIncident,
   getIncidentReport,
   listApprovals,
@@ -75,6 +76,7 @@ export default function App() {
           <Route path="/incidents/:incidentId" element={<IncidentDetailPage />} />
           <Route path="/agent-runs/:agentRunId" element={<AgentRunPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
+          <Route path="/approvals/:approvalId" element={<ApprovalsPage />} />
           <Route path="/incidents/:incidentId/report" element={<ReportPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
@@ -369,14 +371,27 @@ function AgentRunPage() {
 }
 
 function ApprovalsPage() {
+  const { approvalId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selected, setSelected] = useState<ApprovalItem | null>(null);
   const status = searchParams.get('status') ?? 'waiting';
+  const directApprovalId = approvalId ?? searchParams.get('approval_id') ?? undefined;
   const query = useQuery<PaginatedResponse<ApprovalItem>, ApiError>({
     queryKey: ['approvals', status],
     queryFn: () => listApprovals({ status, page_size: 50 }),
     refetchInterval: status === 'waiting' ? 5000 : false
   });
+  const directQuery = useQuery<ApprovalItem, ApiError>({
+    queryKey: ['approval', directApprovalId],
+    queryFn: () => getApproval(directApprovalId ?? ''),
+    enabled: Boolean(directApprovalId)
+  });
+
+  useEffect(() => {
+    if (directQuery.data) {
+      setSelected(directQuery.data);
+    }
+  }, [directQuery.data]);
 
   function setStatus(value: string) {
     const next = new URLSearchParams();
@@ -405,6 +420,9 @@ function ApprovalsPage() {
         ))}
       </div>
 
+      {directQuery.isLoading ? <LoadingPage title="Loading approval" /> : null}
+      {directQuery.isError ? <ErrorState title="Unable to load linked approval" error={directQuery.error} onRetry={() => void directQuery.refetch()} /> : null}
+
       <section className="approvalList" aria-label="Approvals">
         {query.isLoading ? <LoadingRows label="Loading approvals" count={3} /> : null}
         {query.isError ? <ErrorState title="Unable to load approvals" error={query.error} onRetry={() => void query.refetch()} /> : null}
@@ -412,7 +430,7 @@ function ApprovalsPage() {
           <EmptyState title="No approvals" detail="No approval records match this status." />
         ) : null}
         {query.data?.items.map((approval) => (
-          <article className="approvalItem" key={approval.approval_id}>
+          <article className={selected?.approval_id === approval.approval_id ? 'approvalItem selected' : 'approvalItem'} key={approval.approval_id}>
             <div>
               <div className="approvalTitle">
                 <strong>{approval.action_type}</strong>
@@ -735,7 +753,7 @@ function ApprovalSummary({ approvals, loading }: { approvals: ApprovalItem[]; lo
           <p>{approval.reason}</p>
           <div className="inlineMeta">
             <span>{approval.approver ?? 'unassigned'}</span>
-            <Link to="/approvals">Review queue</Link>
+            <Link to={`/approvals/${approval.approval_id}`}>Review</Link>
           </div>
         </article>
       ))}

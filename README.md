@@ -163,6 +163,20 @@ python -m packages.evals.runner --suite smoke
 python -m packages.evals.runner --suite full --output reports/eval-full.json
 ```
 
+## Real Email Smoke Test
+
+Fill the SMTP placeholders in `.env`, then enable the guarded manual test:
+
+```bash
+# First check whether the SMTP host/port is reachable.
+RUN_REAL_EMAIL_TEST=true pytest tests/manual/test_smtp_connectivity.py -q
+
+# Then send exactly one smoke-test email.
+RUN_REAL_EMAIL_TEST=true pytest tests/manual/test_real_email_delivery.py -q
+```
+
+The send test sends exactly one email to `SRE_EMAIL_LIST`. Regular unit, integration, and CI runs skip these manual tests by default.
+
 ## Roadmap
 
 M1-M7 (MVP) are complete. The post-MVP expansion plan is tracked in `doc/11-roadmap/`

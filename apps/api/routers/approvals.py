@@ -51,6 +51,15 @@ def list_approvals(
     )
 
 
+@router.get("/approvals/{approval_id}", response_model=ApprovalItem)
+def get_approval(
+    approval_id: str,
+    db: Session = Depends(get_db),
+    enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
+) -> ApprovalItem:
+    return _service(db, enqueue_resume).get_approval(approval_id)
+
+
 @router.get("/incidents/{incident_id}/approvals", response_model=list[ApprovalItem])
 def list_incident_approvals(
     incident_id: str,

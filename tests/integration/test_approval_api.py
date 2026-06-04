@@ -127,6 +127,27 @@ class TestApprovalListAPI:
         assert resp.status_code == 200
         assert len(resp.json()["items"]) == 1
 
+    def test_get_single_approval(self, client: TestClient, db_session: Session) -> None:
+        inc = _create_incident(db_session)
+        run_id = new_id("run_")
+        action = _create_action(db_session, inc.incident_id, run_id)
+        approval = _create_approval(db_session, action.action_id, inc.incident_id, run_id)
+        db_session.commit()
+
+        resp = client.get(f"/api/approvals/{approval.approval_id}")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["approval_id"] == approval.approval_id
+        assert body["action_id"] == action.action_id
+        assert body["service"] == inc.service
+
+    def test_get_single_approval_not_found(self, client: TestClient) -> None:
+        resp = client.get("/api/approvals/apv_missing")
+
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "NOT_FOUND"
+
     def test_incident_approvals(self, client: TestClient, db_session: Session) -> None:
         inc = _create_incident(db_session)
         run_id = new_id("run_")

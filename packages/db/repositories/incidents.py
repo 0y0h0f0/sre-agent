@@ -35,6 +35,7 @@ class IncidentRepository:
             ends_at=ensure_utc(payload.ends_at) if payload.ends_at else None,
             labels=dict(payload.labels),
             annotations=dict(payload.annotations),
+            raw_payload=dict(payload.raw_payload),
         )
         self.db.add(incident)
         return incident
@@ -104,4 +105,5 @@ class IncidentRepository:
             "ends_at": incident.ends_at,
             "labels": incident.labels,
             "annotations": incident.annotations,
+            "raw_payload": incident.raw_payload,
         }

@@ -1,0 +1,14 @@
+<!doctype html>
+<html><body>
+  <h1>Daily Incident Summary</h1>
+  <p>Date: {{ summary_date }}</p>
+  <table border="1" cellpadding="6" cellspacing="0">
+    <thead><tr><th>Incident</th><th>Service</th><th>Severity</th><th>Status</th><th>Alert</th></tr></thead>
+    <tbody>
+    {% for incident in incidents %}
+      <tr><td>{{ incident.incident_id }}</td><td>{{ incident.service }}</td><td>{{ incident.severity }}</td><td>{{ incident.status }}</td><td>{{ incident.alert_name }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p><a href="{{ incidents_url }}">Open incidents</a></p>
+</body></html>

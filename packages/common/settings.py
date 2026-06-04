@@ -77,6 +77,18 @@ class Settings(BaseSettings):
     # names that use deep reasoning when llm_reasoning_enabled is true.
     llm_reasoning_nodes: str = "diagnose"
     token_budget_total: int = Field(default=32_000, gt=0)
+
+    # --- Email notifications (roadmap Phase 3) ---
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, gt=0)
+    smtp_tls_mode: str = "auto"
+    smtp_timeout_seconds: float = Field(default=30.0, gt=0)
+    smtp_user: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from: str = "sre-agent@example.local"
+    sre_email_list: str = ""
+    web_base_url: str = "http://localhost:5173"
+    notification_timezone: str = "UTC"
     token_budget_prompt: int = Field(default=12_000, gt=0)
     token_cache_enabled: bool = True
     celery_task_always_eager: bool = False

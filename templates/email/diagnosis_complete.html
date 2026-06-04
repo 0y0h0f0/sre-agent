@@ -1,0 +1,10 @@
+<!doctype html>
+<html><body>
+  <h1>Diagnosis complete: {{ incident.service }}</h1>
+  <p><strong>Incident:</strong> {{ incident.incident_id }} | <strong>Severity:</strong> {{ incident.severity }}</p>
+  <h2>Root cause</h2>
+  <p>{{ root_cause }}</p>
+  <h2>Evidence</h2>
+  <ul>{% for item in evidence %}<li><strong>{{ item.evidence_id }}</strong>: {{ item.title }} - {{ item.excerpt }}</li>{% endfor %}</ul>
+  <p><a href="{{ incident_url }}">Open incident</a> | <a href="{{ run_url }}">Open run</a> | <a href="{{ report_url }}">Open report</a></p>
+</body></html>

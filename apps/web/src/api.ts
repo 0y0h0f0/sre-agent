@@ -320,6 +320,10 @@ export function listIncidentApprovals(incidentId: string): Promise<ApprovalItem[
   return apiRequest<ApprovalItem[]>(`/api/incidents/${incidentId}/approvals`);
 }
 
+export function getApproval(approvalId: string): Promise<ApprovalItem> {
+  return apiRequest<ApprovalItem>(`/api/approvals/${approvalId}`);
+}
+
 export function getAction(actionId: string): Promise<ActionDetail> {
   return apiRequest<ActionDetail>(`/api/actions/${actionId}`);
 }

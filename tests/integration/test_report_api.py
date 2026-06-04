@@ -88,6 +88,7 @@ def _create_action(db: Session, incident_id: str, agent_run_id: str) -> Action:
 def test_report_regenerate_creates_versions_and_gets_latest(
     client: TestClient,
     db_session: Session,
+    fake_notification_enqueue,
 ) -> None:
     incident = _create_incident(db_session)
     run = _create_run(db_session, incident.incident_id)
@@ -104,6 +105,10 @@ def test_report_regenerate_creates_versions_and_gets_latest(
     assert first_body["version"] == 1
     assert first_body["root_cause"] == "Bad release caused elevated 5xx"
     assert evidence.evidence_id in first_body["evidence_ids"]
+    assert fake_notification_enqueue.calls[-1] == (
+        "incident_report",
+        {"report_id": first_body["report_id"]},
+    )
 
     latest = client.get(f"/api/incidents/{incident.incident_id}/report")
     assert latest.status_code == 200
@@ -114,6 +119,10 @@ def test_report_regenerate_creates_versions_and_gets_latest(
     second_body = second.json()
     assert second_body["version"] == 2
     assert second_body["report_id"] != first_body["report_id"]
+    assert fake_notification_enqueue.calls[-1] == (
+        "incident_report",
+        {"report_id": second_body["report_id"]},
+    )
 
 
 def test_report_regenerate_requires_incident_run(

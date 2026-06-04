@@ -93,8 +93,10 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
             incident_id=state["incident_id"],
             agent_run_id=state["agent_run_id"],
             version=version,
-            root_cause=report_data.get("root_cause", root_cause.get("summary", "")),
-            impact=report_data.get("impact", "unknown"),
+            root_cause=_as_text(
+                report_data.get("root_cause", root_cause.get("summary", ""))
+            ),
+            impact=_as_text(report_data.get("impact", "unknown")),
             timeline=report_data.get("timeline", []),
             actions=report_data.get("actions", actions),
             follow_ups=report_data.get("follow_ups", []),
@@ -132,6 +134,26 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
         )
         state.setdefault("errors", []).append({"node": "generate_report", "error": str(exc)})
         return state
+
+
+def _as_text(value: object) -> str:
+    """Coerce an LLM-produced field into the plain string the report column needs.
+
+    Real providers sometimes return a structured object (e.g. ``root_cause`` as
+    ``{"description": ..., "confidence": ...}``) where the schema expects a
+    string. Prefer a human summary key, otherwise fall back to compact JSON.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("summary", "description", "text"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        return json.dumps(value, ensure_ascii=False)
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _fallback_report(

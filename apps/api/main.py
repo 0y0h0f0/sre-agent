@@ -5,29 +5,54 @@ from collections.abc import Awaitable, Callable
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from apps.api.middleware.auth import create_api_key_middleware
 from apps.api.routers import (
     actions,
     agent_runs,
     alerts,
+    api_keys,
+    approval_groups,
     approvals,
+    comments,
+    evals,
     health,
     incidents,
     reports,
     runbooks,
 )
+from apps.api.ws.router import router as ws_router
 from packages.common.errors import AppError
 from packages.common.ids import new_id
+from packages.common.settings import get_settings
 
 RequestCallNext = Callable[[Request], Awaitable[Response]]
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
     app = FastAPI(title="SRE Incident Response Agent", version="0.1.0")
+
+    # CORS (Phase 7.4)
+    origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+    if origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials="*" not in origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
     app.middleware("http")(_request_id_middleware)
+    app.middleware("http")(create_api_key_middleware())
     app.add_exception_handler(AppError, _app_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
+
     app.include_router(health.router)
     app.include_router(alerts.router)
     app.include_router(incidents.router)
@@ -36,6 +61,11 @@ def create_app() -> FastAPI:
     app.include_router(reports.router)
     app.include_router(approvals.router)
     app.include_router(actions.router)
+    app.include_router(comments.router)
+    app.include_router(approval_groups.router)
+    app.include_router(api_keys.router)
+    app.include_router(evals.router)
+    app.include_router(ws_router)
     return app
 
 

@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.orm import Session
 
 from packages.db.models import RunbookChunk
+from packages.rag.bm25 import build_tsquery
 
 
 class RunbookChunkRepository:
@@ -57,3 +58,73 @@ class RunbookChunkRepository:
     def list_chunks(self) -> Sequence[RunbookChunk]:
         stmt = select(RunbookChunk).order_by(RunbookChunk.created_at.asc(), RunbookChunk.id.asc())
         return self.db.scalars(stmt).all()
+
+    def search_bm25(
+        self,
+        tsquery: str,
+        *,
+        service: str | None = None,
+        incident_type: str | None = None,
+    ) -> list[tuple[RunbookChunk, float]]:
+        """Full-text search using PostgreSQL tsvector + ts_rank_cd.
+
+        Accepts a pre-sanitized tsquery string (from ``build_tsquery``).
+        On SQLite (no tsvector), returns an empty list gracefully.
+        Metadata filtering is done in Python for cross-dialect compatibility.
+        """
+        # Safety: validate tsquery before embedding in SQL.
+        # build_tsquery restricts to [a-z0-9_:*& ] — rejecting any input
+        # that contains characters outside this allowlist.
+        _require_safe_tsquery(tsquery)
+
+        try:
+            rank = func.ts_rank_cd(
+                RunbookChunk.tsv_content,
+                func.to_tsquery(text("'english'"), text(f"'{tsquery}'")),
+            ).label("rank")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "runbook full-text search query failed", exc_info=True,
+            )
+            return []
+
+        stmt = (
+            select(RunbookChunk, rank)
+            .where(
+                RunbookChunk.tsv_content.op("@@")(
+                    func.to_tsquery(text("'english'"), text(f"'{tsquery}'"))
+                )
+            )
+            .order_by(text("rank DESC"))
+            .limit(50)
+        )
+        try:
+            rows = self.db.execute(stmt).all()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "runbook full-text search query failed", exc_info=True,
+            )
+            return []
+
+        results: list[tuple[RunbookChunk, float]] = []
+        for row in rows:
+            chunk = row[0]
+            score = float(row[1])
+            meta = chunk.metadata_json or {}
+            if service and meta.get("service", "").lower() != service.lower():
+                continue
+            if incident_type and meta.get("incident_type") != incident_type:
+                continue
+            results.append((chunk, score))
+        return results
+
+
+_TSQUERY_SAFE_RE = __import__("re").compile(r"^[a-z0-9_:*& ]+$")
+
+
+def _require_safe_tsquery(tsquery: str) -> None:
+    if not _TSQUERY_SAFE_RE.match(tsquery):
+        msg = f"unsafe tsquery rejected: {tsquery[:80]}"
+        raise ValueError(msg)

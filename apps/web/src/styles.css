@@ -44,6 +44,8 @@ a:hover {
 .sidebar {
   background: #ffffff;
   border-right: 1px solid #d9dee6;
+  display: flex;
+  flex-direction: column;
   padding: 22px 18px;
 }
 
@@ -99,6 +101,78 @@ a:hover {
   background: #e8f2fb;
   color: #0f609f;
   text-decoration: none;
+}
+
+.authPanel {
+  background: #f8fafc;
+  border: 1px solid #d9dee6;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-top: auto;
+  padding: 12px;
+}
+
+.authHeader {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+}
+
+.authHeader strong {
+  display: block;
+  font-size: 14px;
+}
+
+.authHeader span,
+.generatedKeyBox span,
+.generatedKeyBox small {
+  color: #657082;
+  font-size: 12px;
+}
+
+.authForm {
+  border-top: 1px solid #e1e6ee;
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.authNotice {
+  background: #e5eefb;
+  border: 1px solid #b8d3f5;
+  border-radius: 6px;
+  color: #175cd3;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px;
+}
+
+.generatedKeyBox {
+  background: #ffffff;
+  border: 1px solid #d9dee6;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+}
+
+.generatedKeyBox code {
+  background: #111827;
+  border-radius: 5px;
+  color: #f8fafc;
+  display: block;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  padding: 8px;
+}
+
+.authPanel .iconTextButton {
+  min-height: 36px;
+}
+
+.authPanel .formError {
+  font-size: 12px;
 }
 
 .contentPane {
@@ -537,7 +611,7 @@ pre {
 .contextGrid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   margin-bottom: 16px;
 }
 
@@ -643,6 +717,21 @@ pre {
   margin: 6px 0 8px;
 }
 
+.approvalBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.approvalActions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.approvalActions .iconTextButton {
+  white-space: nowrap;
+}
+
 .dialogBackdrop {
   align-items: center;
   background: rgba(15, 23, 42, 0.42);
@@ -733,6 +822,327 @@ pre {
   to { transform: rotate(360deg); }
 }
 
+.runProgressPanel {
+  background: #ffffff;
+  border: 1px solid #d9dee6;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 14px;
+}
+
+.progressHeader {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.progressHeader > div {
+  display: grid;
+  gap: 3px;
+}
+
+.progressHeader span {
+  color: #657082;
+  font-size: 13px;
+}
+
+.connectionPill {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 6px;
+  min-height: 28px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.connectionPill.open {
+  background: #dff4ea;
+  color: #116149;
+}
+
+.connectionPill.connecting,
+.connectionPill.closed {
+  background: #fff4d6;
+  color: #8a5a00;
+}
+
+.connectionPill.disabled {
+  background: #edf1f5;
+  color: #3d4b5c;
+}
+
+.connectionPill.error {
+  background: #fde3df;
+  color: #9f1f17;
+}
+
+.progressTrack {
+  background: #e8edf3;
+  border-radius: 999px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.progressFill {
+  background: #13795b;
+  height: 100%;
+  transition: width 180ms ease;
+}
+
+.nodeRail {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(10px, 1fr));
+}
+
+.nodeDot {
+  border-radius: 999px;
+  height: 10px;
+  min-width: 10px;
+}
+
+.nodeDot.done,
+.timelineMarker.done {
+  background: #dff4ea;
+  color: #116149;
+}
+
+.nodeDot.active,
+.timelineMarker.active {
+  background: #fff4d6;
+  color: #8a5a00;
+}
+
+.nodeDot.pending,
+.timelineMarker.pending {
+  background: #edf1f5;
+  color: #526071;
+}
+
+.nodeDot.failed,
+.timelineMarker.failed {
+  background: #fde3df;
+  color: #9f1f17;
+}
+
+.liveLogList {
+  display: grid;
+  gap: 10px;
+}
+
+.liveLogItem,
+.visualPanel {
+  background: #f8fafc;
+  border: 1px solid #d9dee6;
+  border-radius: 8px;
+}
+
+.liveLogItem {
+  padding: 12px;
+}
+
+.visualGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.visualPanel {
+  min-height: 230px;
+  padding: 12px;
+}
+
+.visualPanel h4 {
+  align-items: center;
+  display: flex;
+  font-size: 14px;
+  gap: 7px;
+  margin: 0 0 12px;
+}
+
+.swimlaneChart {
+  display: grid;
+  gap: 14px;
+  padding: 6px 0;
+}
+
+.swimlaneRow {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 74px minmax(0, 1fr);
+}
+
+.swimlaneLabel {
+  color: #526071;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.swimlaneTrack {
+  background: #e8edf3;
+  border-radius: 999px;
+  height: 8px;
+  position: relative;
+}
+
+.swimlanePoint {
+  background: #1769aa;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px #1769aa;
+  height: 14px;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 14px;
+}
+
+.swimlanePoint.cacheHit {
+  background: #13795b;
+  box-shadow: 0 0 0 1px #13795b;
+}
+
+.dependencyGraph {
+  height: 210px;
+  width: 100%;
+}
+
+.graphEdge {
+  stroke: #aab4c2;
+  stroke-width: 2;
+}
+
+.graphNode circle {
+  fill: #e5eefb;
+  stroke: #1769aa;
+  stroke-width: 2;
+}
+
+.graphNode.anomaly circle {
+  fill: #fde3df;
+  stroke: #b42318;
+}
+
+.graphNode text {
+  fill: #253244;
+  font-size: 11px;
+  font-weight: 800;
+  text-anchor: middle;
+}
+
+.evidenceNetwork {
+  align-items: stretch;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1fr);
+}
+
+.networkColumn,
+.networkFlows {
+  display: grid;
+  gap: 8px;
+}
+
+.networkColumn strong {
+  color: #526071;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.networkNode {
+  border-radius: 6px;
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  padding: 8px;
+}
+
+.networkNode.hypothesis {
+  background: #fff4d6;
+  color: #614000;
+}
+
+.networkNode.evidence {
+  background: #e5eefb;
+  color: #175cd3;
+}
+
+.networkFlows {
+  align-content: center;
+  justify-items: center;
+  padding-top: 22px;
+}
+
+.flowBar {
+  background: #13795b;
+  border-radius: 999px;
+  height: 4px;
+  min-width: 18px;
+}
+
+.batchBar {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d9dee6;
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+}
+
+.batchBar span {
+  color: #526071;
+  font-weight: 800;
+}
+
+.batchCheck {
+  flex: 0 0 auto;
+  min-height: auto;
+  width: auto;
+}
+
+.inlineForm,
+.commentForm {
+  display: grid;
+  gap: 12px;
+}
+
+.inlineFormActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.fullWidth {
+  width: 100%;
+}
+
+.commentSection {
+  display: grid;
+  gap: 12px;
+}
+
+.commentItem {
+  border-bottom: 1px solid #e6eaf0;
+  padding-bottom: 12px;
+}
+
+.commentItem p {
+  margin: 0;
+}
+
+
 @media (max-width: 980px) {
   .appShell {
     grid-template-columns: 1fr;
@@ -749,6 +1159,10 @@ pre {
     margin-top: 18px;
   }
 
+  .authPanel {
+    margin-top: 18px;
+  }
+
   .contentPane {
     padding: 20px;
   }
@@ -759,6 +1173,10 @@ pre {
   .contextGrid,
   .approvalFacts {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .visualGrid {
+    grid-template-columns: 1fr;
   }
 
   .incidentGrid .tableHeader,
@@ -787,6 +1205,20 @@ pre {
     justify-content: flex-start;
   }
 
+  .headerActions .iconTextButton,
+  .approvalItem .iconTextButton {
+    width: 100%;
+  }
+
+  .dialogBackdrop {
+    align-items: flex-end;
+    padding: 10px;
+  }
+
+  .dialog {
+    max-height: calc(100vh - 20px);
+  }
+
   .filterBar,
   .metricStrip,
   .contextGrid,
@@ -810,5 +1242,28 @@ pre {
   .segmented {
     display: grid;
     width: 100%;
+  }
+
+  .progressHeader,
+  .approvalItem {
+    align-items: stretch;
+  }
+
+  .progressHeader,
+  .evidenceNetwork,
+  .swimlaneRow {
+    grid-template-columns: 1fr;
+  }
+
+  .progressHeader {
+    display: grid;
+  }
+
+  .networkFlows {
+    display: none;
+  }
+
+  .visualPanel {
+    min-height: auto;
   }
 }

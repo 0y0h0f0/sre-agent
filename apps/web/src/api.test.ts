@@ -3,16 +3,32 @@ import { afterEach, expect, test, vi } from 'vitest';
 import {
   ApiError,
   approveApproval,
+  clearStoredApiKey,
+  batchDecideApprovals,
+  correctIncidentAction,
+  correctIncidentRootCause,
+  createApiKey,
+  createComment,
+  createEvidenceAnnotation,
+  deleteComment,
   getAgentRun,
   getApproval,
+  getCorrelatedIncidents,
+  getStoredApiKey,
   getIncident,
   getIncidentReport,
   listApprovals,
+  listEvidenceAnnotations,
   listIncidentApprovals,
+  listIncidentAudit,
+  listIncidentComments,
+  listIncidentFeedback,
   listIncidentRuns,
   listIncidents,
+  markIncidentNFA,
   regenerateIncidentReport,
   rejectApproval,
+  setStoredApiKey,
   triggerDiagnosis
 } from './api';
 
@@ -21,7 +37,52 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 afterEach(() => {
+  window.localStorage.removeItem('sre_api_key');
   vi.restoreAllMocks();
+});
+
+test('api client sends stored API key as bearer token', async () => {
+  window.localStorage.setItem('sre_api_key', 'demo-secret');
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    jsonResponse({ items: [], total: 0, page: 1, page_size: 20 })
+  );
+
+  await expect(listIncidents()).resolves.toEqual({ items: [], total: 0, page: 1, page_size: 20 });
+
+  const [, init] = fetchMock.mock.calls[0];
+  expect((init?.headers as Headers).get('Authorization')).toBe('Bearer demo-secret');
+});
+
+test('api key storage helpers trim and clear keys', () => {
+  setStoredApiKey('  raw-secret  ');
+  expect(getStoredApiKey()).toBe('raw-secret');
+
+  clearStoredApiKey();
+  expect(getStoredApiKey()).toBeNull();
+});
+
+test('createApiKey posts with the bootstrap token instead of the stored key', async () => {
+  window.localStorage.setItem('sre_api_key', 'old-browser-key');
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    jsonResponse({
+      key_id: 'apik_1',
+      description: 'local web key',
+      raw_key: 'new-browser-key',
+      created_by: 'system',
+      expires_at: null,
+      created_at: '2026-06-01T00:00:00Z'
+    }, 201)
+  );
+
+  await expect(createApiKey({ description: 'local web key', expires_in_days: 90 }, 'bootstrap-secret')).resolves.toMatchObject({
+    raw_key: 'new-browser-key'
+  });
+
+  const [url, init] = fetchMock.mock.calls[0];
+  expect(String(url)).toBe('/api/api-keys');
+  expect(init?.method).toBe('POST');
+  expect((init?.headers as Headers).get('Authorization')).toBe('Bearer bootstrap-secret');
+  expect(JSON.parse(String(init?.body))).toEqual({ description: 'local web key', expires_in_days: 90 });
 });
 
 test('listIncidents returns paginated incidents and sends a request id', async () => {
@@ -174,4 +235,67 @@ test('api helpers call expected endpoints', async () => {
   await expect(rejectApproval('apv_1', { approver: 'sre-oncall', comment: 'too risky' })).resolves.toMatchObject({ status: 'rejected' });
   await expect(regenerateIncidentReport('inc_1')).resolves.toMatchObject({ version: 1 });
   expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/diagnose') && init?.method === 'POST')).toBe(true);
+});
+
+
+test('phase feedback and collaboration helpers call expected endpoints', async () => {
+  const calls: Array<{ path: string; method: string; body: unknown }> = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+    const url = new URL(String(input), 'http://localhost');
+    const method = init.method ?? 'GET';
+    calls.push({ path: url.pathname, method, body: init.body ? JSON.parse(String(init.body)) : null });
+    if (method === 'DELETE') {
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname.endsWith('/correlated')) {
+      return jsonResponse([]);
+    }
+    if (url.pathname.endsWith('/feedback') && method === 'GET') {
+      return jsonResponse({ items: [], total: 0 });
+    }
+    if (url.pathname.endsWith('/comments') && method === 'GET') {
+      return jsonResponse({ items: [], total: 0 });
+    }
+    if (url.pathname.endsWith('/annotations') && method === 'GET') {
+      return jsonResponse({ items: [], total: 0 });
+    }
+    if (url.pathname.endsWith('/audit')) {
+      return jsonResponse({ items: [], total: 0 });
+    }
+    if (url.pathname === '/api/approvals/batch') {
+      return jsonResponse([{ approval_id: 'apv_1', action_id: 'act_1', status: 'approved', agent_run_id: 'run_1' }]);
+    }
+    if (url.pathname.endsWith('/nfa')) {
+      return jsonResponse({ pattern_id: 'mem_1', fingerprint: 'fp_1', nfa_count: 1, status: 'recorded', message: 'recorded' });
+    }
+    if (url.pathname.endsWith('/comments')) {
+      return jsonResponse({ comment_id: 'cmt_1', incident_id: 'inc_1', author: 'sre', content: 'ack', parent_comment_id: null, mentioned_users: [], created_at: '2026-06-01T00:00:00Z' }, 201);
+    }
+    if (url.pathname.endsWith('/annotations')) {
+      return jsonResponse({ annotation_id: 'ann_1', evidence_id: 'evd_1', incident_id: 'inc_1', author: 'sre', content: 'note', created_at: '2026-06-01T00:00:00Z' }, 201);
+    }
+    return jsonResponse({ feedback_id: 'fb_1', incident_id: 'inc_1', feedback_type: 'correction', original_value: null, corrected_value: null, delta: null, submitted_by: 'sre', submitted_at: '2026-06-01T00:00:00Z' });
+  });
+
+  await expect(markIncidentNFA('inc_1', { reason: 'noise' })).resolves.toMatchObject({ status: 'recorded' });
+  await expect(correctIncidentRootCause('inc_1', { corrected_summary: 'actual root cause' })).resolves.toMatchObject({ feedback_id: 'fb_1' });
+  await expect(correctIncidentAction('inc_1', 'act_1', { action_type: 'remove', action_id: 'act_1' })).resolves.toMatchObject({ feedback_id: 'fb_1' });
+  await expect(getCorrelatedIncidents('inc_1')).resolves.toEqual([]);
+  await expect(listIncidentFeedback('inc_1')).resolves.toEqual({ items: [], total: 0 });
+  await expect(listIncidentComments('inc_1')).resolves.toEqual({ items: [], total: 0 });
+  await expect(createComment('inc_1', { author: 'sre', content: 'ack' })).resolves.toMatchObject({ comment_id: 'cmt_1' });
+  await expect(deleteComment('cmt_1')).resolves.toBeUndefined();
+  await expect(listEvidenceAnnotations('evd_1')).resolves.toEqual({ items: [], total: 0 });
+  await expect(createEvidenceAnnotation('evd_1', { author: 'sre', content: 'note' })).resolves.toMatchObject({ annotation_id: 'ann_1' });
+  await expect(listIncidentAudit('inc_1')).resolves.toEqual({ items: [], total: 0 });
+  await expect(batchDecideApprovals({ decision: 'approve', approver: 'sre', approval_ids: ['apv_1'] })).resolves.toHaveLength(1);
+
+  expect(calls).toEqual(expect.arrayContaining([
+    expect.objectContaining({ path: '/api/incidents/inc_1/nfa', method: 'POST' }),
+    expect.objectContaining({ path: '/api/incidents/inc_1/root-cause', method: 'PATCH' }),
+    expect.objectContaining({ path: '/api/incidents/inc_1/actions/act_1/feedback', method: 'POST' }),
+    expect.objectContaining({ path: '/api/comments/cmt_1', method: 'DELETE' }),
+    expect.objectContaining({ path: '/api/evidence/evd_1/annotations', method: 'POST' }),
+    expect.objectContaining({ path: '/api/approvals/batch', method: 'POST' })
+  ]));
 });

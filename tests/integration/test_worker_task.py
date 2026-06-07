@@ -25,6 +25,29 @@ def test_build_checkpointer_returns_none_for_sqlite() -> None:
     assert tasks._build_checkpointer(settings) is None
 
 
+def test_postgres_saver_conn_string_strips_sqlalchemy_driver() -> None:
+    assert (
+        tasks._postgres_saver_conn_string(
+            "postgresql+psycopg://sre:sre@postgres:5432/sre?sslmode=disable"
+        )
+        == "postgresql://sre:sre@postgres:5432/sre?sslmode=disable"
+    )
+    assert (
+        tasks._postgres_saver_conn_string(
+            "postgres+psycopg://sre:sre@postgres:5432/sre"
+        )
+        == "postgres://sre:sre@postgres:5432/sre"
+    )
+    assert (
+        tasks._postgres_saver_conn_string("postgresql://sre:sre@postgres:5432/sre")
+        == "postgresql://sre:sre@postgres:5432/sre"
+    )
+    assert (
+        tasks._postgres_saver_conn_string("host=postgres dbname=sre")
+        == "host=postgres dbname=sre"
+    )
+
+
 def test_build_checkpointer_fails_closed_for_unreachable_db() -> None:
     # A configured real database that cannot be reached must RAISE rather than
     # silently returning None (which would disable the approval interrupt and

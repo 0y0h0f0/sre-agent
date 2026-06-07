@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+try:
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:
+    _PROMETHEUS_AVAILABLE = False
 from redis import Redis
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -20,6 +25,12 @@ def healthz() -> dict[str, str]:
 
 @router.get("/metrics")
 def metrics() -> Response:
+    if not _PROMETHEUS_AVAILABLE:
+        return Response(
+            content=b"prometheus_client not installed",
+            status_code=503,
+            media_type="text/plain",
+        )
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 

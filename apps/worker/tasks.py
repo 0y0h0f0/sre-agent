@@ -7,11 +7,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.common import AgentRunStatus, IncidentStatus
-from apps.api.services.email_service import EmailNotificationService
 from apps.worker.celery_app import celery_app
 from packages.agent.llm import build_llm
 from packages.agent.runner import AgentRunner
 from packages.agent.schemas import AgentDeps
+from packages.common import metrics as agent_metrics
 from packages.common.errors import DependencyUnavailableError, NotFoundError
 from packages.common.ids import new_id
 from packages.common.settings import get_settings
@@ -46,6 +46,12 @@ class TransientError(Exception):
     """Retryable worker dependency failure."""
 
 
+def _email_notification_service(db: Session) -> Any:
+    from apps.api.services.email_service import EmailNotificationService
+
+    return EmailNotificationService(db, get_settings())
+
+
 def enqueue_diagnosis_task(incident_id: str, agent_run_id: str) -> str:
     async_result = run_incident_diagnosis.delay(incident_id, agent_run_id)
     return str(async_result.id)
@@ -59,7 +65,7 @@ def enqueue_resume_task(agent_run_id: str, decision: str) -> str:
 
 def enqueue_email_notification_task(notification_type: str, payload: dict[str, Any]) -> str:
     with SessionLocal() as db:
-        queued = EmailNotificationService(db, get_settings()).queue_event(
+        queued = _email_notification_service(db).queue_event(
             notification_type, payload
         )
         email_log_id = str(queued["email_log_id"])
@@ -68,7 +74,7 @@ def enqueue_email_notification_task(notification_type: str, payload: dict[str, A
         async_result = send_email_notification.delay(email_log_id, notification_type, payload)
     except Exception as exc:
         with SessionLocal() as db:
-            EmailNotificationService(db, get_settings()).mark_enqueue_failed(email_log_id, str(exc))
+            _email_notification_service(db).mark_enqueue_failed(email_log_id, str(exc))
         raise
     return str(async_result.id)
 
@@ -77,6 +83,21 @@ def enqueue_email_notification_task(notification_type: str, payload: dict[str, A
     bind=True, autoretry_for=(TransientError,), retry_backoff=True, max_retries=2
 )
 def run_incident_diagnosis(self: Any, incident_id: str, agent_run_id: str) -> dict[str, Any]:
+    # Celery doesn't natively retry on SoftTimeLimitExceeded, but a
+    # timeout often resolves on retry (LLM latency spike, network blip).
+    # The except-block below converts SoftTimeLimitExceeded → TransientError
+    # so Celery's autoretry_for will pick it up on the re-raise.
+    try:
+        with SessionLocal() as db:
+            return run_incident_diagnosis_logic(db, incident_id, agent_run_id)
+    except TransientError:
+        raise
+    except Exception as exc:
+        # Convert SoftTimeLimitExceeded to TransientError for autoretry
+        from celery.exceptions import SoftTimeLimitExceeded
+        if isinstance(exc, SoftTimeLimitExceeded):
+            raise TransientError(str(exc)) from exc
+        raise
     with SessionLocal() as db:
         return run_incident_diagnosis_logic(db, incident_id, agent_run_id)
 
@@ -95,10 +116,26 @@ def run_incident_diagnosis_logic(
     if run is None:
         raise NotFoundError("agent_run", agent_run_id)
     if run.status in TERMINAL_RUN_STATUSES:
+        db.rollback()
         return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
     # Already in flight (RUNNING) or paused for a human (WAITING_APPROVAL):
     # a duplicate delivery must not restart the graph or re-create approvals.
-    if run.status in (AgentRunStatus.RUNNING.value, AgentRunStatus.WAITING_APPROVAL.value):
+    # Check for orphaned runs (previous worker killed by SIGKILL) — if the run
+    # has been RUNNING longer than the orphan timeout, assume the previous
+    # worker is dead and re-execute.
+    if run.status == AgentRunStatus.RUNNING.value:
+        from packages.common.time import utc_now as _utc
+
+        _orphan_timeout = get_settings().task_orphan_timeout_seconds
+        if (
+            run.started_at is None
+            or (_utc() - run.started_at).total_seconds() < _orphan_timeout
+        ):
+            db.rollback()
+            return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
+        # Fall through: previous worker died, re-execute.
+    elif run.status == AgentRunStatus.WAITING_APPROVAL.value:
+        db.rollback()
         return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
 
     # Claim the run and commit immediately to release the row lock; a competing
@@ -107,12 +144,14 @@ def run_incident_diagnosis_logic(
     incident.status = IncidentStatus.DIAGNOSING.value
     db.commit()
 
+    agent_metrics.AgentMetricsCollector.inc_active_diagnoses()
+
     checkpointer: Any | None = None
 
     try:
         settings = get_settings()
         alert_payload = incidents.alert_payload(incident)
-        deps = _build_deps(db, settings, agent_run_id)
+        deps = _build_deps(db, settings, agent_run_id, incident_id)
 
         # Wire PostgresSaver for checkpoint persistence
         checkpointer = _build_checkpointer(settings)
@@ -140,6 +179,10 @@ def run_incident_diagnosis_logic(
 
         state_dict = _sanitize_state(result.get("state", {}))
         _sync_incident_diagnosis(incident, state_dict)
+
+        # Populate token/cache columns on AgentRun (Phase 7.2)
+        _populate_run_metrics(run, state_dict, deps.tool_cache)
+
         runs.mark_succeeded(run, state_dict)
         # Only mark mitigated if actions were actually executed
         if result.get("state", {}).get("execution_results"):
@@ -147,8 +190,23 @@ def run_incident_diagnosis_logic(
         else:
             incident.status = IncidentStatus.RESOLVED.value
         db.commit()
+
+        # Record NFA when resolved without actions
+        if incident.status == IncidentStatus.RESOLVED.value:
+            agent_metrics.AgentMetricsCollector.record_nfa(service=incident.service)
+
         _notify_diagnosis_complete(incident_id, agent_run_id, db=db)
         _notify_report_generated(state_dict, db=db)
+
+        duration_s = _run_duration_seconds(run)
+        agent_metrics.AgentMetricsCollector.record_diagnosis_completed(
+            status="succeeded",
+            duration_seconds=duration_s,
+            model=run.model_name,
+            prompt_tokens=run.total_prompt_tokens or 0,
+            completion_tokens=run.total_completion_tokens or 0,
+        )
+        agent_metrics.AgentMetricsCollector.dec_active_diagnoses()
         return {
             "incident_id": incident_id,
             "agent_run_id": agent_run_id,
@@ -156,11 +214,19 @@ def run_incident_diagnosis_logic(
         }
 
     except TransientError:
+        agent_metrics.AgentMetricsCollector.dec_active_diagnoses()
         raise
     except Exception as exc:
         db.rollback()
         runs.mark_failed(agent_run_id, "DIAGNOSIS_FAILED", str(exc))
         db.commit()
+        duration_s = _run_duration_seconds(run)
+        agent_metrics.AgentMetricsCollector.record_diagnosis_completed(
+            status="failed",
+            duration_seconds=duration_s,
+            model=run.model_name,
+        )
+        agent_metrics.AgentMetricsCollector.dec_active_diagnoses()
         raise
     finally:
         _close_checkpointer(checkpointer)
@@ -183,7 +249,9 @@ def _build_checkpointer(settings: Any) -> Any:
     try:
         from langgraph.checkpoint.postgres import PostgresSaver
 
-        saver_context = PostgresSaver.from_conn_string(db_url)
+        saver_context = PostgresSaver.from_conn_string(
+            _postgres_saver_conn_string(db_url)
+        )
         saver = saver_context.__enter__()
     except Exception as exc:
         raise DependencyUnavailableError(
@@ -207,13 +275,29 @@ def _build_checkpointer(settings: Any) -> Any:
     return saver
 
 
+def _postgres_saver_conn_string(db_url: str) -> str:
+    """Return a psycopg-compatible connection string for PostgresSaver.
+
+    Application database settings use SQLAlchemy URLs with driver suffixes,
+    for example postgresql+psycopg://host/db. PostgresSaver hands the value
+    directly to psycopg, which accepts postgresql://host/db but not the
+    SQLAlchemy driver suffix.
+    """
+    if "://" not in db_url:
+        return db_url
+    scheme, rest = db_url.split("://", 1)
+    if scheme.startswith(("postgresql+", "postgres+")):
+        scheme = scheme.split("+", 1)[0]
+    return f"{scheme}://{rest}"
+
+
 def _close_checkpointer(checkpointer: Any | None) -> None:
     context = getattr(checkpointer, "_codex_context_manager", None)
     if context is not None:
         context.__exit__(None, None, None)
 
 
-def _build_deps(db: Session, settings: Any, agent_run_id: str) -> AgentDeps:
+def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str) -> AgentDeps:
     cache = RequestLocalToolCache()
     timeout = settings.tool_timeout_seconds
 
@@ -246,7 +330,10 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str) -> AgentDeps:
     )
 
     chunk_repo = RunbookChunkRepository(db)
-    retriever = RunbookRetriever(chunk_repo)
+    retriever = RunbookRetriever(
+        chunk_repo,
+        use_hybrid=settings.runbook_hybrid_search_enabled,
+    )
     runbook_search_tool = RunbookSearchTool(
         retriever=retriever, timeout_seconds=timeout, cache=cache
     )
@@ -276,6 +363,25 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str) -> AgentDeps:
         )
         db.add(node)
         db.flush()
+
+        # Publish node update via Redis for WebSocket subscribers
+        try:
+            from apps.api.ws.publisher import publish_node_event
+
+            publish_node_event(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                node_name=kwargs.get("name", "unknown"),
+                status=kwargs.get("status", "unknown"),
+                duration_ms=duration_ms,
+                input_summary=(kwargs.get("input_summary") or "")[:200],
+                output_summary=(kwargs.get("output_summary") or "")[:200],
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "failed to publish node event for run %s", agent_run_id, exc_info=True
+            )
 
     def tool_call_recorder(**kwargs: Any) -> None:
         tool_calls_repo.create(
@@ -319,6 +425,69 @@ def _sync_incident_diagnosis(incident: Any, state: dict[str, Any]) -> None:
         summary = state.get("diagnosis_rationale")
     if summary:
         incident.root_cause_summary = str(summary)
+
+
+def _populate_run_metrics(
+    run: Any, state: dict[str, Any], cache: RequestLocalToolCache
+) -> None:
+    """Populate AgentRun token/cache columns from graph execution state."""
+    # Token usage from llm_calls recorded in the state
+    llm_calls = state.get("llm_calls")
+    if isinstance(llm_calls, list):
+        total_prompt = 0
+        total_completion = 0
+        provider_hits = 0
+        provider_misses = 0
+        for call in llm_calls:
+            if isinstance(call, dict):
+                usage = call.get("usage") or {}
+                total_prompt += int(usage.get("prompt_tokens", 0) or 0)
+                total_completion += int(usage.get("completion_tokens", 0) or 0)
+                if call.get("cache_hit"):
+                    provider_hits += 1
+                else:
+                    provider_misses += 1
+        run.total_prompt_tokens = total_prompt
+        run.total_completion_tokens = total_completion
+        run.provider_cache_hit_count = provider_hits
+        run.provider_cache_miss_count = provider_misses
+
+    # App-level tool cache stats
+    run.app_cache_hit_count = cache.hit_count
+    run.app_cache_miss_count = cache.miss_count
+
+
+def _run_duration_seconds(run: Any) -> float:
+    """Compute run duration in seconds from started_at to now or finished_at."""
+    from packages.common.time import utc_now
+
+    started = run.started_at
+    finished = run.finished_at or utc_now()
+    if started is None:
+        return 0.0
+    return max(0, (finished - started).total_seconds())
+
+
+def _record_approval_metrics(
+    db: Session, agent_run_id: str, decision: str
+) -> None:
+    """Record approval response time from the approval record."""
+    from packages.db.repositories.approvals import ApprovalRepository
+
+    approvals = ApprovalRepository(db).list_for_run(agent_run_id)
+    for approval in approvals:
+        if (
+            approval.decided_at is not None
+            and approval.requested_at is not None
+        ):
+            response_time = max(
+                0,
+                (approval.decided_at - approval.requested_at).total_seconds(),
+            )
+            agent_metrics.AgentMetricsCollector.record_approval_decision(
+                decision=decision,
+                response_time_seconds=response_time,
+            )
 
 
 def _handle_waiting_approval(db: Session, agent_run_id: str, state: dict[str, Any]) -> None:
@@ -376,7 +545,7 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
 
     try:
         settings = get_settings()
-        deps = _build_deps(db, settings, agent_run_id)
+        deps = _build_deps(db, settings, agent_run_id, run.incident_id)
         checkpointer = _build_checkpointer(settings)
 
         runner = AgentRunner(deps, checkpointer=checkpointer)
@@ -406,9 +575,18 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
 
         state_dict = _sanitize_state(result.get("state", {}))
         runs.mark_succeeded(run, state_dict)
+
+        # Record approval response time from the approval record (Phase 7.2)
+        try:
+            _record_approval_metrics(db, agent_run_id, decision)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "failed to record approval metrics for run %s", agent_run_id, exc_info=True
+            )
+
         # Finalize the incident: mitigated only if actions actually executed,
-        # otherwise resolved. Without this the incident stayed in DIAGNOSING
-        # forever and kept deduplicating future alerts.
+        # otherwise resolved.
         incident = incidents.get_by_public_id(run.incident_id)
         if incident is not None:
             _sync_incident_diagnosis(incident, state_dict)
@@ -494,7 +672,11 @@ def _enqueue_notification_event(notification_type: str, payload: dict[str, Any])
     try:
         enqueue_email_notification_task(notification_type, payload)
     except Exception:
-        return
+        import logging
+        logging.getLogger(__name__).error(
+            "failed to enqueue %s notification: %s",
+            notification_type, str(payload)[:200], exc_info=True,
+        )
 
 
 @celery_app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]
@@ -503,7 +685,7 @@ def send_email_notification(
 ) -> dict[str, Any]:
     attempt = int(getattr(self.request, "retries", 0)) + 1
     with SessionLocal() as db:
-        result = EmailNotificationService(db, get_settings()).send_queued_event(
+        result = _email_notification_service(db).send_queued_event(
             email_log_id, notification_type, payload, attempt=attempt
         )
 
@@ -519,7 +701,7 @@ def send_daily_incident_summary(
     payload = {"date": summary_date} if summary_date else {}
     attempt = int(getattr(self.request, "retries", 0)) + 1
     with SessionLocal() as db:
-        service = EmailNotificationService(db, get_settings())
+        service = _email_notification_service(db)
         if email_log_id is None:
             queued = service.queue_event("daily_summary", payload)
             email_log_id = str(queued["email_log_id"])
@@ -532,3 +714,96 @@ def send_daily_incident_summary(
             exc=TransientError(str(result.get("error", "email failed"))),
         )
     return result
+
+
+@celery_app.task(bind=True)  # type: ignore[untyped-decorator]
+def auto_approve_stale_approvals(self: Any) -> dict[str, Any]:
+    """Auto-approve L2 (or lower) approvals that have been waiting beyond the threshold.
+
+    Configured via ``APPROVAL_AUTO_APPROVE_MINUTES`` (0 = disabled) and
+    ``APPROVAL_AUTO_APPROVE_MAX_RISK`` (default "L2"). L3+ are never
+    auto-approved.
+    """
+    settings = get_settings()
+    threshold_minutes = settings.approval_auto_approve_minutes
+    if threshold_minutes <= 0:
+        return {"status": "disabled", "threshold_minutes": 0}
+
+    max_risk = settings.approval_auto_approve_max_risk
+    if max_risk not in ("L0", "L1", "L2"):
+        return {"status": "skipped", "reason": f"max_risk={max_risk} exceeds L2 cap"}
+
+    risk_levels = {"L0": 0, "L1": 1, "L2": 2}
+    max_risk_value = risk_levels.get(max_risk, 2)
+
+    with SessionLocal() as db:
+        from datetime import timedelta
+
+        from sqlalchemy import select
+
+        from apps.api.schemas.common import ActionStatus, ApprovalStatus
+        from packages.common.time import utc_now
+        from packages.db.models import Action, Approval
+        from packages.db.repositories.actions import ActionRepository
+        from packages.db.repositories.approvals import ApprovalRepository
+        from packages.db.repositories.audit_logs import AuditLogRepository
+
+        approvals_repo = ApprovalRepository(db)
+        actions_repo = ActionRepository(db)
+        audit_repo = AuditLogRepository(db)
+
+        cutoff = utc_now() - timedelta(minutes=threshold_minutes)
+
+        stmt = (
+            select(Approval, Action)
+            .join(Action, Approval.action_id == Action.action_id)
+            .where(
+                Approval.status == "waiting",
+                Approval.requested_at < cutoff,
+            )
+        )
+        stale_rows = list(db.execute(stmt).all())
+
+        count = 0
+        for approval, action in stale_rows:
+            # Only auto-approve L0, L1, L2
+            action_risk = risk_levels.get(action.risk_level, 99)
+            if action_risk > max_risk_value:
+                continue
+
+            approvals_repo.update_decision(
+                approval.approval_id,
+                status=ApprovalStatus.APPROVED.value,
+                approver="system-auto",
+                comment=f"auto-approved after {threshold_minutes}min",
+            )
+            actions_repo.update_status(action.action_id, ActionStatus.APPROVED.value)
+            audit_repo.create(
+                incident_id=approval.incident_id,
+                actor="system-auto",
+                action="approve",
+                resource_type="approval",
+                resource_id=approval.approval_id,
+                details={
+                    "reason": "auto_approved",
+                    "threshold_minutes": threshold_minutes,
+                    "action_id": action.action_id,
+                    "risk_level": action.risk_level,
+                },
+            )
+            count += 1
+
+        db.commit()
+
+        # Resume runs where all approvals are now decided
+        if count > 0:
+            run_ids = list({a.agent_run_id for a, _ in stale_rows if a.status == "approved"})
+            for run_id in run_ids:
+                if not approvals_repo.has_waiting_for_run(run_id):
+                    enqueue_resume_task(run_id, "approved")
+
+        return {
+            "status": "completed",
+            "auto_approved": count,
+            "threshold_minutes": threshold_minutes,
+        }

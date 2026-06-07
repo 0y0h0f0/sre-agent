@@ -35,7 +35,12 @@ TaskEnqueue = Callable[[str, str], str]
 
 
 class IncidentService:
-    def __init__(self, db: Session, settings: Settings, enqueue_diagnosis: TaskEnqueue) -> None:
+    def __init__(
+        self,
+        db: Session,
+        settings: Settings,
+        enqueue_diagnosis: TaskEnqueue | None = None,
+    ) -> None:
         self.db = db
         self.settings = settings
         self.enqueue_diagnosis = enqueue_diagnosis
@@ -98,6 +103,9 @@ class IncidentService:
             agent_run_id, incident.incident_id, model_name=self.settings.llm_model
         )
         self.db.commit()
+
+        if self.enqueue_diagnosis is None:
+            raise DependencyUnavailableError("celery", "diagnosis enqueue is not configured")
 
         try:
             celery_task_id = self.enqueue_diagnosis(incident_id, agent_run_id)

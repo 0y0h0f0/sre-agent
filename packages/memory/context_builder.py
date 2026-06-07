@@ -87,6 +87,18 @@ class ContextBuilder:
             capped_memories.append(mem)
             mem_tokens += mt
         usage["memory"] = mem_tokens
+
+        # Cross-incident context (Phase 5.1)
+        cross_incident_tokens = 0
+        capped_cross_incident: list[dict[str, Any]] = []
+        if input.cross_incident:
+            for ci in input.cross_incident:
+                ct = self._count(json.dumps(ci, default=str))
+                if cross_incident_tokens + ct > budget.cross_incident:
+                    break
+                capped_cross_incident.append(ci)
+                cross_incident_tokens += ct
+        usage["cross_incident"] = cross_incident_tokens
         usage["scratchpad"] = 0
 
         messages = self._build_messages(
@@ -96,6 +108,7 @@ class ContextBuilder:
             evidence=evidence,
             runbook_chunks=capped_runbooks,
             memories=capped_memories,
+            cross_incident=capped_cross_incident,
         )
 
         return BuiltContext(
@@ -123,6 +136,7 @@ class ContextBuilder:
         evidence: list[dict[str, Any]],
         runbook_chunks: list[dict[str, Any]],
         memories: list[dict[str, Any]],
+        cross_incident: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
 
@@ -149,6 +163,10 @@ class ContextBuilder:
             if memories
             else "# Memory\nNo relevant memory items."
         )
+        if cross_incident:
+            parts.append(
+                f"# Related Incidents\n{json.dumps(cross_incident, default=str)}"
+            )
         messages.append({"role": "user", "content": "\n\n".join(parts)})
         return messages
 

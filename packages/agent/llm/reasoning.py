@@ -63,6 +63,10 @@ def record_llm_call(state: IncidentState, node_name: str, meta: dict[str, Any]) 
 
     Stores only provider/model/usage/finish_reason/reasoning_summary — never the
     raw chain-of-thought (Phase 1.2 boundary).
+
+    WARNING: This mutates ``state`` in-place via ``setdefault`` + ``append``.
+    Safe only in sequential LangGraph graphs. Parallel node execution would
+    need a thread-safe accumulator or a reducer that returns a fresh list.
     """
     if not meta:
         return

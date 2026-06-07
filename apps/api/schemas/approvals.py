@@ -38,6 +38,22 @@ class ApprovalItem(BaseModel):
     comment: str | None = None
 
 
+class BatchApprovalRequest(BaseModel):
+    decision: str = Field(..., pattern="^(approve|reject)$")
+    approver: str = Field(..., min_length=1, max_length=128)
+    comment: str | None = Field(default=None, max_length=1000)
+    approval_ids: list[str] = Field(..., min_length=1, max_length=50)
+    # L3 confirmation (applied to each L3 approval in the batch)
+    risk_ack: bool = False
+    confirm_action_type: str | None = Field(default=None, max_length=128)
+    confirm_target: str | None = Field(default=None, max_length=255)
+
+
+class TokenApprovalRequest(BaseModel):
+    approver: str = Field(..., min_length=1, max_length=128)
+    comment: str | None = Field(default=None, max_length=1000)
+
+
 class ApprovalDecisionResponse(BaseModel):
     approval_id: str
     action_id: str

@@ -33,6 +33,7 @@ def build_context(state: IncidentState, deps: AgentDeps) -> IncidentState:
             evidence=evidence,
             runbook_chunks=state.get("runbook_context", []),
             memories=state.get("memory_context", []),
+            cross_incident=state.get("cross_incident_context", []),
             output_schema="DiagnosisOutput",
         )
         built = deps.context_builder.build(bci)

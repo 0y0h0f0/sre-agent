@@ -35,7 +35,7 @@ class EvidenceItemRepository:
             agent_run_id=agent_run_id,
             type=type,
             source=source,
-            source_id=source_id or "",
+            source_id=source_id,
             title=title,
             excerpt=excerpt,
             payload=payload or {},
@@ -51,6 +51,10 @@ class EvidenceItemRepository:
             .order_by(EvidenceItem.created_at.asc(), EvidenceItem.id.asc())
         )
         return self.db.scalars(stmt).all()
+
+    def get_by_public_id(self, evidence_id: str) -> EvidenceItem | None:
+        stmt = select(EvidenceItem).where(EvidenceItem.evidence_id == evidence_id)
+        return self.db.scalar(stmt)
 
     def list_for_run(self, agent_run_id: str) -> Sequence[EvidenceItem]:
         stmt = (

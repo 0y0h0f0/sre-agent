@@ -31,7 +31,8 @@ class _Section:
 
 
 def estimate_tokens(text: str) -> int:
-    return len(TOKEN_RE.findall(text))
+    from packages.memory.token_counter import TokenCounter
+    return TokenCounter().count_tokens(text)
 
 
 def split_markdown_document(

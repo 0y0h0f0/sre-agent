@@ -161,6 +161,20 @@ export type ApprovalDecisionPayload = {
   confirm_target?: string | null;
 };
 
+export type ApiKeyCreatePayload = {
+  description: string;
+  expires_in_days?: number | null;
+};
+
+export type ApiKeyCreateResponse = {
+  key_id: string;
+  description: string;
+  raw_key: string;
+  created_by: string;
+  expires_at: string | null;
+  created_at: string;
+};
+
 export type IncidentReport = {
   report_id: string;
   incident_id: string;
@@ -217,6 +231,31 @@ export class ApiError extends Error {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
+const API_KEY_STORAGE_KEY = 'sre_api_key';
+
+export function getStoredApiKey(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  return window.localStorage.getItem(API_KEY_STORAGE_KEY);
+}
+
+export function setStoredApiKey(apiKey: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const trimmed = apiKey.trim();
+  if (trimmed) {
+    window.localStorage.setItem(API_KEY_STORAGE_KEY, trimmed);
+  }
+}
+
+export function clearStoredApiKey(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.removeItem(API_KEY_STORAGE_KEY);
+}
 
 function requestId(): string {
   return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -253,10 +292,15 @@ async function apiRequest<T>(path: string, options: {
   method?: string;
   query?: Record<string, string | number | boolean | null | undefined>;
   body?: unknown;
+  authToken?: string | null;
 } = {}): Promise<T> {
   const headers = new Headers({ 'X-Request-Id': requestId() });
   if (options.body !== undefined) {
     headers.set('Content-Type', 'application/json');
+  }
+  const apiKey = options.authToken !== undefined ? options.authToken : getStoredApiKey();
+  if (apiKey) {
+    headers.set('Authorization', `Bearer ${apiKey}`);
   }
 
   const response = await fetch(buildUrl(path, options.query), {
@@ -336,6 +380,14 @@ export function rejectApproval(approvalId: string, payload: ApprovalDecisionPayl
   return apiRequest<ApprovalDecision>(`/api/approvals/${approvalId}/reject`, { method: 'POST', body: payload });
 }
 
+export function createApiKey(payload: ApiKeyCreatePayload, authToken: string): Promise<ApiKeyCreateResponse> {
+  return apiRequest<ApiKeyCreateResponse>('/api/api-keys', {
+    method: 'POST',
+    body: payload,
+    authToken
+  });
+}
+
 export function getIncidentReport(incidentId: string): Promise<IncidentReport> {
   return apiRequest<IncidentReport>(`/api/incidents/${incidentId}/report`);
 }
@@ -343,3 +395,113 @@ export function getIncidentReport(incidentId: string): Promise<IncidentReport> {
 export function regenerateIncidentReport(incidentId: string): Promise<IncidentReport> {
   return apiRequest<IncidentReport>(`/api/incidents/${incidentId}/report/regenerate`, { method: 'POST', body: {} });
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5: Memory & Continuous Learning
+// ---------------------------------------------------------------------------
+
+export type NFAMarkRequest = { reason?: string | null };
+export type NFAMarkResponse = { pattern_id: string; fingerprint: string; nfa_count: number; status: string; message: string };
+export type RootCauseCorrectionRequest = { corrected_summary: string; reason?: string | null };
+export type ActionCorrectionRequest = { action_type: 'add' | 'remove'; action?: Record<string, unknown> | null; action_id?: string | null; reason?: string | null };
+export type CorrelatedIncident = { incident_id: string; service: string; severity: string; alert_name: string; root_cause_summary: string | null; correlation_type: string; similarity_score: number | null; created_at: string };
+export type FeedbackItem = { feedback_id: string; incident_id: string; feedback_type: string; original_value: Record<string, unknown> | null; corrected_value: Record<string, unknown> | null; delta: Record<string, unknown> | null; submitted_by: string; submitted_at: string };
+export type FeedbackListResponse = { items: FeedbackItem[]; total: number };
+
+export function markIncidentNFA(incidentId: string, payload: NFAMarkRequest): Promise<NFAMarkResponse> {
+  return apiRequest<NFAMarkResponse>(`/api/incidents/${incidentId}/nfa`, { method: 'POST', body: payload });
+}
+
+export function correctIncidentRootCause(incidentId: string, payload: RootCauseCorrectionRequest): Promise<FeedbackItem> {
+  return apiRequest<FeedbackItem>(`/api/incidents/${incidentId}/root-cause`, { method: 'PATCH', body: payload });
+}
+
+export function correctIncidentAction(incidentId: string, actionId: string, payload: ActionCorrectionRequest): Promise<FeedbackItem> {
+  return apiRequest<FeedbackItem>(`/api/incidents/${incidentId}/actions/${actionId}/feedback`, { method: 'POST', body: payload });
+}
+
+export function getCorrelatedIncidents(incidentId: string): Promise<CorrelatedIncident[]> {
+  return apiRequest<CorrelatedIncident[]>(`/api/incidents/${incidentId}/correlated`);
+}
+
+export function listIncidentFeedback(incidentId: string): Promise<FeedbackListResponse> {
+  return apiRequest<FeedbackListResponse>(`/api/incidents/${incidentId}/feedback`);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: Collaboration & Approval Enhancement
+// ---------------------------------------------------------------------------
+
+export type CommentItem = {
+  comment_id: string;
+  incident_id: string;
+  author: string;
+  content: string;
+  parent_comment_id: string | null;
+  mentioned_users: string[];
+  created_at: string;
+};
+export type CommentListResponse = { items: CommentItem[]; total: number };
+export type CommentCreatePayload = { author: string; content: string; parent_comment_id?: string | null; mentioned_users?: string[] };
+
+export type AnnotationItem = {
+  annotation_id: string;
+  evidence_id: string;
+  incident_id: string;
+  author: string;
+  content: string;
+  created_at: string;
+};
+export type AnnotationListResponse = { items: AnnotationItem[]; total: number };
+export type AnnotationCreatePayload = { author: string; content: string };
+
+export type AuditLogItem = {
+  audit_id: string;
+  incident_id: string | null;
+  actor: string;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  details: Record<string, unknown>;
+  created_at: string;
+};
+export type AuditLogListResponse = { items: AuditLogItem[]; total: number };
+
+export type BatchApprovalPayload = {
+  decision: 'approve' | 'reject';
+  approver: string;
+  comment?: string | null;
+  approval_ids: string[];
+  risk_ack?: boolean;
+  confirm_action_type?: string | null;
+  confirm_target?: string | null;
+};
+
+export function listIncidentComments(incidentId: string): Promise<CommentListResponse> {
+  return apiRequest<CommentListResponse>(`/api/incidents/${incidentId}/comments`);
+}
+
+export function createComment(incidentId: string, payload: CommentCreatePayload): Promise<CommentItem> {
+  return apiRequest<CommentItem>(`/api/incidents/${incidentId}/comments`, { method: 'POST', body: payload });
+}
+
+export function deleteComment(commentId: string): Promise<void> {
+  return apiRequest<void>(`/api/comments/${commentId}`, { method: 'DELETE' });
+}
+
+export function listEvidenceAnnotations(evidenceId: string): Promise<AnnotationListResponse> {
+  return apiRequest<AnnotationListResponse>(`/api/evidence/${evidenceId}/annotations`);
+}
+
+export function createEvidenceAnnotation(evidenceId: string, payload: AnnotationCreatePayload): Promise<AnnotationItem> {
+  return apiRequest<AnnotationItem>(`/api/evidence/${evidenceId}/annotations`, { method: 'POST', body: payload });
+}
+
+export function listIncidentAudit(incidentId: string): Promise<AuditLogListResponse> {
+  return apiRequest<AuditLogListResponse>(`/api/incidents/${incidentId}/audit`);
+}
+
+export function batchDecideApprovals(payload: BatchApprovalPayload): Promise<ApprovalDecision[]> {
+  return apiRequest<ApprovalDecision[]>('/api/approvals/batch', { method: 'POST', body: payload });
+}
+

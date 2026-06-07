@@ -63,6 +63,10 @@ class IncidentRepository:
             stmt = stmt.where(Incident.severity == severity)
         return stmt
 
+    def list_all(self, *, limit: int = 1000) -> Sequence[Incident]:
+        stmt = select(Incident).order_by(Incident.created_at.desc()).limit(limit)
+        return self.db.scalars(stmt).all()
+
     def list(
         self,
         *,
@@ -85,12 +89,25 @@ class IncidentRepository:
         severity: str | None = None,
         page: int = 1,
         page_size: int = 20,
+        cursor: str | None = None,
     ) -> tuple[Sequence[Incident], int]:
+        """List incidents with total count. Supports both OFFSET and cursor-based pagination.
+
+        When ``cursor`` is provided, uses cursor-based pagination (``WHERE created_at < :cursor``)
+        which scales better for large tables than OFFSET.
+        """
         base = self._base_query(status=status, service=service, severity=severity)
         count_stmt = select(func.count()).select_from(base.subquery())
         total: int = self.db.scalar(count_stmt) or 0
-        offset = (page - 1) * page_size
-        items_stmt = base.order_by(Incident.created_at.desc()).offset(offset).limit(page_size)
+        if cursor:
+            items_stmt = (
+                base.order_by(Incident.created_at.desc())
+                .where(Incident.created_at < cursor)
+                .limit(page_size)
+            )
+        else:
+            offset = (page - 1) * page_size
+            items_stmt = base.order_by(Incident.created_at.desc()).offset(offset).limit(page_size)
         items = self.db.scalars(items_stmt).all()
         return items, total
 

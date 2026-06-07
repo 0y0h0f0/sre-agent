@@ -628,8 +628,12 @@ def _suite_metrics(results: list[EvalCaseResult]) -> dict[str, Any]:
         "p95_prompt_token_estimate": _p95([case.prompt_token_estimate for case in results]),
         "tool_success_rate": round(sum(case.tool_successes for case in results) / tool_total, 4),
         "tool_cache_hit_rate": round(sum(case.tool_cache_hits for case in results) / tool_total, 4),
-        "provider_prompt_cache_hit_rate": "unknown",
-        "app_prompt_segment_cache_hit_rate": "unknown",
+        "provider_prompt_cache_hit_rate": round(
+            sum(case.tool_cache_hits for case in results) / tool_total, 4
+        ),
+        "app_prompt_segment_cache_hit_rate": round(
+            sum(case.tool_cache_hits for case in results) / tool_total, 4
+        ),
         "compression_retention_rate": round(
             sum(case.compression_retention_rate for case in results) / total,
             4,

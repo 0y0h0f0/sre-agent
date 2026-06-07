@@ -4,18 +4,18 @@ This file is for coding agents such as Codex, Claude Code, and similar tools. It
 
 The source of truth is:
 
-1. `doc/README.md`
-2. The detailed documents under `doc/`
+1. `docs/README.md`
+2. The detailed current documents under `docs/`
 3. `plan.md` as the high-level planning background
-4. `tzplan.md` and `doc/11-roadmap/` as the **post-MVP** expansion roadmap (background only, not MVP scope)
+4. `tzplan.md` and `plans/11-roadmap/` as the **post-MVP** expansion roadmap (background only, not MVP scope)
 
-For implementation details, prefer the more specific `doc/` files and this `agent.md` over older high-level wording in `plan.md`. Do not invent a different architecture when implementation details are already specified.
+For implementation details, prefer the more specific `docs/` files and this `AGENTS.md` over older high-level wording in `plan.md`. Do not invent a different architecture when implementation details are already specified.
 
-`tzplan.md` / `doc/11-roadmap/` describe planned future work (Phase 1-8), not current behavior. They never override the Mandatory Boundaries below. Do not implement roadmap items — especially ones that relax scope (real LLM as a CI gate, real K8s/cloud writes, RBAC/SSO, model fine-tuning) — unless the user explicitly asks for that specific slice.
+`tzplan.md` / `plans/11-roadmap/` preserve roadmap background and phase completion notes; they do not relax current safety boundaries. They never override the Mandatory Boundaries below. Do not implement roadmap items — especially ones that relax scope (real LLM as a CI gate, real K8s/cloud writes, RBAC/SSO, model fine-tuning) — unless the user explicitly asks for that specific slice.
 
 ## Project Summary
 
-Build an SRE Incident Response Agent for a local demo environment.
+Maintain a completed SRE Incident Response Agent for a local demo environment.
 
 The system receives alerts, creates incidents, runs a LangGraph diagnosis workflow through Celery, collects metrics/logs/traces/Git changes/Runbook context, produces root cause analysis, proposes actions, applies guardrails, waits for human approval for risky actions, executes only mock actions, and generates incident reports.
 
@@ -58,23 +58,23 @@ Do not replace these with OpenAI Agents SDK, Dramatiq, Elasticsearch, Next.js, S
 
 ## Read Before Coding
 
-Before implementing a module, read the matching document:
+Before implementing or changing a module, read the matching document:
 
-- Architecture and scope: `doc/00-overview/architecture.md`, `doc/00-overview/scope.md`
-- Metrics and quality gates: `doc/00-overview/engineering-metrics.md`
-- Backend/API/data model/Celery: `doc/01-backend/`
-- LangGraph and guardrails: `doc/02-agent/`
-- Tool layer: `doc/03-tools/tools.md`
-- RAG: `doc/04-rag/runbook-rag.md`
-- Memory, token cache, context compression: `doc/05-memory/`
-- Frontend: `doc/06-frontend/react-console.md`
-- Tests: `doc/07-testing/testing-strategy.md`
-- Deployment: `doc/08-deploy/demo-environment.md`
-- Evals: `doc/09-evals/evaluation.md`
-- Implementation sequence: `doc/10-codegen/implementation-order.md`
-- Module checklist: `doc/10-codegen/module-checklists.md`
-- Documentation quality gate: `doc/10-codegen/documentation-quality-gate.md`
-- Post-MVP roadmap (background only): `doc/11-roadmap/README.md`
+- Architecture and scope: `docs/00-overview/architecture.md`, `docs/00-overview/scope-and-boundaries.md`
+- Metrics and quality gates: `docs/07-testing/testing-strategy.md`, `docs/10-operations/development-workflow.md`
+- Backend/API/data model/Celery: `docs/01-backend/`
+- LangGraph and guardrails: `docs/02-agent/`
+- Tool layer: `docs/03-tools/tool-layer.md`
+- RAG: `docs/04-rag/runbook-rag.md`
+- Memory, token cache, context compression: `docs/05-memory/memory-cache-compression.md`
+- Frontend: `docs/06-frontend/react-console.md`
+- Tests: `docs/07-testing/testing-strategy.md`
+- Deployment: `docs/08-deploy/local-demo.md`
+- Evals: `docs/09-evals/evaluation.md`
+- Implementation sequence: `plans/10-codegen/implementation-order.md`
+- Module checklist: `plans/10-codegen/module-checklists.md`
+- Documentation quality gate: `plans/10-codegen/documentation-quality-gate.md`
+- Post-MVP roadmap and completion notes: `plans/11-roadmap/README.md`
 
 If implementation guidance conflicts, prefer the more specific document. If still ambiguous, prefer the safer option: mock executor, FakeLLM, no real external writes, explicit schema, and stronger tests.
 
@@ -172,7 +172,7 @@ tests/
 
 ## API Requirements
 
-Implement API contracts from `doc/01-backend/api-contract.md`.
+Implement API contracts from `docs/01-backend/api-reference.md` and preserve compatibility with `plans/01-backend/api-contract.md` where applicable.
 
 Core endpoints:
 
@@ -205,7 +205,7 @@ Important behavior:
 
 ## Data Model Rules
 
-Use `doc/01-backend/data-model.md`.
+Use `docs/01-backend/data-model.md`.
 
 Important requirements:
 
@@ -248,7 +248,7 @@ Rules:
 
 ## Agent Workflow
 
-Implement the workflow from `doc/02-agent/langgraph-workflow.md`:
+Implement the workflow from `docs/02-agent/workflow.md`:
 
 ```text
 parse_alert
@@ -305,7 +305,7 @@ Tool cache rules:
 
 ## RAG Rules
 
-Use `doc/04-rag/runbook-rag.md`.
+Use `docs/04-rag/runbook-rag.md`.
 
 Runbook chunks:
 
@@ -329,7 +329,7 @@ Diagnosis outputs must reference evidence IDs or Runbook chunk IDs. Do not allow
 
 This project must include memory and context efficiency from the first Agent implementation.
 
-Use `doc/05-memory/token-cache-and-context.md` and `doc/05-memory/memory-implementation.md`.
+Use `docs/05-memory/memory-cache-compression.md` and the matching implementation notes under `plans/05-memory/`.
 
 Important distinction:
 

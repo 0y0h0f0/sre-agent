@@ -1,4 +1,9 @@
-"""Deterministic fake embeddings for local tests and demos."""
+"""Deterministic fake embeddings for local tests and demos.
+
+Deprecated: prefer FakeEmbeddingProvider from packages.rag.embedding_factory.
+This class is kept for backward compatibility with existing imports; new code
+should use build_embedding_provider(settings) instead.
+"""
 
 from __future__ import annotations
 

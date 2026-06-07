@@ -46,6 +46,15 @@ class ApprovalRepository:
         stmt = select(Approval).where(Approval.approval_id == approval_id)
         return self.db.scalar(stmt)
 
+    def get_for_update(self, approval_id: str) -> Approval | None:
+        """SELECT ... FOR UPDATE to prevent TOCTOU race on approve/reject."""
+        stmt = (
+            select(Approval)
+            .where(Approval.approval_id == approval_id)
+            .with_for_update()
+        )
+        return self.db.scalar(stmt)
+
     def list_for_incident(self, incident_id: str) -> Sequence[Approval]:
         stmt = (
             select(Approval)
@@ -59,6 +68,15 @@ class ApprovalRepository:
             select(Approval)
             .where(Approval.status == "waiting")
             .order_by(Approval.requested_at.asc(), Approval.id.asc())
+        )
+        return self.db.scalars(stmt).all()
+
+    def list_for_run(self, agent_run_id: str) -> Sequence[Approval]:
+        """Return all approvals for a given agent run, newest first."""
+        stmt = (
+            select(Approval)
+            .where(Approval.agent_run_id == agent_run_id)
+            .order_by(Approval.requested_at.desc(), Approval.id.desc())
         )
         return self.db.scalars(stmt).all()
 

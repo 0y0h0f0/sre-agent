@@ -17,7 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 
 try:
     from pgvector.sqlalchemy import Vector
@@ -31,6 +31,7 @@ from packages.db.base import Base
 
 JSONType = JSON().with_variant(JSONB, "postgresql")
 Vector384Type = JSON() if Vector is None else JSON().with_variant(Vector(384), "postgresql")
+TSVectorType = Text().with_variant(TSVECTOR(), "postgresql")
 
 
 class Incident(Base):
@@ -194,7 +195,7 @@ class EvidenceItem(Base):
     evidence_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     incident_id: Mapped[str] = mapped_column(
         String(64),
-        ForeignKey("incidents.incident_id"),
+        ForeignKey("incidents.incident_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -226,7 +227,7 @@ class Action(Base):
     action_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     incident_id: Mapped[str] = mapped_column(
         String(64),
-        ForeignKey("incidents.incident_id"),
+        ForeignKey("incidents.incident_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -292,6 +293,8 @@ class Approval(Base):
     )
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resume_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    email_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class IncidentReport(Base):
@@ -369,6 +372,8 @@ class RunbookChunk(Base):
     content_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector384Type, nullable=False, default=list)
     embedding_model: Mapped[str] = mapped_column(String(128), nullable=False, default="fake-384")
+    tsv_content: Mapped[str | None] = mapped_column("tsv_content", TSVectorType, nullable=True)
+    language: Mapped[str] = mapped_column(String(8), nullable=False, default="en")
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONType, nullable=False, default=dict
     )
@@ -380,6 +385,59 @@ class RunbookChunk(Base):
         default=utc_now,
         onupdate=utc_now,
         nullable=False,
+    )
+
+
+class RunbookDraft(Base):
+    __tablename__ = "runbook_drafts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    incident_ids: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
+    service: Mapped[str] = mapped_column(String(128), nullable=False)
+    incident_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    front_matter: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    reviewer: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_chunk_ids: Mapped[list[str] | None] = mapped_column(JSONType, nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class RunbookVersion(Base):
+    __tablename__ = "runbook_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id", "version_number",
+            name="uq_runbook_version_document_number",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    document_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    change_reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    related_incident_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    related_draft_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    diff_from_previous: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="agent")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
     )
 
 
@@ -438,7 +496,19 @@ class EvalRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     eval_run_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    suite: Mapped[str] = mapped_column(String(32), nullable=False, default="custom")
+    model_name: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="fake-diagnosis-model"
+    )
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False, default="v1")
     metrics: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    git_commit: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -449,12 +519,235 @@ class EvalCase(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     eval_case_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    eval_run_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("eval_runs.eval_run_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     incident_type: Mapped[str] = mapped_column(String(128), nullable=False)
     fixture_path: Mapped[str] = mapped_column(String(512), nullable=False)
     expected_root_cause: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    actual_root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONType, nullable=False, default=dict
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class FalsePositivePattern(Base):
+    """Tracks NFA (Not Actionable Alert) markings per fingerprint.
+
+    After `nfa_auto_suppress_threshold` marks the alert severity is
+    auto-degraded to P4. Stale patterns reset after `nfa_reset_days`.
+    """
+
+    __tablename__ = "false_positive_patterns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pattern_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    service: Mapped[str] = mapped_column(String(128), nullable=False)
+    alert_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    nfa_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="active", index=True
+    )
+    first_nfa_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    last_nfa_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    suppressed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    suppressed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    restored_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    restored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class IncidentCorrelation(Base):
+    """Cross-incident association records.
+
+    Links incidents by same fingerprint, similar embedding, or manual association.
+    """
+
+    __tablename__ = "incident_correlations"
+    __table_args__ = (
+        UniqueConstraint(
+            "incident_id_a", "incident_id_b",
+            name="uq_correlation_pair",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    incident_id_a: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    incident_id_b: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    correlation_type: Mapped[str] = mapped_column(
+        String(32), nullable=False
+    )  # same_fingerprint | similar_embedding | similar_service | manual
+    similarity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class FeedbackItem(Base):
+    """User corrections to diagnosis — root cause rewrites, action additions/removals.
+
+    Deltas are recorded for audit and future eval dataset construction.
+    Model fine-tuning requires separate governance; this table only stores auditable
+    feedback data.
+    """
+
+    __tablename__ = "feedback_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    feedback_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    incident_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    agent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feedback_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, index=True
+    )  # root_cause_correction | action_addition | action_removal | nfa_mark
+    original_value: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    corrected_value: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    delta: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    submitted_by: Mapped[str] = mapped_column(String(128), nullable=False, default="sre")
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class IncidentComment(Base):
+    """Multi-person comments on an incident with @mention support.
+
+    Supports threaded replies via ``parent_comment_id``.
+    """
+
+    __tablename__ = "incident_comments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    comment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    incident_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("incidents.incident_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    author: Mapped[str] = mapped_column(String(128), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_comment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    mentioned_users: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class EvidenceAnnotation(Base):
+    """Annotations on evidence items by SRE team members."""
+
+    __tablename__ = "evidence_annotations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    annotation_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    evidence_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("evidence_items.evidence_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    incident_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("incidents.incident_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    author: Mapped[str] = mapped_column(String(128), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class AuditLog(Base):
+    """Write-ahead audit log recording who did what and when.
+
+    Tracks approval decisions, root cause corrections, NFA marks,
+    action feedback, and comment/annotation creation.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    audit_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    incident_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("incidents.incident_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False, index=True
+    )
+
+
+class ApprovalGroup(Base):
+    """Approval groups keyed by service pattern for team-based routing.
+
+    Members are a JSON list of approver names. When an approval is
+    created for a service matching ``service_pattern``, the groupʼs
+    members receive the notification in addition to the global list.
+    """
+
+    __tablename__ = "approval_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    service_pattern: Mapped[str] = mapped_column(String(255), nullable=False)
+    members: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class ApiKey(Base):
+    """API key for service-to-service and management authentication.
+
+    Raw key is returned once on creation and stored as a SHA-256 hash.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    description: Mapped[str] = mapped_column(String(255), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="admin")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

@@ -295,6 +295,29 @@ class EmailNotificationService:
             if is_l3
             else f"[ACTION REQUIRED] {action.risk_level} Approval: {action.type}"
         )
+
+        # Generate or reuse email token for direct approve/reject links (L2 only, not L3)
+        import secrets
+        from datetime import timedelta
+
+        from packages.common.time import utc_now
+
+        email_token = None
+        if not is_l3:
+            now = utc_now()
+            # Reuse existing valid token so re-sent emails don't invalidate earlier links
+            if (
+                approval.email_token is not None
+                and approval.email_token_expires_at is not None
+                and approval.email_token_expires_at > now
+            ):
+                email_token = approval.email_token
+            else:
+                email_token = secrets.token_urlsafe(24)
+                approval.email_token = email_token
+                approval.email_token_expires_at = now + timedelta(hours=24)
+                self.db.flush()
+
         context = {
             "heading": subject,
             "approval": approval,
@@ -302,8 +325,16 @@ class EmailNotificationService:
             "incident": incident,
             "approval_url": self._url(f"/approvals/{approval.approval_id}"),
             "incident_url": self._url(f"/incidents/{incident.incident_id}"),
+            "email_token": email_token,
+            "approve_email_url": self._url(f"/api/approvals/by-token/{email_token}/approve") if email_token else "",
+            "reject_email_url": self._url(f"/api/approvals/by-token/{email_token}/reject") if email_token else "",
         }
         html = self.email.render_html("approval_request.html", context)
+        text_prefix = (
+            f"Approve: {context['approve_email_url']}\nReject: {context['reject_email_url']}\n"
+            if email_token
+            else ""
+        )
         text = _lines(
             subject,
             f"Service: {incident.service}",
@@ -311,12 +342,30 @@ class EmailNotificationService:
             f"Target: {action.target}",
             f"Risk: {action.risk_level}",
             f"Reason: {action.reason}",
-            f"Approval: {context['approval_url']}",
+            text_prefix + f"Approval: {context['approval_url']}",
         )
+
+        # Combine global recipients with approval group members
+        recipients = self._recipients()
+        try:
+            from packages.db.repositories.approval_groups import ApprovalGroupRepository
+
+            groups = ApprovalGroupRepository(self.db)
+            group = groups.find_by_service(incident.service)
+            if group is not None:
+                for member in group.members:
+                    if member not in recipients:
+                        recipients.append(member)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "failed to resolve approval group for service %s", incident.service, exc_info=True
+            )
+
         return EmailContent(
             notification_type="approval_request",
             subject=subject,
-            recipients=self._recipients(),
+            recipients=recipients,
             html_body=html,
             text_body=text,
             related_incident_id=incident.incident_id,

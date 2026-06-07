@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from packages.db.models import RunbookChunk
 from packages.db.repositories.runbooks import RunbookChunkRepository
-from packages.rag.embeddings import FakeEmbedding
+from packages.rag.bm25 import adaptive_alpha, build_tsquery, normalize_bm25
+from packages.rag.embedding_factory import EmbeddingProvider, FakeEmbeddingProvider
 from packages.rag.reranker import rerank_score
 
 WORD_RE = re.compile(r"[a-z0-9_]+")
@@ -71,12 +72,14 @@ class RunbookRetriever:
         self,
         repository: RunbookChunkRepository,
         *,
-        embedding_provider: FakeEmbedding | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
         cache: RunbookSearchCache | None = None,
+        use_hybrid: bool = True,
     ) -> None:
         self.repository = repository
-        self.embedding_provider = embedding_provider or FakeEmbedding()
+        self.embedding_provider: EmbeddingProvider = embedding_provider or FakeEmbeddingProvider()
         self.cache = cache
+        self.use_hybrid = use_hybrid
 
     def search(self, query: RunbookSearchQuery) -> RunbookSearchResultList:
         normalized_query = RunbookSearchQuery.model_validate(query)
@@ -87,15 +90,43 @@ class RunbookRetriever:
                 return cached
 
         query_embedding = self.embedding_provider.embed_text(normalized_query.query)
-        candidates: list[tuple[RunbookChunk, float]] = []
+        all_chunks: dict[str, tuple[RunbookChunk, float]] = {}
+
+        # --- Vector recall (always runs) ---
         for chunk in self.repository.list_chunks():
             if not _matches_metadata(chunk.metadata_json, normalized_query):
                 continue
-            vector_score = max(
+            vec_score = max(
                 _normalized_cosine(query_embedding, chunk.embedding),
                 _lexical_score(normalized_query.query, f"{chunk.title}\n{chunk.content}"),
             )
-            candidates.append((chunk, vector_score))
+            all_chunks[chunk.chunk_id] = (chunk, vec_score)
+
+        # --- BM25 recall (optional hybrid path) ---
+        bm25_scores: dict[str, float] = {}
+        if self.use_hybrid:
+            tsquery = build_tsquery(normalized_query.query)
+            for chunk, bm25_raw in self.repository.search_bm25(
+                tsquery,
+                service=normalized_query.service,
+                incident_type=normalized_query.incident_type,
+            ):
+                bm25_scores[chunk.chunk_id] = normalize_bm25(bm25_raw)
+                # Include BM25-only chunks that may not be in vector results
+                if chunk.chunk_id not in all_chunks:
+                    all_chunks[chunk.chunk_id] = (chunk, 0.0)
+
+        # --- Hybrid score fusion ---
+        candidates: list[tuple[RunbookChunk, float]] = []
+        if bm25_scores:
+            titles_for_alpha = [chunk.title for chunk, _ in all_chunks.values()]
+            alpha = adaptive_alpha(normalized_query.query, titles_for_alpha)
+            for chunk_id, (chunk, vec_score) in all_chunks.items():
+                bm25 = bm25_scores.get(chunk_id, 0.0)
+                hybrid = alpha * bm25 + (1.0 - alpha) * vec_score
+                candidates.append((chunk, hybrid))
+        else:
+            candidates = list(all_chunks.values())
 
         recalled = sorted(candidates, key=lambda item: item[1], reverse=True)[:20]
         ranked = sorted(
@@ -143,7 +174,7 @@ def format_runbook_context(results: list[RunbookSearchResult]) -> str:
 
 
 def _matches_metadata(metadata: dict[str, Any], query: RunbookSearchQuery) -> bool:
-    if query.service and metadata.get("service") != query.service:
+    if query.service and (metadata.get("service") or "").lower() != query.service.lower():
         return False
     if query.incident_type and metadata.get("incident_type") != query.incident_type:
         return False

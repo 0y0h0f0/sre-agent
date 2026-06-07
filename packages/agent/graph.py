@@ -14,7 +14,10 @@ from packages.agent.nodes.collect_k8s import collect_k8s
 from packages.agent.nodes.collect_logs import collect_logs
 from packages.agent.nodes.collect_metrics import collect_metrics
 from packages.agent.nodes.collect_traces import collect_traces
+from packages.agent.nodes.compress_context import compress_context
+from packages.agent.nodes.cross_incident import cross_incident
 from packages.agent.nodes.diagnose import diagnose
+from packages.agent.nodes.persist_memory import persist_memory
 from packages.agent.nodes.execute_action import execute_action
 from packages.agent.nodes.generate_report import generate_report
 from packages.agent.nodes.guardrail_check import guardrail_check
@@ -44,6 +47,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph.add_node("collect_k8s", partial(collect_k8s, deps=deps))
     graph.add_node("collect_db", partial(collect_db, deps=deps))
     graph.add_node("retrieve_memory", partial(retrieve_memory, deps=deps))
+    graph.add_node("cross_incident", partial(cross_incident, deps=deps))
     graph.add_node("retrieve_runbook", partial(retrieve_runbook, deps=deps))
     graph.add_node("build_context", partial(build_context, deps=deps))
     graph.add_node("diagnose", partial(diagnose, deps=deps))
@@ -51,8 +55,10 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph.add_node("plan_actions", partial(plan_actions, deps=deps))
     graph.add_node("guardrail_check", partial(guardrail_check, deps=deps))
     graph.add_node("human_approval", partial(human_approval, deps=deps))
+    graph.add_node("compress_context", partial(compress_context, deps=deps))
     graph.add_node("execute_action", partial(execute_action, deps=deps))
     graph.add_node("generate_report", partial(generate_report, deps=deps))
+    graph.add_node("persist_memory", partial(persist_memory, deps=deps))
 
     graph.set_entry_point("parse_alert")
     graph.add_edge("parse_alert", "collect_metrics")
@@ -62,10 +68,12 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph.add_edge("collect_deployment", "collect_k8s")
     graph.add_edge("collect_k8s", "collect_db")
     graph.add_edge("collect_db", "retrieve_memory")
-    graph.add_edge("retrieve_memory", "retrieve_runbook")
+    graph.add_edge("retrieve_memory", "cross_incident")
+    graph.add_edge("cross_incident", "retrieve_runbook")
     graph.add_edge("retrieve_runbook", "build_context")
     graph.add_edge("build_context", "diagnose")
-    graph.add_edge("diagnose", "rank_hypotheses")
+    graph.add_edge("diagnose", "compress_context")
+    graph.add_edge("compress_context", "rank_hypotheses")
     graph.add_edge("rank_hypotheses", "plan_actions")
     graph.add_edge("plan_actions", "guardrail_check")
 
@@ -84,7 +92,8 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
         },
     )
     graph.add_edge("execute_action", "generate_report")
-    graph.add_edge("generate_report", END)
+    graph.add_edge("generate_report", "persist_memory")
+    graph.add_edge("persist_memory", END)
 
     return graph.compile(checkpointer=checkpointer)
 

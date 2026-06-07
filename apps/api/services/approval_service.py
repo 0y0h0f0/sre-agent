@@ -11,7 +11,9 @@ from apps.api.schemas.approvals import (
     ApprovalDecisionResponse,
     ApprovalItem,
     ApproveRequest,
+    BatchApprovalRequest,
     RejectRequest,
+    TokenApprovalRequest,
 )
 from apps.api.schemas.common import (
     ActionStatus,
@@ -27,6 +29,7 @@ from packages.common.errors import (
 from packages.db.models import Action, Approval
 from packages.db.repositories.actions import ActionRepository
 from packages.db.repositories.approvals import ApprovalRepository
+from packages.db.repositories.audit_logs import AuditLogRepository
 
 TaskEnqueue = Callable[[str, str], str]
 
@@ -41,6 +44,7 @@ class ApprovalService:
         self.enqueue_resume = enqueue_resume
         self.approvals = ApprovalRepository(db)
         self.actions = ActionRepository(db)
+        self.audit = AuditLogRepository(db)
 
     def list_approvals(
         self,
@@ -160,6 +164,20 @@ class ApprovalService:
         self.actions.update_status(action.action_id, ActionStatus.APPROVED.value)
         self.db.flush()
 
+        self.audit.create(
+            incident_id=approval.incident_id,
+            actor=request.approver,
+            action="approve",
+            resource_type="approval",
+            resource_id=approval.approval_id,
+            details={"action_id": action.action_id, "risk_level": action.risk_level},
+        )
+        self.db.flush()
+
+        # Persist the decision before enqueuing the resume so the Celery
+        # worker (separate connection) can read the updated approval status.
+        self.db.commit()
+
         # Resume only once the whole batch is decided. Resuming after the first
         # decision would execute the approved action and finalize the run,
         # leaving sibling approvals stranded (approved-but-never-executed).
@@ -189,6 +207,21 @@ class ApprovalService:
         self.actions.update_status(approval.action_id, ActionStatus.REJECTED.value)
         self.db.flush()
 
+        action = self._require_action(approval.action_id)
+        self.audit.create(
+            incident_id=approval.incident_id,
+            actor=request.approver,
+            action="reject",
+            resource_type="approval",
+            resource_id=approval.approval_id,
+            details={"action_id": approval.action_id, "risk_level": action.risk_level},
+        )
+        self.db.flush()
+
+        # Persist the decision before enqueuing the resume so the Celery
+        # worker (separate connection) can read the updated approval status.
+        self.db.commit()
+
         # Resume only once the whole batch is decided (see approve()).
         self._maybe_resume(approval.agent_run_id, "rejected")
 
@@ -199,16 +232,151 @@ class ApprovalService:
             agent_run_id=approval.agent_run_id,
         )
 
+    def batch_decide(self, request: BatchApprovalRequest) -> list[ApprovalDecisionResponse]:
+        """Process multiple approvals in a single request."""
+        results: list[ApprovalDecisionResponse] = []
+        errors: list[dict[str, Any]] = []
+
+        for approval_id in request.approval_ids:
+            try:
+                if request.decision == "approve":
+                    approve_req = ApproveRequest(
+                        approver=request.approver,
+                        comment=request.comment,
+                        risk_ack=request.risk_ack,
+                        confirm_action_type=request.confirm_action_type,
+                        confirm_target=request.confirm_target,
+                    )
+                    results.append(self.approve(approval_id, approve_req))
+                else:
+                    reject_req = RejectRequest(
+                        approver=request.approver,
+                        comment=request.comment,
+                    )
+                    results.append(self.reject(approval_id, reject_req))
+            except (NotFoundError, ConflictError, ValidationAppError) as exc:
+                errors.append({"approval_id": approval_id, "error": str(exc)})
+
+        if errors and not results:
+            raise ValidationAppError(
+                "all batch approvals failed",
+                details={"errors": errors},
+            )
+        if errors:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "batch_decide partial failure: %d succeeded, %d failed",
+                len(results),
+                len(errors),
+            )
+        return results
+
+    def generate_email_token(self, approval_id: str) -> str:
+        """Generate a single-use email token for an approval. Expires in 24h."""
+        import secrets
+        from datetime import timedelta
+
+        from packages.common.time import utc_now
+
+        approval = self._require_approval(approval_id)
+        token = secrets.token_urlsafe(24)
+        approval.email_token = token
+        approval.email_token_expires_at = utc_now() + timedelta(hours=24)
+        self.db.flush()
+        self.db.commit()
+        return token
+
+    def get_approval_by_token(self, token: str) -> ApprovalItem:
+        """Look up an approval by its email token."""
+        from sqlalchemy import select
+
+        stmt = select(Approval).where(Approval.email_token == token)
+        approval = self.db.scalar(stmt)
+        if approval is None:
+            raise NotFoundError("approval", f"token:{token[:8]}...")
+        return self.get_approval(approval.approval_id)
+
+    def approve_by_token(self, token: str, request: TokenApprovalRequest) -> ApprovalDecisionResponse:
+        """Approve via email token. L3 actions require web UI — rejected here."""
+        approval = self._get_approval_by_token(token)
+        action = self._require_action(approval.action_id)
+
+        # L3 requires full confirmation in web UI — not available via email
+        if action.risk_level == "L3":
+            raise ValidationAppError(
+                "L3 actions require web UI confirmation and cannot be approved via email link. "
+                "Please use the web console for risk_ack, action_type, and target confirmation.",
+                details={"approval_id": approval.approval_id, "risk_level": "L3"},
+            )
+
+        approve_req = ApproveRequest(
+            approver=request.approver,
+            comment=request.comment,
+        )
+        result = self.approve(approval.approval_id, approve_req)
+        # Consume token (approve() already committed, so commit the token clear)
+        approval.email_token = None
+        self.db.flush()
+        self.db.commit()
+        return result
+
+    def reject_by_token(self, token: str, request: TokenApprovalRequest) -> ApprovalDecisionResponse:
+        """Reject via email token."""
+        approval = self._get_approval_by_token(token)
+        reject_req = RejectRequest(
+            approver=request.approver,
+            comment=request.comment,
+        )
+        result = self.reject(approval.approval_id, reject_req)
+        # Consume token (reject() already committed, so commit the token clear)
+        approval.email_token = None
+        self.db.flush()
+        self.db.commit()
+        return result
+
+    def _get_approval_by_token(self, token: str) -> Approval:
+        from sqlalchemy import select
+
+        from packages.common.time import utc_now
+
+        stmt = select(Approval).where(Approval.email_token == token)
+        approval = self.db.scalar(stmt)
+        if approval is None:
+            raise NotFoundError("approval", f"token:{token[:8]}...")
+
+        # Check expiry
+        if (
+            approval.email_token_expires_at is not None
+            and approval.email_token_expires_at < utc_now()
+        ):
+            # Clear expired token
+            approval.email_token = None
+            approval.email_token_expires_at = None
+            self.db.flush()
+            self.db.commit()
+            raise ValidationAppError(
+                "email approval token has expired",
+                details={"approval_id": approval.approval_id},
+            )
+        return approval
+
     def _maybe_resume(self, agent_run_id: str, decision: str) -> None:
         """Enqueue a resume only when no approval in the run is still waiting."""
         if self.enqueue_resume is None:
+            import logging
+            logging.getLogger(__name__).warning(
+                "cannot enqueue resume for run %s: enqueue_resume not configured", agent_run_id
+            )
             return
         if self.approvals.has_waiting_for_run(agent_run_id):
             return
         self.enqueue_resume(agent_run_id, decision)
 
     def _require_approval(self, approval_id: str) -> Approval:
-        approval = self.approvals.get_by_public_id(approval_id)
+        # Use FOR UPDATE to prevent TOCTOU race between status check and update
+        approval = self.approvals.get_for_update(approval_id) or self.approvals.get_by_public_id(approval_id)
         if approval is None:
             raise NotFoundError("approval", approval_id)
         return approval

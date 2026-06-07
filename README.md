@@ -1,6 +1,8 @@
 # SRE Incident Response Agent
 
-Local-demo system that receives alerts, diagnoses incidents via a LangGraph workflow on Celery, and produces root cause analysis with mock actions.
+Feature-complete local-demo system that receives alerts, diagnoses incidents via a LangGraph workflow on Celery, and produces root cause analysis, guarded mock actions, approvals, reports, evals, and a React console.
+
+The project is complete for the documented local-demo scope. Optional real-provider and real-read-backend adapters are present where documented, but the safety boundary remains unchanged: no real production Kubernetes writes, no real cloud writes, no destructive database/cache operations, and CI/smoke flows stay deterministic with FakeLLM and mock execution.
 
 ## Quick Start
 
@@ -63,9 +65,12 @@ LangGraph workflow
         |
         +--> MetricsTool -> Prometheus
         +--> LogsTool    -> Loki
-        +--> TraceTool   -> OTel mock/demo data
-        +--> GitTool     -> demo git changes
-        +--> RAG         -> pgvector runbook chunks
+        +--> TraceTool   -> fixture / Jaeger / Tempo read backend
+        +--> GitTool     -> fixture / GitHub / Argo CD read backend
+        +--> K8sTool     -> fixture / read-only live diagnostics
+        +--> DbTool      -> fixture / read-only SQL diagnostics
+        +--> RAG         -> runbook chunks + pgvector + BM25
+        +--> Memory      -> run-local / incident / service memory
         |
         v
 Diagnosis + Evidence + Actions
@@ -75,14 +80,14 @@ Diagnosis + Evidence + Actions
         +--> L4 reject directly
         |
         v
-Incident Report + UI display
+Mock execution + Incident Report + UI + Eval metrics
 ```
 
 ## Directory Structure
 
 ```
-  api/          FastAPI routers, schemas, services
 apps/
+  api/          FastAPI routers, schemas, services
   worker/       Celery app and tasks
   web/          React + TypeScript + Vite console
 packages/
@@ -92,7 +97,7 @@ packages/
   evals/        Eval datasets, runner, metrics
   memory/       Token cache, context budget, compression
   rag/          Runbook ingest, split, retrieve, rerank
-  tools/        Prometheus, Loki, Trace, Git, Action tools
+  tools/        Prometheus, Loki, Trace, Git, K8s, DB, Action tools
 demo/
   alerts/       Demo alert fixtures (4 incident types)
   demo_service/ Mock service with fault injection
@@ -104,8 +109,9 @@ tests/
   unit/         Unit tests
   integration/  Integration tests
   contract/     API contract tests
-doc/            Detailed implementation specs
-  11-roadmap/   Post-MVP expansion plan (Phase 1-8)
+docs/           Current reader-facing documentation
+plans/          Original implementation specs and roadmap background
+  11-roadmap/   Post-MVP expansion phases and completion notes
 ```
 
 ## Tech Stack
@@ -117,7 +123,7 @@ doc/            Detailed implementation specs
 - **Cache/Queue**: Redis
 - **Metrics**: Prometheus
 - **Logs**: Loki
-- **Trace**: OpenTelemetry demo data / mock
+- **Trace**: OpenTelemetry demo data / fixture and optional read backends
 - **Frontend**: React + TypeScript + Vite, TanStack Query
 - **Tests**: pytest, pytest-cov, Vitest, Playwright
 
@@ -140,7 +146,7 @@ doc/            Detailed implementation specs
 
 ## API
 
-See `doc/01-backend/api-contract.md` for full API contract.
+See `docs/01-backend/api-reference.md` for the current API reference.
 
 Core endpoints:
 - `GET /healthz` / `GET /readyz`
@@ -177,20 +183,21 @@ RUN_REAL_EMAIL_TEST=true pytest tests/manual/test_real_email_delivery.py -q
 
 The send test sends exactly one email to `SRE_EMAIL_LIST`. Regular unit, integration, and CI runs skip these manual tests by default.
 
-## Roadmap
+## Project Status
 
-M1-M7 (MVP) are complete. The post-MVP expansion plan is tracked in `doc/11-roadmap/`
-(source: `tzplan.md`), covering eight phases from "demo" to "production-grade":
+M1-M7 (MVP) and the documented post-MVP implementation slices are complete for this repository's local-demo scope. Current operating documentation lives in `docs/`; original planning background and phase notes live in `plans/`.
 
-| Phase | Theme |
-|-------|-------|
-| 1 | Intelligent diagnosis upgrade (real LLM provider factory, layered reasoning) |
-| 2 | Tool layer productionization (real Trace/Git/K8s/DB backends) |
-| 3 | Alert sources & email notifications (closed loop) |
-| 4 | Runbook RAG enhancement (hybrid retrieval, reranker) |
-| 5 | Memory & continuous learning |
-| 6 | Collaboration & approval workflow |
-| 7 | Ops & engineering (RBAC, observability, HA) |
-| 8 | Frontend enhancement (realtime progress, visualization, mobile) |
+The delivered phase themes are:
 
-See `doc/11-roadmap/README.md` for priorities, milestones, and risk tracking.
+| Phase | Delivered theme |
+|-------|-----------------|
+| 1 | Intelligent diagnosis upgrade: provider factory, layered reasoning, evidence validation |
+| 2 | Tool layer productionization: configurable read backends, K8s/DB diagnostics, expanded fault catalog |
+| 3 | Alert sources and email notifications |
+| 4 | Runbook RAG enhancement: hybrid retrieval, reranker, drafts and versions |
+| 5 | Memory and continuous learning: feedback, correlations, cache/compression metrics |
+| 6 | Collaboration and approval workflow |
+| 7 | Ops and engineering: API keys, metrics, worker health, eval/shadow paths |
+| 8 | Frontend enhancement: completed React console flows |
+
+See `docs/README.md` for the documentation center and `plans/11-roadmap/README.md` for phase-level completion notes.

@@ -13,6 +13,7 @@ from packages.common.ids import new_id
 from packages.common.settings import Settings
 from packages.db.models import Incident
 from packages.db.repositories.agent_runs import AgentRunRepository
+from packages.db.repositories.false_positive_patterns import FalsePositivePatternRepository
 from packages.db.repositories.incidents import IncidentRepository
 
 TaskEnqueue = Callable[[str, str], str]
@@ -33,8 +34,14 @@ class AlertService:
         self.enqueue_notification = enqueue_notification
         self.incidents = IncidentRepository(db)
         self.agent_runs = AgentRunRepository(db)
+        self.fpp = FalsePositivePatternRepository(db)
 
     def create_alert(self, payload: AlertCreateRequest) -> AlertCreateResponse:
+        # Phase 5: check for suppressed NFA patterns before creating incident
+        suppressed = self.fpp.should_suppress(
+            payload.fingerprint, threshold=self.settings.nfa_auto_suppress_threshold
+        )
+
         existing = self.incidents.get_open_by_fingerprint(payload.fingerprint)
         if existing is not None:
             return self._deduplicated_response(existing)
@@ -42,6 +49,8 @@ class AlertService:
         incident_id = new_id("inc_")
         agent_run_id = new_id("run_")
         incident = self.incidents.create(incident_id, payload)
+        if suppressed:
+            incident.severity = "P4"
         self.agent_runs.create(
             agent_run_id,
             incident.incident_id,

@@ -1,0 +1,1 @@
+{"key_id":"apik_6ab2c37505674099958e2d97791ca945","description":"local demo key","raw_key":"356277f8928f69e56cbb656b7aaefa420df9d2ac4b3ea65bfcc284c2cff9b75b","created_by":"admin","expires_at":"2026-09-05T07:51:00.786217Z","created_at":"2026-06-07T07:51:00.814902Z"}(base)

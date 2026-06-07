@@ -131,7 +131,7 @@ class LogsTool:
         return result
 
     def _query_loki(self, query: LogsQuery) -> list[dict[str, Any]]:
-        keywords: list[str | None] = list(query.keywords) if query.keywords else [None]
+        keywords: list[str | None] = list(query.keywords)[:10] if query.keywords else [None]
         collected: dict[tuple[Any, ...], dict[str, Any]] = {}
         for keyword in keywords:
             logql = _logql(query.service, keyword, self.service_label)

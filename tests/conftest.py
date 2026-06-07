@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Generator
 from datetime import UTC, datetime
 
@@ -17,7 +18,14 @@ from apps.api.dependencies import (
     get_task_enqueue,
 )
 from apps.api.main import create_app
-from packages.common.settings import Settings
+from packages.common.settings import Settings, get_settings
+
+
+@pytest.fixture(autouse=True)
+def _disable_auth_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable API key auth for all tests."""
+    monkeypatch.setenv("API_KEY_AUTH_ENABLED", "false")
+    get_settings.cache_clear()
 from packages.db import models  # noqa: F401
 from packages.db.base import Base
 
@@ -88,6 +96,8 @@ def test_settings() -> Settings:
         redis_url="memory://redis",
         celery_broker_url="memory://broker",
         celery_result_backend="memory://backend",
+        api_key_auth_enabled=False,
+        celery_task_always_eager=True,
     )
 
 
@@ -99,6 +109,8 @@ def client(
     fake_notification_enqueue: FakeNotificationEnqueue,
     test_settings: Settings,
 ) -> Generator[TestClient, None, None]:
+    # Clear settings cache so middleware picks up test overrides
+    get_settings.cache_clear()
     app = create_app()
 
     def override_db() -> Generator[Session, None, None]:
@@ -112,6 +124,7 @@ def client(
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+    get_settings.cache_clear()
 
 
 @pytest.fixture()

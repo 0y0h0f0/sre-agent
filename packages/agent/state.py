@@ -25,6 +25,7 @@ class IncidentState(TypedDict, total=False):
     db_evidence: list[dict[str, Any]]
     runbook_context: list[dict[str, Any]]
     memory_context: list[dict[str, Any]]
+    cross_incident_context: list[dict[str, Any]]
     hypotheses: list[dict[str, Any]]
     root_cause: dict[str, Any]
     diagnosis_rationale: dict[str, Any]

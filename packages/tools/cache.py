@@ -18,11 +18,15 @@ class RequestLocalToolCache:
 
     def __init__(self) -> None:
         self._items: dict[str, ToolResult] = {}
+        self.hit_count: int = 0
+        self.miss_count: int = 0
 
     def get(self, key: str) -> ToolResult | None:
         cached = self._items.get(key)
         if cached is None:
+            self.miss_count += 1
             return None
+        self.hit_count += 1
         return cached.model_copy(update={"cache_hit": True})
 
     def set(self, key: str, result: ToolResult) -> None:

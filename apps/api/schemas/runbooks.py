@@ -26,3 +26,60 @@ class RunbookSearchItem(BaseModel):
     excerpt: str
     score: float
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Draft schemas (4.3)
+# ---------------------------------------------------------------------------
+
+
+class RunbookDraftItem(BaseModel):
+    draft_id: str
+    fingerprint: str
+    incident_ids: list[str]
+    service: str
+    incident_type: str
+    title: str
+    content: str
+    status: str
+    reviewer: str | None = None
+    review_comment: str | None = None
+    source_chunk_ids: list[str] | None = None
+    llm_model: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class RunbookDraftGenerateRequest(BaseModel):
+    min_incident_count: int = Field(default=3, ge=2)
+    fingerprint: str | None = None
+
+
+class RunbookDraftGenerateResponse(BaseModel):
+    drafts_created: int
+    draft_ids: list[str]
+
+
+class RunbookDraftReviewRequest(BaseModel):
+    status: str  # "published" or "rejected"
+    reviewer: str = Field(min_length=1)
+    comment: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Version schemas (4.3)
+# ---------------------------------------------------------------------------
+
+
+class RunbookVersionItem(BaseModel):
+    version_id: str
+    document_id: str
+    version_number: int
+    source_path: str
+    content_hash: str
+    change_reason: str
+    related_incident_id: str | None = None
+    related_draft_id: str | None = None
+    diff_from_previous: str | None = None
+    created_by: str
+    created_at: str

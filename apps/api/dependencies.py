@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator
 from typing import Any
 
+from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from packages.common.settings import Settings, get_settings
@@ -39,3 +40,12 @@ def get_notification_task_enqueue() -> NotificationTaskEnqueue:
     from apps.worker.tasks import enqueue_email_notification_task
 
     return enqueue_email_notification_task
+
+
+def get_current_api_key(request: Request) -> dict[str, str]:
+    """Return the API key identity from the request state.
+
+    Requires the api_key middleware to be active. Returns an empty dict
+    when auth is disabled to allow dependency injection to work in tests.
+    """
+    return getattr(request.state, "api_key", {})

@@ -43,6 +43,8 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
                     + state.get("logs_evidence", [])
                     + state.get("traces_evidence", [])
                     + state.get("deployment_evidence", [])
+                    + state.get("k8s_evidence", [])
+                    + state.get("db_evidence", [])
                 ),
                 runbook_block=json.dumps(state.get("runbook_context", [])),
                 memory_block=json.dumps(state.get("memory_context", [])),

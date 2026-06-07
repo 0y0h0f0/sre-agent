@@ -42,30 +42,35 @@ class RunbookIngestor:
         files = _markdown_files(base_path)
         result = RunbookIngestResult(path=base_path.as_posix(), files_scanned=len(files))
         for markdown_path in files:
-            source_path = markdown_path.as_posix()
-            text = markdown_path.read_text(encoding="utf-8")
-            document = parse_runbook_markdown(text, source_path=source_path)
-            drafts = split_markdown_document(document)
-            if not reingest and self.repository.document_has_chunks(document.document_id):
-                result.chunks_skipped += len(drafts)
-                continue
-
-            for draft in drafts:
-                if self.repository.get_by_content_hash(draft.content_hash) is not None:
-                    result.chunks_skipped += 1
+            try:
+                source_path = markdown_path.as_posix()
+                text = markdown_path.read_text(encoding="utf-8")
+                document = parse_runbook_markdown(text, source_path=source_path)
+                drafts = split_markdown_document(document)
+                if not reingest and self.repository.document_has_chunks(document.document_id):
+                    result.chunks_skipped += len(drafts)
                     continue
-                self.repository.create_chunk(
-                    chunk_id=new_id("chk_"),
-                    document_id=draft.document_id,
-                    source_path=draft.source_path,
-                    title=draft.title,
-                    content=draft.content,
-                    content_hash=draft.content_hash,
-                    embedding=self.embedding_provider.embed_text(f"{draft.title}\n{draft.content}"),
-                    embedding_model=self.embedding_provider.model_name,
-                    metadata=dict(draft.metadata),
-                )
-                result.chunks_created += 1
+
+                for draft in drafts:
+                    if self.repository.get_by_content_hash(draft.content_hash) is not None:
+                        result.chunks_skipped += 1
+                        continue
+                    chunk = self.repository.create_chunk(
+                        chunk_id=new_id("chk_"),
+                        document_id=draft.document_id,
+                        source_path=draft.source_path,
+                        title=draft.title,
+                        content=draft.content,
+                        content_hash=draft.content_hash,
+                        embedding=self.embedding_provider.embed_text(f"{draft.title}\n{draft.content}"),
+                        embedding_model=self.embedding_provider.model_name,
+                        metadata=dict(draft.metadata),
+                    )
+                    chunk.language = document.metadata.language
+                    result.chunks_created += 1
+            except RunbookMetadataError as exc:
+                result.errors.append(f"{markdown_path.as_posix()}: {exc}")
+                continue
         result.chunks_total = self.repository.count_chunks()
         return result
 

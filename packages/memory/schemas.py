@@ -21,6 +21,7 @@ class ContextBudget(BaseModel):
     evidence: int = 9_600
     runbook: int = 6_400
     memory: int = 3_200
+    cross_incident: int = 3_200
     scratchpad: int = 1_600
 
     @property
@@ -46,7 +47,8 @@ class ContextBudget(BaseModel):
             evidence=int(prompt * 0.30),
             runbook=int(prompt * 0.20),
             memory=int(prompt * 0.10),
-            scratchpad=int(prompt * 0.05),
+            cross_incident=int(prompt * 0.05),
+            scratchpad=0,
         )
 
 
@@ -69,6 +71,7 @@ class BuildContextInput(BaseModel):
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     runbook_chunks: list[dict[str, Any]] = Field(default_factory=list)
     memories: list[dict[str, Any]] = Field(default_factory=list)
+    cross_incident: list[dict[str, Any]] = Field(default_factory=list)
     output_schema: str = ""
     budget: ContextBudget = Field(default_factory=ContextBudget)
 

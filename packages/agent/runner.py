@@ -63,8 +63,11 @@ class AgentRunner:
                 return {"status": "waiting_approval", "state": final_state}
             return {"status": "succeeded", "state": final_state}
         except GraphInterrupt:
-            # Graph paused at human_approval for L2/L3 actions
-            return {"status": "waiting_approval", "state": initial_state}
+            # Graph paused at human_approval for L2/L3 actions.
+            # Fetch checkpoint state so the caller gets the actual diagnosis
+            # context (hypotheses, root cause, evidence) rather than the
+            # empty initial state.
+            return {"status": "waiting_approval", "state": _checkpoint_state(graph, config, initial_state)}
         except Exception as exc:
             return {"status": "failed", "error": str(exc), "state": initial_state}
 
@@ -88,10 +91,35 @@ class AgentRunner:
                 return {"status": "waiting_approval", "state": final_state}
             return {"status": "succeeded", "state": final_state}
         except GraphInterrupt:
-            return {"status": "waiting_approval", "state": {}}
+            # Re-interrupted — fetch checkpoint state so callers get updated
+            # diagnosis context rather than an empty dict.
+            return {"status": "waiting_approval", "state": _checkpoint_state(graph, config, {})}
         except Exception as exc:
             return {"status": "failed", "error": str(exc)}
 
 
 def _has_interrupt(state: Any) -> bool:
     return isinstance(state, dict) and bool(state.get("__interrupt__"))
+
+
+def _checkpoint_state(
+    graph: Any, config: dict[str, Any], fallback: dict[str, Any]
+) -> dict[str, Any]:
+    """Retrieve the latest checkpoint state from the graph.
+
+    Used after a ``GraphInterrupt`` to return the actual diagnostic state
+    (hypotheses, evidence, root cause) instead of the empty initial state.
+    Falls back to ``fallback`` when checkpoint retrieval fails.
+    """
+    try:
+        latest = graph.get_state(config)
+        if latest and latest.values:
+            sanitized: dict[str, Any] = {}
+            for k, v in latest.values.items():
+                if not k.startswith("__"):
+                    sanitized[k] = v
+            if sanitized:
+                return sanitized
+    except Exception:
+        pass
+    return dict(fallback)

@@ -16,7 +16,7 @@ def guardrail_check(state: IncidentState, deps: AgentDeps) -> IncidentState:
         actions = state.get("recommended_actions", [])
         classified = []
         needs_approval = False
-        all_l4 = True
+        all_l4 = len(actions) > 0  # empty actions → not all L4, route to report
 
         for action in actions:
             decision = classify_risk_level(action)

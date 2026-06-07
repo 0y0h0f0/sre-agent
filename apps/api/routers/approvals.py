@@ -1,10 +1,11 @@
-"""Approval endpoints — list, approve, reject."""
+"""Approval endpoints — list, approve, reject, batch, email token."""
 
 from __future__ import annotations
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from apps.api.dependencies import (
@@ -16,7 +17,9 @@ from apps.api.schemas.approvals import (
     ApprovalDecisionResponse,
     ApprovalItem,
     ApproveRequest,
+    BatchApprovalRequest,
     RejectRequest,
+    TokenApprovalRequest,
 )
 from apps.api.schemas.common import PaginatedResponse
 from apps.api.services.approval_service import ApprovalService
@@ -93,3 +96,69 @@ def reject_action(
     enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
 ) -> ApprovalDecisionResponse:
     return _service(db, enqueue_resume).reject(approval_id, request)
+
+
+@router.post(
+    "/approvals/batch",
+    response_model=list[ApprovalDecisionResponse],
+)
+def batch_decide(
+    request: BatchApprovalRequest,
+    db: Session = Depends(get_db),
+    enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
+) -> list[ApprovalDecisionResponse]:
+    return _service(db, enqueue_resume).batch_decide(request)
+
+
+@router.post(
+    "/approvals/{approval_id}/email-token",
+    response_model=dict,
+)
+def generate_email_token(
+    approval_id: str,
+    db: Session = Depends(get_db),
+    enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
+) -> dict:
+    token = _service(db, enqueue_resume).generate_email_token(approval_id)
+    return {"approval_id": approval_id, "email_token": token}
+
+
+@router.get("/approvals/by-token/{token}")
+def get_by_token(
+    token: str,
+    db: Session = Depends(get_db),
+    enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
+) -> RedirectResponse:
+    """Redirect from email token to the frontend approval page."""
+    svc = _service(db, enqueue_resume)
+    approval = svc.get_approval_by_token(token)
+    return RedirectResponse(
+        url=f"/approvals/{approval.approval_id}",
+        status_code=302,
+    )
+
+
+@router.post(
+    "/approvals/by-token/{token}/approve",
+    response_model=ApprovalDecisionResponse,
+)
+def approve_by_token(
+    token: str,
+    request: TokenApprovalRequest,
+    db: Session = Depends(get_db),
+    enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
+) -> ApprovalDecisionResponse:
+    return _service(db, enqueue_resume).approve_by_token(token, request)
+
+
+@router.post(
+    "/approvals/by-token/{token}/reject",
+    response_model=ApprovalDecisionResponse,
+)
+def reject_by_token(
+    token: str,
+    request: TokenApprovalRequest,
+    db: Session = Depends(get_db),
+    enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
+) -> ApprovalDecisionResponse:
+    return _service(db, enqueue_resume).reject_by_token(token, request)

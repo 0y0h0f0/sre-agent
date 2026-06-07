@@ -87,7 +87,7 @@ class GitChangeTool:
             ]
             data = {"change_count": len(matching), "changes": matching[:10]}
             result = ToolResult(
-                status="succeeded",
+                status="succeeded" if matching else "degraded",
                 data=data,
                 summary=compact_summary(
                     {

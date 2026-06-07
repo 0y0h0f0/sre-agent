@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -119,6 +119,8 @@ const actionDetail = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  window.localStorage.clear();
 });
 
 test('renders incident rows, filters, and empty state', async () => {
@@ -150,6 +152,48 @@ test('renders the incidents error state', async () => {
   expect(await screen.findByText('Unable to load incidents')).toBeInTheDocument();
   expect(screen.getByText('boom')).toBeInTheDocument();
   expect(screen.getByText('Code SERVER_ERROR')).toBeInTheDocument();
+});
+
+test('shows API key guidance when incident loading is unauthorized', async () => {
+  mockFetch({
+    'GET /api/incidents': () => jsonResponse({ error: { code: 'UNAUTHORIZED', message: 'unauthorized', request_id: 'req-auth', details: {} } }, 401)
+  });
+
+  renderApp('/incidents');
+
+  expect(await screen.findByText('Unable to load incidents')).toBeInTheDocument();
+  expect(screen.getByText('Set or generate an API key in the sidebar Authentication panel.')).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'API authentication' })).toBeInTheDocument();
+});
+
+test('generates and saves an API key from the authentication panel', async () => {
+  const fetchMock = mockFetch({
+    'GET /api/incidents': () => jsonResponse({ items: [], total: 0, page: 1, page_size: 50 }),
+    'POST /api/api-keys': () => jsonResponse({
+      key_id: 'apik_1',
+      description: 'local web key',
+      raw_key: 'web-raw-key',
+      created_by: 'system',
+      expires_at: null,
+      created_at: '2026-06-01T00:00:00Z'
+    }, 201)
+  });
+
+  renderApp('/incidents');
+
+  await screen.findByText('No incidents');
+  await userEvent.type(screen.getByLabelText('Bootstrap seed or admin key'), 'bootstrap-secret');
+  await userEvent.click(screen.getByRole('button', { name: 'Generate key' }));
+
+  expect(await screen.findByText('Created apik_1 and saved it for this browser.')).toBeInTheDocument();
+  expect(screen.getByText('web-raw-key')).toBeInTheDocument();
+  expect(window.localStorage.getItem('sre_api_key')).toBe('web-raw-key');
+
+  await waitFor(() => {
+    const createCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/api/api-keys' && init?.method === 'POST');
+    expect(createCall).toBeTruthy();
+    expect((createCall?.[1]?.headers as Headers).get('Authorization')).toBe('Bearer bootstrap-secret');
+  });
 });
 
 test('renders incident detail with diagnosis, actions, approvals, and run link', async () => {
@@ -194,12 +238,148 @@ test('renders agent run timeline, tool calls, and context summary', async () => 
 
   renderApp('/agent-runs/run_1');
 
-  expect(await screen.findByText('parse_alert')).toBeInTheDocument();
+  expect((await screen.findAllByText('parse_alert')).length).toBeGreaterThan(0);
   expect(screen.getByText('MetricsTool')).toBeInTheDocument();
   expect(screen.getByText('cache hit')).toBeInTheDocument();
   expect(screen.getByText('123')).toBeInTheDocument();
+  expect(screen.getByText('Run progress')).toBeInTheDocument();
+  expect(screen.getByText('1 of 1 nodes complete')).toBeInTheDocument();
+  expect(screen.getByText('Signal swimlanes')).toBeInTheDocument();
+  expect(screen.getByText('Dependency graph')).toBeInTheDocument();
+  expect(screen.getByText('Evidence network')).toBeInTheDocument();
 });
 
+
+test('shows dynamic run progress and live websocket node updates', async () => {
+  class MockWebSocket {
+    static instances: MockWebSocket[] = [];
+    onopen: ((event: Event) => void) | null = null;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: Event) => void) | null = null;
+    onclose: ((event: CloseEvent) => void) | null = null;
+    url: string;
+
+    constructor(url: string) {
+      this.url = url;
+      MockWebSocket.instances.push(this);
+    }
+
+    close() {}
+    send() {}
+
+    emit(data: unknown) {
+      this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent);
+    }
+  }
+  vi.stubGlobal('WebSocket', MockWebSocket);
+
+  mockFetch({
+    'GET /api/agent-runs/run_live': () => jsonResponse({
+      agent_run_id: 'run_live',
+      incident_id: 'inc_1',
+      status: 'running',
+      celery_task_id: 'task-live',
+      error_code: null,
+      error_message: null,
+      state: {
+        service: 'checkout-api',
+        graph_node_order: ['parse_alert', 'collect_metrics', 'collect_logs'],
+        hypotheses: [{ id: 'hyp_1', summary: 'Deploy regression', confidence: 0.82 }],
+        evidence_ids: ['evd_1']
+      },
+      checkpoint_thread_id: 'run_live',
+      checkpoint_ns: '',
+      latest_checkpoint_id: null,
+      nodes: [
+        { name: 'parse_alert', status: 'succeeded', started_at: '2026-06-01T00:00:00Z', finished_at: '2026-06-01T00:00:01Z', duration_ms: 1000, input_summary: 'alert', output_summary: 'service=checkout-api', tool_calls: [] },
+        { name: 'collect_metrics', status: 'running', started_at: '2026-06-01T00:00:02Z', finished_at: null, duration_ms: null, input_summary: 'query prometheus', output_summary: null, tool_calls: [] }
+      ],
+      tool_calls: [
+        { tool_call_id: 'tool_live_1', node_name: 'collect_metrics', tool_name: 'MetricsTool', status: 'succeeded', input_summary: '5xx', output_summary: '5xx elevated', duration_ms: 30, cache_key: 'metrics', cache_hit: false, error_message: null, created_at: '2026-06-01T00:00:03Z' }
+      ],
+      created_at: '2026-06-01T00:00:00Z',
+      updated_at: '2026-06-01T00:00:03Z'
+    })
+  });
+
+  renderApp('/agent-runs/run_live');
+
+  expect(await screen.findByText('1 of 3 nodes complete')).toBeInTheDocument();
+  expect(screen.getByText('collect_logs')).toBeInTheDocument();
+  await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+  expect(MockWebSocket.instances[0].url).toContain('/api/ws/incidents/inc_1');
+
+  act(() => {
+    MockWebSocket.instances[0].onopen?.(new Event('open'));
+    MockWebSocket.instances[0].emit({
+      type: 'node_update',
+      payload: {
+        agent_run_id: 'run_live',
+        node_name: 'collect_logs',
+        status: 'running',
+        output_summary: 'tailing checkout logs'
+      },
+      timestamp: '2026-06-01T00:00:04Z'
+    });
+  });
+
+  expect(await screen.findByText('tailing checkout logs')).toBeInTheDocument();
+  expect(screen.getByText('Open')).toBeInTheDocument();
+});
+
+
+test('renders the approval notification control', async () => {
+  mockFetch({
+    'GET /api/approvals': () => jsonResponse({ items: [approval], total: 1, page: 1, page_size: 50 })
+  });
+
+  renderApp('/approvals');
+
+  expect(await screen.findByRole('button', { name: /Notifications unavailable|Enable notifications|Notifications on|Notifications blocked/ })).toBeInTheDocument();
+});
+
+
+test('enables approval notifications and notifies for newly arrived approvals', async () => {
+  const requestPermission = vi.fn(async () => {
+    MockNotification.permission = 'granted';
+    return 'granted' as NotificationPermission;
+  });
+  class MockNotification {
+    static permission: NotificationPermission = 'default';
+    static requestPermission = requestPermission;
+    constructor(_title: string, _options?: NotificationOptions) {}
+  }
+  const showNotification = vi.fn(async () => undefined);
+  const register = vi.fn(async () => undefined);
+  const getRegistration = vi.fn(async () => ({ showNotification }));
+  vi.stubGlobal('Notification', MockNotification);
+  Object.defineProperty(navigator, 'serviceWorker', {
+    configurable: true,
+    value: { register, getRegistration }
+  });
+
+  let approvalFetches = 0;
+  mockFetch({
+    'GET /api/approvals': () => {
+      approvalFetches += 1;
+      const items = approvalFetches < 2 ? [approval] : [approval, { ...approval, approval_id: 'apv_2', action_id: 'act_2' }];
+      return jsonResponse({ items, total: items.length, page: 1, page_size: 50 });
+    }
+  });
+
+  renderApp('/approvals');
+
+  await userEvent.click(await screen.findByRole('button', { name: 'Enable notifications' }));
+  await waitFor(() => expect(requestPermission).toHaveBeenCalled());
+  expect(await screen.findByRole('button', { name: 'Notifications on' })).toBeInTheDocument();
+  expect(register).toHaveBeenCalledWith('/sw.js');
+
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(showNotification).toHaveBeenCalledWith(
+    'L3 approval requested',
+    expect.objectContaining({ tag: 'apv_2' })
+  ));
+});
 
 test('opens a direct linked approval route in the review dialog', async () => {
   mockFetch({
@@ -329,6 +509,55 @@ test('renders incident detail empty states and compact alert values', async () =
   expect(screen.getByText('No approvals')).toBeInTheDocument();
   expect(screen.getByText(/missing=n\/a/)).toBeInTheDocument();
   expect(screen.getByText(/nested=/)).toBeInTheDocument();
+});
+
+
+test('handles incident detail feedback, comments, and audit trail interactions', async () => {
+  let nfaCalled = false;
+  let correctionPayload: Record<string, unknown> | null = null;
+  let commentPayload: Record<string, unknown> | null = null;
+  vi.stubGlobal('confirm', vi.fn(() => true));
+  mockFetch({
+    'GET /api/incidents/inc_1': () => jsonResponse(incidentDetail),
+    'GET /api/incidents/inc_1/runs': () => jsonResponse([]),
+    'GET /api/incidents/inc_1/approvals': () => jsonResponse([]),
+    'GET /api/incidents/inc_1/correlated': () => jsonResponse([{ ...incidentListItem, correlation_type: 'same_service', similarity_score: 0.7 }]),
+    'GET /api/incidents/inc_1/comments': () => jsonResponse({ items: [{ comment_id: 'cmt_1', incident_id: 'inc_1', author: 'alice', content: 'checking deploy logs', parent_comment_id: null, mentioned_users: ['bob'], created_at: '2026-06-01T00:06:00Z' }], total: 1 }),
+    'POST /api/incidents/inc_1/comments': (_url, init) => {
+      commentPayload = JSON.parse(String(init.body));
+      return jsonResponse({ comment_id: 'cmt_2', incident_id: 'inc_1', author: 'bob', content: 'added note', parent_comment_id: null, mentioned_users: [], created_at: '2026-06-01T00:07:00Z' }, 201);
+    },
+    'GET /api/incidents/inc_1/audit': () => jsonResponse({ items: [{ audit_id: 'aud_1', incident_id: 'inc_1', actor: 'sre-system', action: 'root_cause_updated', resource_type: 'incident', resource_id: 'inc_1', details: {}, created_at: '2026-06-01T00:08:00Z' }], total: 1 }),
+    'POST /api/incidents/inc_1/nfa': () => {
+      nfaCalled = true;
+      return jsonResponse({ pattern_id: 'mem_1', fingerprint: 'fp-checkout-5xx', nfa_count: 1, status: 'recorded', message: 'NFA recorded' });
+    },
+    'PATCH /api/incidents/inc_1/root-cause': (_url, init) => {
+      correctionPayload = JSON.parse(String(init.body));
+      return jsonResponse({ feedback_id: 'fb_1', incident_id: 'inc_1', feedback_type: 'root_cause', original_value: null, corrected_value: correctionPayload, delta: null, submitted_by: 'sre', submitted_at: '2026-06-01T00:09:00Z' });
+    }
+  });
+
+  renderApp('/incidents/inc_1');
+
+  expect(await screen.findByText('Related incidents')).toBeInTheDocument();
+  expect(await screen.findByText('alice')).toBeInTheDocument();
+  expect(await screen.findByText('sre-system')).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: 'Correct root cause' }));
+  const rootCauseBox = screen.getByDisplayValue('New checkout release introduced downstream timeouts');
+  await userEvent.clear(rootCauseBox);
+  await userEvent.type(rootCauseBox, 'Corrected downstream timeout root cause');
+  await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
+  await waitFor(() => expect(correctionPayload).toEqual({ corrected_summary: 'Corrected downstream timeout root cause' }));
+
+  await userEvent.click(screen.getByRole('button', { name: 'NFA' }));
+  await waitFor(() => expect(nfaCalled).toBe(true));
+
+  await userEvent.type(screen.getByLabelText('Name'), 'bob');
+  await userEvent.type(screen.getByLabelText('Comment'), 'added note');
+  await userEvent.click(screen.getByRole('button', { name: 'Post comment' }));
+  await waitFor(() => expect(commentPayload).toEqual({ author: 'bob', content: 'added note' }));
 });
 
 test('renders failed agent run empty states', async () => {

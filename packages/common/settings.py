@@ -60,6 +60,24 @@ class Settings(BaseSettings):
     db_diagnostics_url: str | None = None
     db_diagnostics_statement_timeout_ms: int = Field(default=2000, gt=0)
     embedding_provider: str = "fake"
+    # 4.4 Multi-language embedding
+    embedding_bge_zh_url: str = "http://localhost:8083"
+    embedding_text2vec_url: str = "http://localhost:8084"
+
+    # 4.1 Hybrid search
+    runbook_hybrid_search_enabled: bool = True
+    runbook_hybrid_alpha_keyword: float = Field(default=0.65, gt=0, le=1)
+    runbook_hybrid_alpha_nl: float = Field(default=0.35, gt=0, le=1)
+
+    # 4.2 Reranker
+    reranker_provider: str = "fake"
+    reranker_cohere_api_key: SecretStr | None = None
+    reranker_cohere_model: str = "rerank-english-v3.0"
+    reranker_jina_base_url: str = "http://localhost:8081/v1"
+    reranker_jina_model: str = "jina-reranker-v2-base-multilingual"
+    reranker_bge_base_url: str = "http://localhost:8082"
+    reranker_bge_model: str = "BAAI/bge-reranker-v2-m3"
+
     # LLM provider abstraction (roadmap Phase 1.1).
     # Provider selects the adapter: fake | vllm | openai | deepseek | anthropic.
     llm_provider: str = "fake"
@@ -92,6 +110,40 @@ class Settings(BaseSettings):
     token_budget_prompt: int = Field(default=12_000, gt=0)
     token_cache_enabled: bool = True
     celery_task_always_eager: bool = False
+
+    # --- Phase 5: Memory & Continuous Learning ---
+    nfa_auto_suppress_threshold: int = Field(default=3, gt=0)
+    nfa_reset_days: int = Field(default=30, gt=0)
+    cross_incident_similarity_threshold: float = Field(default=0.7, gt=0, le=1)
+    cross_incident_max_results: int = Field(default=5, ge=1)
+
+    # --- Phase 6: Collaboration & Approval Enhancement ---
+    approval_auto_approve_minutes: int = Field(default=0, ge=0)
+    approval_auto_approve_max_risk: str = "L2"
+
+    # --- Phase 7: Ops & Engineering ---
+    # 7.1 Auth
+    api_key_auth_enabled: bool = True
+    api_key_open_paths: str = "/healthz,/readyz,/metrics,/docs,/openapi.json"
+    api_key_default_expiry_days: int = Field(default=90, gt=0)
+    api_key_initial_seed: SecretStr | None = None
+    # 7.2 Observability
+    celery_metrics_port: int = Field(default=9800, gt=0)
+    prometheus_metrics_enabled: bool = True
+    # 7.3 Evals
+    shadow_mode_enabled: bool = False
+    # 7.4 HA
+    db_pool_size: int = Field(default=5, gt=0)
+    db_max_overflow: int = Field(default=10, ge=0)
+    db_pool_recycle_seconds: int = Field(default=3600, gt=0)
+    db_connect_timeout_seconds: int = Field(default=5, gt=0)
+    redis_socket_connect_timeout: float = Field(default=1.0, gt=0)
+    redis_socket_timeout: float = Field(default=2.0, gt=0)
+    redis_retry_on_timeout: bool = True
+    cors_allow_origins: str = "http://localhost:5173"
+    # How long a RUNNING agent run can be stuck before it is considered orphaned
+    # (previous worker killed by SIGKILL) and re-executed. Default 5 minutes.
+    task_orphan_timeout_seconds: int = Field(default=300, gt=0)
 
 
 @lru_cache

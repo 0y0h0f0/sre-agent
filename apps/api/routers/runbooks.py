@@ -5,13 +5,20 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from apps.api.dependencies import get_db
+from apps.api.dependencies import get_db, get_app_settings
 from apps.api.schemas.runbooks import (
+    RunbookDraftGenerateRequest,
+    RunbookDraftGenerateResponse,
+    RunbookDraftItem,
+    RunbookDraftReviewRequest,
     RunbookIngestRequest,
     RunbookIngestResponse,
     RunbookSearchItem,
+    RunbookVersionItem,
 )
 from apps.api.services.runbook_service import RunbookService
+from packages.agent.llm.factory import build_llm
+from packages.common.settings import Settings
 
 router = APIRouter(prefix="/api/runbooks", tags=["runbooks"])
 TopK = Annotated[int, Query(ge=1, le=20)]
@@ -40,3 +47,54 @@ def search_runbooks(
         incident_type=incident_type,
         top_k=top_k,
     )
+
+
+# ---------------------------------------------------------------------------
+# Drafts (4.3)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/drafts", response_model=list[RunbookDraftItem])
+def list_drafts(
+    status: str | None = None,
+    service: str | None = None,
+    db: Session = Depends(get_db),
+) -> list[RunbookDraftItem]:
+    return RunbookService(db).list_drafts(status=status, service=service)
+
+
+@router.get("/drafts/{draft_id}", response_model=RunbookDraftItem)
+def get_draft(draft_id: str, db: Session = Depends(get_db)) -> RunbookDraftItem:
+    return RunbookService(db).get_draft(draft_id)
+
+
+@router.post("/drafts/generate", response_model=RunbookDraftGenerateResponse)
+def generate_drafts(
+    payload: RunbookDraftGenerateRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_app_settings),
+) -> RunbookDraftGenerateResponse:
+    llm = build_llm(settings)
+    return RunbookService(db).generate_drafts(payload, llm)
+
+
+@router.post("/drafts/{draft_id}/review", response_model=RunbookDraftItem)
+def review_draft(
+    draft_id: str,
+    payload: RunbookDraftReviewRequest,
+    db: Session = Depends(get_db),
+) -> RunbookDraftItem:
+    return RunbookService(db).review_draft(draft_id, payload)
+
+
+# ---------------------------------------------------------------------------
+# Versions (4.3)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/versions/{document_id}", response_model=list[RunbookVersionItem])
+def list_versions(
+    document_id: str,
+    db: Session = Depends(get_db),
+) -> list[RunbookVersionItem]:
+    return RunbookService(db).list_versions(document_id)

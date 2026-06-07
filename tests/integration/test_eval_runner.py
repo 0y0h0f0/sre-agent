@@ -31,8 +31,8 @@ def test_run_smoke_suite_writes_report(tmp_path: Path) -> None:
     assert payload["metrics"]["json_valid_rate"] == 1.0
     assert payload["metrics"]["report_generation_rate"] == 1.0
     assert payload["metrics"]["avg_prompt_token_estimate"] > 0
-    assert payload["metrics"]["provider_prompt_cache_hit_rate"] == "unknown"
-    assert payload["metrics"]["app_prompt_segment_cache_hit_rate"] == "unknown"
+    assert isinstance(payload["metrics"]["provider_prompt_cache_hit_rate"], (int, float))
+    assert isinstance(payload["metrics"]["app_prompt_segment_cache_hit_rate"], (int, float))
     assert payload["metrics"]["tool_success_rate"] >= 0.75
     assert payload["metrics"]["tool_cache_hit_rate"] >= 0.0
     assert len(payload["cases"]) == 4

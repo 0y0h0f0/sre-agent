@@ -106,4 +106,11 @@ class MemoryStore:
     def _embed_query(query: str) -> list[float]:
         from packages.rag.embeddings import FakeEmbedding
 
-        return FakeEmbedding().embed_text(query)
+        embedding = FakeEmbedding().embed_text(query)
+        if len(embedding) != 384:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Memory embedding dimension %d != expected 384; vector search may degrade",
+                len(embedding),
+            )
+        return embedding

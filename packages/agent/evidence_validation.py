@@ -214,6 +214,10 @@ def _trace_direction(payloads: list[dict[str, Any]]) -> str | None:
 
 def _deployment_direction(payloads: list[dict[str, Any]]) -> str | None:
     # A recent deploy correlates with the incident. No deploy is neutral.
+    # Returns None when there is no deployment in the window (neutral signal).
+    # This is distinct from "deployment not checked" — a degraded source that
+    # would cause derive_signals to skip this dimension entirely.
+    # Per the design spec: "absence of a deploy is neutral, not a healthy dissent."
     for payload in payloads:
         if _as_float(payload.get("change_count")) > 0 or payload.get("changes"):
             return ANOMALY

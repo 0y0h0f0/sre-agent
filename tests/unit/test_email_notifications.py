@@ -89,7 +89,8 @@ def test_l3_approval_email_contains_direct_link_and_confirmation_subject(db_sess
     assert content.subject == "[CONFIRM] L3 Action: rollback_release on checkout-api"
     assert content.recipients == ["sre@example.com"]
     assert f"http://console.local/approvals/{approval.approval_id}" in content.text_body
-    assert "risk_ack=true" in content.html_body
+    assert "L3 actions require web UI confirmation" in content.html_body
+    assert "cannot be approved via email link" in content.html_body
 
 
 def test_email_send_event_logs_skipped_when_smtp_is_not_configured(db_session) -> None:

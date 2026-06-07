@@ -5,6 +5,15 @@
   <p><strong>Action:</strong> {{ action.type }} on {{ action.target }}</p>
   <p>{{ action.reason }}</p>
   {% if action.rollback_plan %}<p><strong>Rollback:</strong> {{ action.rollback_plan }}</p>{% endif %}
-  {% if action.risk_level == 'L3' %}<p>This L3 action requires risk_ack=true plus exact action type and target confirmation.</p>{% endif %}
-  <p><a href="{{ approval_url }}">Review approval</a> | <a href="{{ incident_url }}">Open incident</a></p>
+  {% if action.risk_level == 'L3' %}
+  <p><strong>L3 actions require web UI confirmation and cannot be approved via email link.</strong></p>
+  {% endif %}
+  <p>
+    <a href="{{ approval_url }}" style="display:inline-block;padding:8px 16px;background:#2563eb;color:#fff;text-decoration:none;border-radius:4px;">Review in Console</a>
+    {% if action.risk_level != 'L3' and email_token %}
+    <a href="{{ approve_email_url }}" style="display:inline-block;padding:8px 16px;background:#16a34a;color:#fff;text-decoration:none;border-radius:4px;">Approve</a>
+    <a href="{{ reject_email_url }}" style="display:inline-block;padding:8px 16px;background:#dc2626;color:#fff;text-decoration:none;border-radius:4px;">Reject</a>
+    {% endif %}
+  </p>
+  <p><small><a href="{{ incident_url }}">Open incident</a></small></p>
 </body></html>

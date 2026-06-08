@@ -188,8 +188,20 @@ def _matches_metadata(metadata: dict[str, Any], query: RunbookSearchQuery) -> bo
     return True
 
 
+def _has_values(vec: object) -> bool:
+    """Return True when *vec* is a non-empty sequence of numbers.
+
+    Works for Python lists and numpy/pgvector arrays alike — the truthiness
+    check on numpy arrays raises ValueError, so we test length instead.
+    """
+    try:
+        return len(vec) > 0  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return bool(vec)
+
+
 def _normalized_cosine(left: list[float], right: list[float]) -> float:
-    if not left or not right:
+    if not _has_values(left) or not _has_values(right):
         return 0.0
     count = min(len(left), len(right))
     dot = sum(float(left[index]) * float(right[index]) for index in range(count))

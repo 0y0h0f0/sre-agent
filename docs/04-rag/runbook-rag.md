@@ -21,7 +21,7 @@ MVP 四类事故在 `demo/runbooks/checkout-api/` 下有对应目录。
 1. 扫描 `.md` 文件。
 2. 解析 front matter 和正文。
 3. 使用 Markdown-aware splitter 切分。
-4. 生成 deterministic fake embedding。
+4. 使用当前配置的 embedding provider 生成向量，默认是 deterministic fake embedding。
 5. 按 `content_hash` 去重。
 6. 写入 `runbook_chunks`。
 
@@ -51,18 +51,33 @@ Splitter 规则：
 - 超长 section 按段落切分并保留 overlap。
 - 每个 chunk 保留 title、parent title、source path、metadata、content hash。
 
-`runbook_chunks.embedding` 为 384 维。
+`runbook_chunks.embedding` 当前 PostgreSQL 类型为 `vector(512)`。
 
-## FakeEmbedding
+## Embedding
+
+### FakeEmbedding（默认）
 
 FakeEmbedding 是 deterministic：
 
 - 对规范化文本做 SHA-256 扩展。
-- 生成 384 维向量。
+- 生成 512 维向量。
 - 向量归一化。
 - 同一文本总是得到同一 embedding。
 
 测试不得使用随机向量。
+
+### BGE-ZH（真实 embedding）
+
+配置 `EMBEDDING_PROVIDER=bge_zh` 后使用 `BAAI/bge-small-zh`（512 维）：
+
+- 模型文件位于 `models/bge-small-zh/`。
+- Docker Compose 中 `bge-zh` 服务提供 HTTP API（端口 `8083`）。
+- embedding 维度为 512，与当前 PostgreSQL schema 兼容。
+- 首次使用需要下载模型到 `models/` 目录。
+
+### text2vec（可选）
+
+`EMBEDDING_PROVIDER=text2vec` 支持其他兼容 text2vec API 的 embedding 服务。当前内置 text2vec provider 输出 1024 维向量；如需在 PostgreSQL `runbook_chunks.embedding` 中使用，需要配套 schema/migration 调整。
 
 ## 检索流程
 

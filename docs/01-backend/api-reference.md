@@ -102,6 +102,8 @@ WebSocket 在鉴权启用时使用 query token：
 
 `force=false` 时，如果已有 running run，应返回 409。`force=true` 创建新 run，但不删除旧 run。
 
+React 控制台事故详情页的 `重新诊断` 按钮使用 `force=true` 和 `reason="manual rerun from UI"`，用于显式创建新的 agent run。
+
 ## Agent Runs
 
 | 方法 | 路径 | 说明 |

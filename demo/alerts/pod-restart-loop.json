@@ -4,7 +4,7 @@
   "service": "checkout",
   "severity": "P2",
   "alert_name": "PodRestartLoop",
-  "starts_at": "2026-06-01T00:00:00Z",
+  "starts_at": "2026-06-08T07:43:45Z",
   "labels": {
     "team": "payments"
   },

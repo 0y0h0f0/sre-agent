@@ -13,11 +13,13 @@
 | `promtail` | log shipper | 无 |
 | `otel-collector` | traces | `4317`、`4318` |
 | `grafana` | dashboards | `3000` |
+| `bge-zh` | BGE embedding 推理（BAAI/bge-small-zh） | `8083` |
 | `demo-service` | fault injection demo service | `8080` |
 | `web` | Vite dev server | `5173` |
 | `api` | FastAPI | `8000` |
 | `worker` | Celery worker | 无 |
 | `beat` | Celery beat | 无 |
+| `mailpit` | SMTP 测试（`--profile dev`） | `8025`（UI）、`1025`（SMTP） |
 
 ## 启动
 
@@ -74,6 +76,13 @@ Compose 中 API/worker/beat 使用：
 - `GIT_CHANGES_FIXTURE_PATH=demo/faults/git_changes.json`
 - `LLM_PROVIDER=fake`
 - `EMBEDDING_PROVIDER=fake`
+- `RERANKER_PROVIDER=fake`
+- `EMBEDDING_BGE_ZH_URL=http://bge-zh:8083`
+- `TRACE_BACKEND=fixture`
+- `DEPLOYMENT_BACKEND=fixture`
+- `K8S_BACKEND=fixture`
+- `DB_DIAGNOSTICS_BACKEND=fixture`
+- `API_KEY_AUTH_ENABLED=false`
 
 ## 健康检查
 

@@ -200,4 +200,4 @@ The delivered phase themes are:
 | 7 | Ops and engineering: API keys, metrics, worker health, eval/shadow paths |
 | 8 | Frontend enhancement: completed React console flows |
 
-See `docs/README.md` for the documentation center and `plans/11-roadmap/README.md` for phase-level completion notes.
+See `docs/README.md` for the documentation center, `plans/11-roadmap/README.md` for phase-level completion notes, and `study.md` for the guided onboarding path.

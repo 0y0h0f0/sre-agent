@@ -2,11 +2,15 @@
 
 ## 默认行为
 
-当前配置默认：
+当前配置：
+
+- 直接运行 uvicorn：`API_KEY_AUTH_ENABLED=true`（settings.py 默认）。
+- Docker Compose：`API_KEY_AUTH_ENABLED=false`（docker-compose.yml 覆盖）。
+
+开放路径：
 
 ```text
-API_KEY_AUTH_ENABLED=true
-API_KEY_OPEN_PATHS=/healthz,/readyz,/metrics,/docs,/openapi.json
+API_KEY_OPEN_PATHS=/healthz,/readyz,/metrics,/docs,/openapi.json,/api/approvals/by-token
 ```
 
 除开放路径外，请求必须携带：

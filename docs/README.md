@@ -24,6 +24,8 @@
 18. [开发与验收流程](10-operations/development-workflow.md)
 19. [配置参考](11-reference/configuration.md)
 
+如果你是第一次读这个项目，建议同时按根目录的 [学习计划](../study.md) 逐周练习。
+
 ## 文档分区
 
 | 分区 | 内容 |
@@ -32,11 +34,11 @@
 | `01-backend` | FastAPI、Pydantic schema、服务层、仓储层、Celery、错误模型 |
 | `02-agent` | LangGraph 节点、状态、依赖注入、审批恢复、报告生成 |
 | `03-tools` | Prometheus、Loki、Trace、Git、K8s、DB 诊断、mock executor |
-| `04-rag` | Runbook 入库、切分、embedding、混合检索、rerank、草稿和版本 |
+| `04-rag` | Runbook 入库、切分、embedding（Fake/BGE-ZH/text2vec）、混合检索、rerank、草稿和版本 |
 | `05-memory` | 多级记忆、token 预算、上下文压缩、缓存指标 |
 | `06-frontend` | React + TypeScript + Vite 控制台页面、状态处理、E2E |
 | `07-testing` | 单元、集成、契约、E2E、覆盖率、手动邮件测试 |
-| `08-deploy` | Docker Compose、本地端口、服务依赖、迁移、演示数据 |
+| `08-deploy` | Docker Compose、本地端口、BGE-ZH/Mailpit、服务依赖、迁移、演示数据 |
 | `09-evals` | FakeLLM smoke eval、full eval、shadow eval、指标 |
 | `10-operations` | 常见操作、故障排查、审批处理、演示流程、开发验收 |
 | `11-reference` | 配置项、ID 前缀、状态枚举、API 错误、术语表 |
@@ -45,7 +47,7 @@
 
 项目已完成文档范围内的本地 demo SRE 事故响应 Agent。API 接收告警后创建 incident 和 agent run，通过 Celery 异步运行 LangGraph 诊断工作流，采集指标、日志、trace、部署变更、Kubernetes 事件、数据库诊断、历史记忆和 Runbook 证据，生成根因分析、推荐动作、审批请求和事故报告。
 
-已纳入仓库的扩展能力包括 LLM provider adapter、可配置只读工具后端、邮件通知、Runbook 混合检索与版本、反馈/跨事故关联、协作审批、API key、Prometheus metrics、WebSocket 节点事件、eval 与 shadow eval。
+已纳入仓库的扩展能力包括 LLM provider adapter（Fake/OpenAI/DeepSeek/Anthropic/vLLM）、LLM reasoning 节点、证据交叉验证与级联故障分析、可配置只读工具后端、BGE-ZH embedding 支持、邮件通知、Runbook 混合检索与版本、反馈/跨事故关联、协作审批、API key、Prometheus metrics、WebSocket 节点事件、Celery beat 周期任务、eval 与 shadow eval。
 
 默认配置使用 FakeLLM、fixture 数据源、FakeEmbedding 和 mock executor。即使代码中存在可选的真实后端配置，MVP 安全边界仍然是：不执行真实生产 Kubernetes 写操作，不执行真实云资源写操作，不删除数据，不修改真实数据库，不 flush 真实缓存。
 

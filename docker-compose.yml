@@ -62,6 +62,17 @@ services:
     volumes:
       - ./deploy/otel-collector.yml:/etc/otel-collector.yml:ro
 
+  # BGE-ZH embedding service (BAAI/bge-small-zh, 512-dim, CPU only)
+  bge-zh:
+    build:
+      context: .
+      dockerfile: deploy/bge-zh.Dockerfile
+    ports:
+      - "8083:8083"
+    restart: unless-stopped
+    volumes:
+      - ./models/bge-small-zh:/models/bge-small-zh:ro
+
   grafana:
     image: grafana/grafana:11.3.1
     ports:
@@ -136,8 +147,8 @@ services:
       LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-medium}
       # Embedding & RAG
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
-      EMBEDDING_BGE_ZH_URL: ${EMBEDDING_BGE_ZH_URL:-http://localhost:8083}
-      EMBEDDING_TEXT2VEC_URL: ${EMBEDDING_TEXT2VEC_URL:-http://localhost:8084}
+      EMBEDDING_BGE_ZH_URL: ${EMBEDDING_BGE_ZH_URL:-http://bge-zh:8083}
+      EMBEDDING_TEXT2VEC_URL: ${EMBEDDING_TEXT2VEC_URL:-http://text2vec:8084}
       RERANKER_PROVIDER: ${RERANKER_PROVIDER:-fake}
       RERANKER_COHERE_API_KEY: ${RERANKER_COHERE_API_KEY:-}
       RERANKER_JINA_BASE_URL: ${RERANKER_JINA_BASE_URL:-http://localhost:8081/v1}
@@ -225,8 +236,8 @@ services:
       LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-medium}
       # Embedding & RAG
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
-      EMBEDDING_BGE_ZH_URL: ${EMBEDDING_BGE_ZH_URL:-http://localhost:8083}
-      EMBEDDING_TEXT2VEC_URL: ${EMBEDDING_TEXT2VEC_URL:-http://localhost:8084}
+      EMBEDDING_BGE_ZH_URL: ${EMBEDDING_BGE_ZH_URL:-http://bge-zh:8083}
+      EMBEDDING_TEXT2VEC_URL: ${EMBEDDING_TEXT2VEC_URL:-http://text2vec:8084}
       RERANKER_PROVIDER: ${RERANKER_PROVIDER:-fake}
       RERANKER_COHERE_API_KEY: ${RERANKER_COHERE_API_KEY:-}
       RERANKER_JINA_BASE_URL: ${RERANKER_JINA_BASE_URL:-http://localhost:8081/v1}
@@ -306,8 +317,8 @@ services:
       LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-medium}
       # Embedding & RAG
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
-      EMBEDDING_BGE_ZH_URL: ${EMBEDDING_BGE_ZH_URL:-http://localhost:8083}
-      EMBEDDING_TEXT2VEC_URL: ${EMBEDDING_TEXT2VEC_URL:-http://localhost:8084}
+      EMBEDDING_BGE_ZH_URL: ${EMBEDDING_BGE_ZH_URL:-http://bge-zh:8083}
+      EMBEDDING_TEXT2VEC_URL: ${EMBEDDING_TEXT2VEC_URL:-http://text2vec:8084}
       RERANKER_PROVIDER: ${RERANKER_PROVIDER:-fake}
       RERANKER_COHERE_API_KEY: ${RERANKER_COHERE_API_KEY:-}
       RERANKER_JINA_BASE_URL: ${RERANKER_JINA_BASE_URL:-http://localhost:8081/v1}

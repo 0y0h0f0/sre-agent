@@ -31,7 +31,7 @@ class EmbeddingProvider(Protocol):
 class FakeEmbeddingProvider:
     """Deterministic embedding provider for tests and local dev.
 
-    Generates stable 384-dimension normalized vectors from text via repeated
+    Generates stable 512-dimension normalized vectors from text via repeated
     SHA256 hashing.  No external service required.
     """
 

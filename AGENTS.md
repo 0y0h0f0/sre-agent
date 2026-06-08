@@ -209,8 +209,8 @@ Use `docs/01-backend/data-model.md`.
 
 Important requirements:
 
-- `runbook_chunks.embedding` is `vector(384)` for MVP.
-- `memory_items.embedding` is `vector(384) nullable` for MVP.
+- `runbook_chunks.embedding` is `vector(512)` in the current schema; FakeEmbeddingProvider and BGE-ZH both output 512-dimensional vectors.
+- `memory_items.embedding` is `vector(512) nullable` in the current schema.
 - FakeEmbedding must be deterministic.
 - Do not use random vectors in tests.
 - `agent_runs.state` is only a display/debug snapshot.
@@ -255,11 +255,15 @@ parse_alert
   -> collect_metrics
   -> collect_logs
   -> collect_traces
-  -> collect_deployment_context
+  -> collect_deployment
+  -> collect_k8s
+  -> collect_db
   -> retrieve_memory
+  -> cross_incident
   -> retrieve_runbook
   -> build_context
   -> diagnose
+  -> compress_context
   -> rank_hypotheses
   -> plan_actions
   -> guardrail_check
@@ -268,7 +272,11 @@ parse_alert
        L2/L3 -> human_approval interrupt
        L4    -> generate_report
   -> generate_report
+  -> persist_memory
+  -> END
 ```
+
+The `diagnose` node integrates evidence cross-validation (metrics/logs/traces/deployment signal fusion) and cascading-failure analysis (service topology). When `LLM_REASONING_ENABLED=true`, it produces a `diagnosis_rationale` via deep reasoning.
 
 Every node should persist a node trace record with status, duration, input summary, output summary, and errors.
 
@@ -292,6 +300,8 @@ Tools:
 - `LogsTool`: Loki.
 - `TraceTool`: mock/OpenTelemetry demo data.
 - `GitChangeTool`: demo fixture.
+- `K8sDiagnosticsTool`: read-only Kubernetes diagnostics (fixture or live).
+- `DbDiagnosticsTool`: read-only database diagnostics (fixture or live).
 - `RunbookSearchTool`: RAG wrapper.
 - `ActionExecutorTool`: mock executor only.
 
@@ -387,9 +397,10 @@ Pages:
 
 - `/incidents`
 - `/incidents/:incidentId`
+- `/incidents/:incidentId/report`
 - `/agent-runs/:agentRunId`
 - `/approvals`
-- `/incidents/:incidentId/report`
+- `/approvals/:approvalId`
 
 Frontend must handle:
 

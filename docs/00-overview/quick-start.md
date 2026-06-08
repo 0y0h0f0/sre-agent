@@ -24,6 +24,8 @@ docker compose up -d
 | Demo service | `http://localhost:8080` |
 | Prometheus | `http://localhost:9090` |
 | Loki | `http://localhost:3100` |
+| BGE-ZH Embedding | `http://localhost:8083` |
+| Mailpit Web UI | `http://localhost:8025`（需 `--profile dev`） |
 | Grafana | `http://localhost:3000` |
 
 Compose 中 PostgreSQL 暴露为 `localhost:5433`，Redis 暴露为 `localhost:6378`。
@@ -60,6 +62,12 @@ uvicorn apps.api.main:app --reload --port 8000
 celery -A apps.worker.tasks:celery_app worker --loglevel=INFO
 ```
 
+启动 beat（周期任务，可选）：
+
+```bash
+celery -A apps.worker.tasks:celery_app beat --loglevel=INFO
+```
+
 启动前端：
 
 ```bash
@@ -93,6 +101,23 @@ curl -X POST http://localhost:8000/api/alerts \
 curl http://localhost:8000/api/incidents
 curl http://localhost:8000/api/agent-runs/<agent_run_id>
 ```
+
+## Embedding 配置
+
+默认使用 FakeEmbedding（无需外部服务）。如需使用真实 embedding：
+
+1. 下载 BGE 模型到 `models/bge-small-zh/`：
+   ```bash
+   pip install huggingface_hub
+   python -c "from huggingface_hub import snapshot_download; snapshot_download('BAAI/bge-small-zh', local_dir='models/bge-small-zh')"
+   ```
+
+2. 启动 BGE-ZH 服务并设置环境变量：
+   ```bash
+   EMBEDDING_PROVIDER=bge_zh docker compose up -d bge-zh
+   ```
+
+或通过 `.env` 文件配置 `EMBEDDING_PROVIDER=bge_zh`。
 
 ## Runbook 入库
 
@@ -138,7 +163,7 @@ python -m packages.evals.runner --suite full --output reports/eval-full.json
 
 ## API Key 鉴权注意
 
-当前配置默认 `API_KEY_AUTH_ENABLED=true`，开放路径包括 `/healthz`、`/readyz`、`/metrics`、`/docs`、`/openapi.json`。如果访问业务 API 返回鉴权错误，需要配置初始 key、创建 API key，或在本地 demo 中显式关闭鉴权。
+Docker Compose 本地 demo 默认覆盖为 `API_KEY_AUTH_ENABLED=false`。直接运行 `uvicorn` 时，`packages/common/settings.py` 默认仍为 `true`。开放路径包括 `/healthz`、`/readyz`、`/metrics`、`/docs`、`/openapi.json` 和 `/api/approvals/by-token`。如果访问业务 API 返回鉴权错误，需要配置初始 key、创建 API key，或在本地 demo 中显式关闭鉴权。
 
 本地临时关闭可在环境变量中设置：
 
@@ -146,4 +171,4 @@ python -m packages.evals.runner --suite full --output reports/eval-full.json
 API_KEY_AUTH_ENABLED=false
 ```
 
-生产式使用不应关闭鉴权。
+启用鉴权时设置为 `true` 并配置 `API_KEY_INITIAL_SEED`。生产式使用不应关闭鉴权。

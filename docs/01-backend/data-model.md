@@ -6,7 +6,7 @@
 - Public ID 使用前缀，例如 `inc_`、`run_`、`tool_`、`act_`、`apv_`、`rpt_`。
 - 时间字段使用 timezone-aware UTC datetime。
 - JSON 业务字段使用 PostgreSQL JSONB，在非 PostgreSQL 测试环境可降级为 JSON。
-- Runbook 和 memory embedding 使用 384 维向量；本地测试可用 JSON fallback。
+- Runbook 和 memory embedding 当前迁移为 512 维向量；FakeEmbeddingProvider 和 BGE-ZH 均输出 512 维，本地测试可用 JSON fallback。
 - `agent_runs.state` 只保存展示/调试快照，不能替代 LangGraph checkpoint。
 
 ## 核心事故表
@@ -159,8 +159,8 @@ L3 审批通过时必须保存二次确认字段。
 - `title`
 - `content`
 - `content_hash`
-- `embedding`：`vector(384)`。
-- `embedding_model`
+- `embedding`：`vector(512)`。
+- `embedding_model`：默认 `fake-512`，BGE-ZH 使用 `bge-small-zh`。
 - `tsv_content`
 - `language`
 - `metadata`
@@ -212,7 +212,7 @@ Runbook 文档版本表。
 - `memory_type`
 - `content`
 - `content_json`
-- `embedding`：nullable `vector(384)`。
+- `embedding`：nullable `vector(512)`。
 - `importance`
 - `expires_at`
 - `source_ref`

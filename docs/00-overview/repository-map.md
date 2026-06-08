@@ -20,7 +20,10 @@ demo/
   demo_service/
   faults/
   runbooks/
+  topology.json
 deploy/
+  bge-zh.Dockerfile
+  bge_zh_server.py
 migrations/
 plans/
 tests/
@@ -66,8 +69,10 @@ LangGraph Agent。
 - `state.py`：`IncidentState`。
 - `schemas.py`：Agent 输出 schema 和 `AgentDeps`。
 - `nodes/`：每个节点的测试able Python 函数。
-- `guardrails/policy.py`：确定性风险分类。
-- `llm/`：Fake/OpenAI/Anthropic 等 provider adapter。
+- `guardrails/`：确定性风险分类和审批策略。
+- `llm/`：Fake/OpenAI/DeepSeek/Anthropic/vLLM 等 provider adapter，含 `reasoning.py` 推理节点支持。
+- `evidence_validation.py`：证据交叉验证，融合 metrics/logs/traces/deployment 信号。
+- `topology.py`：服务依赖图和级联故障分析。
 - `prompts.py`：稳定 prompt 模板。
 
 ## `packages/tools`
@@ -91,7 +96,7 @@ Runbook RAG。
 
 - `ingest.py`：Markdown runbook 入库。
 - `splitter.py`：chunk 切分。
-- `embeddings.py`、`embedding_factory.py`：Fake 和可选 embedding provider。
+- `embeddings.py`、`embedding_factory.py`：Fake / BGE-ZH / text2vec embedding provider。
 - `retriever.py`：向量/词法/BM25 混合检索。
 - `bm25.py`：tsquery 和 BM25 score helper。
 - `reranker.py`、`reranker_backends.py`：rerank score 和后端。

@@ -196,12 +196,19 @@ test('generates and saves an API key from the authentication panel', async () =>
   });
 });
 
-test('renders incident detail with diagnosis, actions, approvals, and run link', async () => {
-  mockFetch({
+test('renders incident detail with diagnosis, actions, approvals, run link, and rerun button', async () => {
+  const fetchMock = mockFetch({
     'GET /api/incidents/inc_1': () => jsonResponse(incidentDetail),
     'GET /api/incidents/inc_1/runs': () => jsonResponse([{ agent_run_id: 'run_1', incident_id: 'inc_1', status: 'waiting_approval', celery_task_id: 'task-1', created_at: '2026-06-01T00:00:00Z', updated_at: '2026-06-01T00:04:00Z' }]),
-    'GET /api/incidents/inc_1/approvals': () => jsonResponse([approval])
+    'GET /api/incidents/inc_1/approvals': () => jsonResponse([approval]),
+    'POST /api/incidents/inc_1/diagnose': (_url, init) => {
+      expect(JSON.parse(String(init.body))).toEqual({ force: true, reason: 'manual rerun from UI' });
+      return jsonResponse({ incident_id: 'inc_1', agent_run_id: 'run_2', celery_task_id: 'task-2', status: 'queued' }, 202);
+    }
   });
+
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const user = userEvent.setup();
 
   renderApp('/incidents/inc_1');
 
@@ -210,6 +217,13 @@ test('renders incident detail with diagnosis, actions, approvals, and run link',
   expect(screen.getAllByText('rollback_release').length).toBeGreaterThan(0);
   expect(screen.getByRole('link', { name: 'Agent 运行' })).toHaveAttribute('href', '/agent-runs/run_1');
   expect(screen.getByRole('link', { name: '报告' })).toHaveAttribute('href', '/incidents/inc_1/report');
+
+  await user.click(screen.getByRole('button', { name: '重新诊断' }));
+
+  expect(confirmSpy).toHaveBeenCalled();
+  await waitFor(() => {
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/api/incidents/inc_1/diagnose' && init?.method === 'POST')).toBe(true);
+  });
 });
 
 test('renders agent run timeline, tool calls, and context summary', async () => {

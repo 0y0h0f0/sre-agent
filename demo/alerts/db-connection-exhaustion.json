@@ -4,7 +4,7 @@
   "service": "checkout",
   "severity": "P1",
   "alert_name": "DatabaseConnectionExhaustion",
-  "starts_at": "2026-06-01T00:00:00Z",
+  "starts_at": "2026-06-08T07:47:05Z",
   "labels": {
     "team": "payments"
   },

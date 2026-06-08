@@ -80,7 +80,8 @@ parse_alert
 | `cross_incident_context` | 相关事故上下文 |
 | `hypotheses` | 候选根因 |
 | `root_cause` | 最终根因 |
-| `diagnosis_rationale` | 诊断推理摘要 |
+| `diagnosis_rationale` | 诊断推理摘要（reasoning 启用时有内容） |
+| `cascade_analysis` | 级联故障分析结果（`is_cascade`、根服务、传播链） |
 | `llm_calls` | LLM 调用和 token/cache 信息 |
 | `recommended_actions` | 推荐动作 |
 | `approval_status` | 审批状态 |
@@ -90,7 +91,7 @@ parse_alert
 | `compression_events` | 压缩事件 |
 | `errors` | 节点错误 |
 | `phase` | 当前阶段 |
-| `_needs_approval`、`_all_l4` | guardrail 路由内部字段 |
+| `_needs_approval`、`_all_l4`、`_needs_human_review` | guardrail 和证据路由内部字段 |
 
 写入 `agent_runs.state` 前会移除 `_` 开头的内部字段，并将 datetime 转为 ISO 字符串。
 
@@ -138,6 +139,32 @@ Worker 的 node tracer 还会通过 Redis 发布 WebSocket 节点事件。
 - duration 和 error。
 
 ## 诊断与证据
+
+`diagnose` 节点执行以下融合分析：
+
+### 证据交叉验证
+
+`packages/agent/evidence_validation.py` 将 metrics、logs、traces、deployment 信号按权重融合（Trace > Metrics > Logs > Git），计算 corroboration score：
+
+- 多源一致：提高根因置信度。
+- 信号冲突：设置 `state["_needs_human_review"]=True`。
+- 缺失来源：降级但不阻断，deployment 缺失为中性信号。
+
+### 级联故障分析
+
+`packages/agent/topology.py` 基于服务依赖图（`SERVICE_TOPOLOGY_PATH` 配置或 trace 推导）进行分析：
+
+- `analyze_propagation`：识别故障传播链，找到根服务。
+- `correlate_incidents`：聚类同时发生的关联事故。
+- 结果写入 `state["cascade_analysis"]`，单服务事故 `is_cascade=False`。
+
+### LLM Reasoning
+
+`packages/agent/llm/reasoning.py` 在 `LLM_REASONING_ENABLED=true` 时激活：
+
+- 对 `LLM_REASONING_NODES` 中列出的节点启用深度推理（默认仅 `diagnose`）。
+- 输出 `diagnosis_rationale` 摘要和 LLM 调用元数据。
+- 不持久化原始 chain-of-thought 到数据库。
 
 诊断输出必须引用 evidence ID 或 Runbook chunk ID。即使使用 FakeLLM，也应在后处理或证据验证阶段保留可追溯 ID。
 

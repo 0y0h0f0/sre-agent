@@ -59,6 +59,7 @@ import {
   regenerateIncidentReport,
   rejectApproval,
   setStoredApiKey,
+  triggerDiagnosis,
   batchDecideApprovals,
   createComment,
   deleteComment,
@@ -622,6 +623,14 @@ function IncidentDetailPage() {
     queryFn: () => getCorrelatedIncidents(incidentId),
     staleTime: 60000
   });
+  const diagnosisMutation = useMutation({
+    mutationFn: () => triggerDiagnosis(incidentId, { force: true, reason: 'manual rerun from UI' }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['incident', incidentId] });
+      void queryClient.invalidateQueries({ queryKey: ['incident-runs', incidentId] });
+      void queryClient.invalidateQueries({ queryKey: ['incident-approvals', incidentId] });
+    }
+  });
 
   // NFA mutation
   const nfaMutation = useMutation({
@@ -680,6 +689,19 @@ function IncidentDetailPage() {
                 Agent 运行
               </Link>
             ) : null}
+            <button
+              className="iconTextButton primary"
+              type="button"
+              onClick={() => {
+                if (confirm('将为此事件创建新的诊断运行？')) {
+                  diagnosisMutation.mutate();
+                }
+              }}
+              disabled={diagnosisMutation.isPending}
+            >
+              <Workflow size={17} />
+              {diagnosisMutation.isPending ? '诊断中...' : '重新诊断'}
+            </button>
             <Link className="iconTextButton" to={`/incidents/${incident.incident_id}/report`}>
               <FileText size={17} />
               报告
@@ -706,6 +728,9 @@ function IncidentDetailPage() {
           <MessageSquare size={18} />
           {nfaMutation.data.message}
         </div>
+      ) : null}
+      {diagnosisMutation.isError ? (
+        <div className="callout danger"><XCircle size={18} />无法重新诊断：{(diagnosisMutation.error as ApiError).message}</div>
       ) : null}
       {nfaMutation.isError ? (
         <div className="callout danger"><XCircle size={18} />{(nfaMutation.error as ApiError).message}</div>

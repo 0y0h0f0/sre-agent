@@ -26,11 +26,11 @@ apps/web/
 | `/` | 重定向到 `/incidents` |
 | `/incidents` | 事故列表 |
 | `/incidents/:incidentId` | 事故详情 |
+| `/incidents/:incidentId/report` | 事故报告 |
 | `/agent-runs/:agentRunId` | Agent run 详情 |
 | `/approvals` | 审批列表 |
-| `/approvals/:approvalId` | 单个审批上下文 |
-| `/incidents/:incidentId/report` | 事故报告 |
-| `*` | Not found |
+| `/approvals/:approvalId` | 审批详情 |
+| `*` | 404（NotFoundPage） |
 
 ## API client
 
@@ -144,6 +144,19 @@ executing
 - approval conflict。
 - L3 second confirmation。
 - cache/token/compression display。
+
+## 事故详情操作
+
+`/incidents/:incidentId` 页面顶部操作区包含：
+
+- `Agent 运行`：跳转到最新 agent run 详情。
+- `重新诊断`：弹出确认后调用 `triggerDiagnosis(incidentId, { force: true, reason: "manual rerun from UI" })`。
+- `报告`：跳转到事故报告页。
+- `标记无效`：调用 NFA API。
+
+`重新诊断` 会通过 `POST /api/incidents/{incident_id}/diagnose` 创建新的 agent run，不覆盖旧 run，也不删除旧 run。成功后前端应刷新 incident、incident runs 和 incident approvals 查询。失败时在事故详情页显示错误 callout。
+
+`/agent-runs/:agentRunId` 页面保持 run 追踪视图语义，只提供刷新当前 run 数据，不提供原地 rerun 当前 run 的主操作。
 
 ## L3 审批 UI
 

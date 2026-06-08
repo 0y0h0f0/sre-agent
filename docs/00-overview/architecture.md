@@ -45,14 +45,14 @@ Mock execution + Incident report + UI + Eval metrics
 | Worker | `apps/worker` | Celery app、诊断任务、审批恢复、邮件任务、周期任务 |
 | Agent | `packages/agent` | LangGraph 图、节点、状态、LLM 适配、guardrail |
 | Tools | `packages/tools` | 工具 query/result schema、缓存、HTTP/fixture 后端、mock executor |
-| RAG | `packages/rag` | Runbook 切分、embedding、检索、rerank、草稿生成 |
+| RAG | `packages/rag` | Runbook 切分、embedding（Fake/BGE-ZH/text2vec）、混合检索、rerank、草稿生成 |
 | Memory | `packages/memory` | token 预算、上下文构建、压缩、记忆存储 |
 | DB | `packages/db` | SQLAlchemy models、session、repositories |
 | Common | `packages/common` | 配置、ID、时间、错误、Prometheus metrics |
 | Evals | `packages/evals` | smoke/full/shadow eval 数据集与运行器 |
 | Web | `apps/web` | React 控制台、审批 UI、报告页、E2E |
-| Demo | `demo` | alert fixture、fault fixture、runbooks、demo service |
-| Deploy | `deploy` | Prometheus、Loki、Promtail、Grafana、OTel 配置 |
+| Demo | `demo` | alert fixture、fault fixture、runbooks、demo service、topology |
+| Deploy | `deploy` | Prometheus、Loki、Promtail、Grafana、OTel、BGE-ZH 配置 |
 
 ## 核心设计决定
 
@@ -65,6 +65,9 @@ Mock execution + Incident report + UI + Eval metrics
 - 诊断输出必须引用 evidence ID 或 Runbook chunk ID。
 - Guardrail 是确定性规则，不信任模型决定最终执行权限。
 - MVP 动作执行只使用 mock executor。
+- 证据交叉验证在 `diagnose` 节点融合 metrics/logs/traces/deployment 信号（权重 Trace > Metrics > Logs > Git）；corroboration 提高根因置信度，冲突设置 `_needs_human_review`。
+- 级联故障分析基于服务依赖图（`SERVICE_TOPOLOGY_PATH` 配置或 trace 推导）识别故障传播链和根服务，关联同时发生的相关事故。
+- LLM reasoning 可在 `diagnose` 节点启用（`LLM_REASONING_ENABLED`），输出 `diagnosis_rationale` 和 LLM 调用元数据，不持久化原始 chain-of-thought。
 
 ## 数据流
 
@@ -93,6 +96,9 @@ Mock execution + Incident report + UI + Eval metrics
 | API | FastAPI | `8000` |
 | Web | Vite dev server | `5173` |
 | Demo service | 故障注入 demo service | `8080` |
+| BGE-ZH | Embedding 推理服务（BAAI/bge-small-zh, 512-dim） | `8083` |
+| Mailpit | 本地 SMTP 测试（dev profile） | `8025`（Web UI）、`1025`（SMTP） |
+| Celery beat | 周期任务调度（每日摘要、自动审批） | — |
 
 ## 可靠性策略
 

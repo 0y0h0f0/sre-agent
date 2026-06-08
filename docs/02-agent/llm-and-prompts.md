@@ -17,9 +17,9 @@
 - `LLM_TIMEOUT_SECONDS`。
 - `LLM_MAX_TOKENS`。
 - `LLM_TEMPERATURE`。
-- `LLM_REASONING_ENABLED`。
-- `LLM_REASONING_EFFORT`。
-- `LLM_REASONING_NODES`。
+- `LLM_REASONING_ENABLED`：是否启用深度推理（默认 `false`）。
+- `LLM_REASONING_EFFORT`：推理 effort 级别（provider 特定：`low`、`medium`、`high`）。
+- `LLM_REASONING_NODES`：启用推理的节点列表（默认仅 `diagnose`）。
 
 ## FakeLLM 行为
 
@@ -36,6 +36,21 @@ FakeLLM 还会返回 token 使用估算和结构化对象，用于测试：
 - 高风险动作阻断。
 - evidence ID 保留。
 - prompt/cache metrics。
+
+## LLM Reasoning
+
+`packages/agent/llm/reasoning.py` 管理深度推理行为：
+
+- 通过 `LLM_REASONING_NODES` 配置需要推理的节点（默认仅 `diagnose`）。
+- 仅当 `LLM_REASONING_ENABLED=true` 且当前节点在配置列表中时启用。
+- `diagnose` 节点启用推理时输出 `diagnosis_rationale` 摘要。
+- LLM 调用元数据（model、tokens、reasoning 状态）写入 `state["llm_calls"]`。
+- 原始 chain-of-thought 不持久化到数据库，仅用于本次调用。
+
+当前支持的 reasoning effort 级别与 provider 相关：
+- Anthropic：`low` / `medium` / `high`
+- OpenAI/DeepSeek：通过 `reasoning_effort` 参数传递
+- FakeLLM/vLLM：reasoning 为 no-op，返回空 rationale
 
 ## Prompt 构建
 

@@ -1,6 +1,6 @@
 # 配置参考
 
-配置来自 `packages/common/settings.py`，支持 `.env` 和环境变量。
+配置来自 `packages/common/settings.py`，支持 `.env` 和环境变量。Docker Compose 会覆盖少量本地 demo 默认值，例如 API key 鉴权和容器内服务地址。
 
 ## 基础依赖
 
@@ -120,7 +120,7 @@
 | 变量 | 默认值 |
 | --- | --- |
 | `API_KEY_AUTH_ENABLED` | `true` |
-| `API_KEY_OPEN_PATHS` | `/healthz,/readyz,/metrics,/docs,/openapi.json` |
+| `API_KEY_OPEN_PATHS` | `/healthz,/readyz,/metrics,/docs,/openapi.json,/api/approvals/by-token` |
 | `API_KEY_DEFAULT_EXPIRY_DAYS` | `90` |
 | `API_KEY_INITIAL_SEED` | `None` |
 | `CELERY_METRICS_PORT` | `9800` |
@@ -136,3 +136,9 @@
 | `CORS_ALLOW_ORIGINS` | `http://localhost:5173` |
 | `TASK_ORPHAN_TIMEOUT_SECONDS` | `300` |
 | `CELERY_TASK_ALWAYS_EAGER` | `false` |
+
+Docker Compose 中 API、worker 和 beat 默认覆盖：
+
+- `API_KEY_AUTH_ENABLED=false`
+- `EMBEDDING_BGE_ZH_URL=http://bge-zh:8083`
+- `EMBEDDING_TEXT2VEC_URL=http://text2vec:8084`

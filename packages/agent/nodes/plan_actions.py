@@ -8,6 +8,7 @@ from packages.agent.llm.reasoning import (
     record_llm_call,
     should_use_deep_reasoning,
 )
+from packages.agent.prompts import PLAN_ACTIONS_PROMPT_TEMPLATE, allowed_actions_table
 from packages.agent.schemas import AgentDeps, PlannedAction
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
@@ -21,7 +22,12 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
     started_at = utc_now()
     try:
         root_cause = state.get("root_cause", {})
-        prompt = f"Plan actions for {state.get('alert_name', '')}: {root_cause.get('summary', '')}"
+        prompt = PLAN_ACTIONS_PROMPT_TEMPLATE.format(
+            alert_name=state.get("alert_name", "unknown"),
+            root_cause_summary=root_cause.get("summary", "unknown"),
+            root_cause_confidence=root_cause.get("confidence", 0.5),
+            allowed_actions_table=allowed_actions_table(),
+        )
         thinking = should_use_deep_reasoning(deps.settings, _NODE_NAME)
 
         meta: dict[str, object] = {}

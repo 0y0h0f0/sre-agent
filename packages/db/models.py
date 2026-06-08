@@ -30,7 +30,7 @@ from packages.common.time import utc_now
 from packages.db.base import Base
 
 JSONType = JSON().with_variant(JSONB, "postgresql")
-Vector384Type = JSON() if Vector is None else JSON().with_variant(Vector(384), "postgresql")
+VectorEmbeddingType = JSON() if Vector is None else JSON().with_variant(Vector(512), "postgresql")
 TSVectorType = Text().with_variant(TSVECTOR(), "postgresql")
 
 
@@ -370,8 +370,8 @@ class RunbookChunk(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(Vector384Type, nullable=False, default=list)
-    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False, default="fake-384")
+    embedding: Mapped[list[float]] = mapped_column(VectorEmbeddingType, nullable=False, default=list)
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False, default="fake-512")
     tsv_content: Mapped[str | None] = mapped_column("tsv_content", TSVectorType, nullable=True)
     language: Mapped[str] = mapped_column(String(8), nullable=False, default="en")
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
@@ -451,7 +451,7 @@ class MemoryItem(Base):
     memory_type: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_json: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector384Type, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(VectorEmbeddingType, nullable=True)
     importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)

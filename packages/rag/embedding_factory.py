@@ -35,8 +35,8 @@ class FakeEmbeddingProvider:
     SHA256 hashing.  No external service required.
     """
 
-    dimension = 384
-    model_name = "fake-384"
+    dimension = 512
+    model_name = "fake-512"
 
     def embed_text(self, text: str) -> list[float]:
         return _fake_embed(text, self.dimension)

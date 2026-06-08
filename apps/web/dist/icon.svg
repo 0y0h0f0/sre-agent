@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SRE console icon">
-  <rect width="512" height="512" rx="96" fill="#1769aa"/>
-  <path d="M128 328h256" stroke="#ffffff" stroke-width="34" stroke-linecap="round"/>
-  <path d="M150 258l58-92 86 150 54-86 34 58" fill="none" stroke="#dff4ea" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="256" cy="256" r="180" fill="none" stroke="#ffffff" stroke-opacity="0.28" stroke-width="24"/>
-</svg>

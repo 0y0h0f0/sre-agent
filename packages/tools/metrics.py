@@ -243,7 +243,7 @@ def _promql(metric_type: MetricType, service: str, service_label: str = "service
         ),
         "qps": f"sum(rate(http_requests_total{{{sel}}}[5m]))",
         "cpu": f"sum(rate(process_cpu_seconds_total{{{sel}}}[5m]))",
-        "memory": f"process_resident_memory_bytes{{{sel}}}",
+        "memory": f"demo_process_resident_memory_bytes{{{sel}}}",
         "db_connections": f"db_connections_active{{{sel}}}",
         "cache_hit_rate": f"redis_cache_hit_rate{{{sel}}}",
         # Phase 2.4 fault catalog.

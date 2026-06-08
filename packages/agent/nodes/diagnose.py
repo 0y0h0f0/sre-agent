@@ -64,7 +64,8 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
                     f"Original prompt:\n{prompt_text}"
                 )
                 raw = deps.llm.invoke(
-                    [{"role": "user", "content": repair_prompt}], thinking=thinking
+                    [{"role": "user", "content": repair_prompt}],
+                    thinking=False,  # disable reasoning on retry — cleaner output
                 )
                 data = extract_json(raw)
                 output = DiagnosisOutput(**data)

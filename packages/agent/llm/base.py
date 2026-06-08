@@ -85,9 +85,27 @@ def parse_into_schema(data: Any, output_schema: Any) -> Any:
 
 
 def _first_json_span(text: str) -> str | None:
+    """Extract the JSON object/array span from *text*, preferring the last ``{{``.
+
+    Real LLMs may emit reasoning text before the JSON output.  We find the
+    last ``}}``, walk backwards to the nearest ``{{`` before it, and validate
+    the span is valid JSON.  Falls back to first-``{{``-to-last-``}}``.
+    """
     for open_ch, close_ch in (("{", "}"), ("[", "]")):
-        start = text.find(open_ch)
         end = text.rfind(close_ch)
+        if end < 0:
+            continue
+        # Prefer last { before last }
+        start = text.rfind(open_ch, 0, end)
+        if 0 <= start < end:
+            candidate = text[start : end + 1]
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass
+        # Fallback: first { → last }
+        start = text.find(open_ch)
         if 0 <= start < end:
             return text[start : end + 1]
     return None

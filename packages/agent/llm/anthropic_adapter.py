@@ -18,7 +18,8 @@ _DEFAULT_BASE_URL = "https://api.anthropic.com"
 _ANTHROPIC_VERSION = "2023-06-01"
 _JSON_SYSTEM_PROMPT = (
     "You are an SRE diagnosis assistant. Respond with a single valid JSON object "
-    "or array only — no prose, no Markdown fences."
+    "or array only — no prose, no Markdown fences." 
+    "最后用中文回答问题"
 )
 
 

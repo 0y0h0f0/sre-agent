@@ -100,6 +100,29 @@ llm_call_duration_seconds = Histogram(
     buckets=[1, 5, 10, 30, 60],
 )
 
+# --- LLM error counter ---
+
+llm_call_errors_total = Counter(
+    "agentp_llm_call_errors_total",
+    "Total LLM API call errors",
+    ["model", "provider", "error_type"],
+)
+
+# --- Email send metrics ---
+
+email_send_total = Counter(
+    "agentp_email_send_total",
+    "Total email send attempts",
+    ["notification_type", "status"],
+)
+
+email_send_duration_seconds = Histogram(
+    "agentp_email_send_duration_seconds",
+    "Email send duration (SMTP round-trip)",
+    ["notification_type"],
+    buckets=[1, 5, 10, 30, 60],
+)
+
 # --- Gauges ---
 
 active_diagnoses = Gauge(
@@ -192,3 +215,24 @@ class AgentMetricsCollector:
     @staticmethod
     def dec_active_diagnoses() -> None:
         active_diagnoses.dec()
+
+    @staticmethod
+    def record_llm_error(
+        *, model: str, provider: str, error_type: str
+    ) -> None:
+        llm_call_errors_total.labels(
+            model=_sanitize_label(model),
+            provider=_sanitize_label(provider),
+            error_type=error_type,
+        ).inc()
+
+    @staticmethod
+    def record_email_send(
+        *, notification_type: str, status: str, duration_seconds: float
+    ) -> None:
+        email_send_total.labels(
+            notification_type=notification_type, status=status
+        ).inc()
+        email_send_duration_seconds.labels(
+            notification_type=notification_type
+        ).observe(duration_seconds)

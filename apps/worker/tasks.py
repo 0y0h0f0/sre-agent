@@ -526,6 +526,10 @@ def resume_incident_after_approval(self: Any, agent_run_id: str, decision: str) 
 
 
 def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dict[str, Any]:
+    if decision not in ("approved", "rejected"):
+        raise ValueError(
+            f"invalid decision '{decision}'; expected 'approved' or 'rejected'"
+        )
     runs = AgentRunRepository(db)
     incidents = IncidentRepository(db)
 
@@ -632,10 +636,18 @@ def _notify_diagnosis_complete(
 def _notify_approval_requests(state: dict[str, Any], *, db: Session | None = None) -> None:
     approval_status = state.get("approval_status")
     if not isinstance(approval_status, dict):
+        import logging
+        logging.getLogger(__name__).warning(
+            "approval_status missing or invalid in state — no approval emails will be sent. "
+            "state keys: %s", list(state.keys())[:10]
+        )
         return
     approval_ids = approval_status.get("approval_ids")
     if not isinstance(approval_ids, list):
         return
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("Enqueuing approval request emails for %d approval(s)", len(approval_ids))
     for approval_id in approval_ids:
         approval_id_str = str(approval_id)
         if _email_event_exists(

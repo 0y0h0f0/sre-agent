@@ -405,6 +405,121 @@ class TestEmailTokenApprovalAPI:
         )
         assert resp.status_code == 404
 
+    # ------------------------------------------------------------------
+    # Phase 9: GET confirmation page + POST redirect tests (R4.1, R4.2)
+    # ------------------------------------------------------------------
+
+    def test_get_confirm_page_renders_html(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        """GET /approvals/by-token/{token}/approve renders a confirmation page."""
+        inc = _create_incident(db_session, status="waiting_approval")
+        run_id = new_id("run_")
+        action = _create_action(db_session, inc.incident_id, run_id, risk_level="L2")
+        approval = _create_approval(db_session, action.action_id, inc.incident_id, run_id)
+        db_session.commit()
+        resp = client.post(f"/api/approvals/{approval.approval_id}/email-token")
+        token = resp.json()["email_token"]
+
+        resp = client.get(f"/api/approvals/by-token/{token}/approve")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "Confirm Approve" in html
+        assert action.type in html
+        assert "L2" in html
+        assert f'/api/approvals/by-token/{token}/approve' in html
+        assert f'redirect=/incidents/{inc.incident_id}' in html
+
+    def test_get_reject_page_renders_html(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        """GET /approvals/by-token/{token}/reject renders a confirmation page."""
+        inc = _create_incident(db_session, status="waiting_approval")
+        run_id = new_id("run_")
+        action = _create_action(db_session, inc.incident_id, run_id, risk_level="L2")
+        approval = _create_approval(db_session, action.action_id, inc.incident_id, run_id)
+        db_session.commit()
+        resp = client.post(f"/api/approvals/{approval.approval_id}/email-token")
+        token = resp.json()["email_token"]
+
+        resp = client.get(f"/api/approvals/by-token/{token}/reject")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "Confirm Reject" in html
+
+    def test_get_confirm_page_bad_token(
+        self, client: TestClient
+    ) -> None:
+        """GET confirmation page with invalid token returns error HTML."""
+        resp = client.get("/api/approvals/by-token/bad_token/approve")
+        assert resp.status_code == 400
+        assert "Unavailable" in resp.text
+
+    def test_post_without_redirect_returns_json(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        """POST without redirect returns JSON (existing behavior)."""
+        inc = _create_incident(db_session, status="waiting_approval")
+        run_id = new_id("run_")
+        action = _create_action(db_session, inc.incident_id, run_id, risk_level="L2")
+        approval = _create_approval(db_session, action.action_id, inc.incident_id, run_id)
+        db_session.commit()
+        resp = client.post(f"/api/approvals/{approval.approval_id}/email-token")
+        token = resp.json()["email_token"]
+
+        resp = client.post(
+            f"/api/approvals/by-token/{token}/approve",
+            json={"approver": "test-user"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "approved"
+
+    def test_confirm_page_form_has_redirect_in_action(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        """Confirmation page form action includes ?redirect=/incidents/{id}."""
+        inc = _create_incident(db_session, status="waiting_approval")
+        run_id = new_id("run_")
+        action = _create_action(db_session, inc.incident_id, run_id, risk_level="L2")
+        approval = _create_approval(db_session, action.action_id, inc.incident_id, run_id)
+        db_session.commit()
+        resp = client.post(f"/api/approvals/{approval.approval_id}/email-token")
+        token = resp.json()["email_token"]
+
+        resp = client.get(f"/api/approvals/by-token/{token}/approve")
+        assert resp.status_code == 200
+        html = resp.text
+        # The form should POST to the approve URL with redirect to the incident
+        assert f'action="/api/approvals/by-token/{token}/approve?redirect=/incidents/{inc.incident_id}"' in html
+
+    def test_token_consumed_after_use(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        """Token is consumed after first successful GET + POST. Second GET fails."""
+        inc = _create_incident(db_session, status="waiting_approval")
+        run_id = new_id("run_")
+        action = _create_action(db_session, inc.incident_id, run_id, risk_level="L2")
+        approval = _create_approval(db_session, action.action_id, inc.incident_id, run_id)
+        db_session.commit()
+        resp = client.post(f"/api/approvals/{approval.approval_id}/email-token")
+        token = resp.json()["email_token"]
+
+        # First GET works
+        resp = client.get(f"/api/approvals/by-token/{token}/approve")
+        assert resp.status_code == 200
+
+        # POST to approve
+        resp = client.post(
+            f"/api/approvals/by-token/{token}/approve",
+            json={"approver": "test-user"},
+        )
+        assert resp.status_code == 200
+
+        # Token consumed — second GET shows error
+        resp = client.get(f"/api/approvals/by-token/{token}/approve")
+        assert resp.status_code == 400
+        assert "Unavailable" in resp.text
+
 
 class TestApprovalGroupAPI:
     """Phase 6.2: Approval group CRUD."""

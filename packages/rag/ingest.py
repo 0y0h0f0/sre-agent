@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from packages.common.ids import new_id
 from packages.db.repositories.runbooks import RunbookChunkRepository
 from packages.db.session import SessionLocal
-from packages.rag.embeddings import FakeEmbedding
+from packages.rag.embedding_factory import EmbeddingProvider, FakeEmbeddingProvider, build_embedding_provider
 from packages.rag.metadata import RunbookMetadataError, parse_runbook_markdown
 from packages.rag.splitter import split_markdown_document
 
@@ -29,10 +29,13 @@ class RunbookIngestor:
         self,
         repository: RunbookChunkRepository,
         *,
-        embedding_provider: FakeEmbedding | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         self.repository = repository
-        self.embedding_provider = embedding_provider or FakeEmbedding()
+        if embedding_provider is None:
+            from packages.common.settings import get_settings
+            embedding_provider = build_embedding_provider(get_settings())
+        self.embedding_provider = embedding_provider
 
     def ingest_path(self, path: str | Path, *, reingest: bool = True) -> RunbookIngestResult:
         base_path = Path(path)

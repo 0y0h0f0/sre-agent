@@ -121,5 +121,11 @@ def _checkpoint_state(
             if sanitized:
                 return sanitized
     except Exception:
-        pass
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Failed to retrieve checkpoint state for run %s — email notifications may be skipped",
+            config.get("configurable", {}).get("thread_id", "unknown"),
+            exc_info=True,
+        )
     return dict(fallback)

@@ -78,6 +78,17 @@ services:
       - ./deploy/grafana/datasources:/etc/grafana/provisioning/datasources:ro
       - ./deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
 
+  # Mailpit — local SMTP testing (docker compose --profile dev up mailpit)
+  # Web UI: http://localhost:8025  SMTP: mailpit:1025 (no auth)
+  mailpit:
+    image: axllent/mailpit:v1.22
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    profiles:
+      - dev
+    restart: unless-stopped
+
   demo-service:
     build: .
     command: uvicorn demo.demo_service.main:app --host 0.0.0.0 --port 8080 --reload
@@ -113,10 +124,46 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
       OTEL_COLLECTOR_URL: http://otel-collector:4318
-      TRACE_FIXTURE_PATH: demo/faults/traces.json
-      GIT_CHANGES_FIXTURE_PATH: demo/faults/git_changes.json
-      LLM_PROVIDER: fake
-      EMBEDDING_PROVIDER: fake
+      # LLM
+      LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-fake-diagnosis-model}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://localhost:8001/v1}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-512}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.1}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
+      LLM_REASONING_ENABLED: ${LLM_REASONING_ENABLED:-false}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-medium}
+      # Embedding & RAG
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
+      EMBEDDING_BGE_ZH_URL: ${EMBEDDING_BGE_ZH_URL:-http://localhost:8083}
+      EMBEDDING_TEXT2VEC_URL: ${EMBEDDING_TEXT2VEC_URL:-http://localhost:8084}
+      RERANKER_PROVIDER: ${RERANKER_PROVIDER:-fake}
+      RERANKER_COHERE_API_KEY: ${RERANKER_COHERE_API_KEY:-}
+      RERANKER_JINA_BASE_URL: ${RERANKER_JINA_BASE_URL:-http://localhost:8081/v1}
+      RERANKER_BGE_BASE_URL: ${RERANKER_BGE_BASE_URL:-http://localhost:8082}
+      # Tool backends
+      TRACE_BACKEND: ${TRACE_BACKEND:-fixture}
+      TRACE_FIXTURE_PATH: ${TRACE_FIXTURE_PATH:-demo/faults/traces.json}
+      DEPLOYMENT_BACKEND: ${DEPLOYMENT_BACKEND:-fixture}
+      GIT_CHANGES_FIXTURE_PATH: ${GIT_CHANGES_FIXTURE_PATH:-demo/faults/git_changes.json}
+      K8S_BACKEND: ${K8S_BACKEND:-fixture}
+      DB_DIAGNOSTICS_BACKEND: ${DB_DIAGNOSTICS_BACKEND:-fixture}
+      DB_DIAGNOSTICS_FIXTURE_PATH: ${DB_DIAGNOSTICS_FIXTURE_PATH:-demo/faults/db_diagnostics.json}
+      DB_DIAGNOSTICS_URL: ${DB_DIAGNOSTICS_URL:-}
+      # Trace backend URLs
+      JAEGER_URL: ${JAEGER_URL:-http://jaeger:16686}
+      TEMPO_URL: ${TEMPO_URL:-http://tempo:3200}
+      # Deployment backend config
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      ARGOCD_URL: ${ARGOCD_URL:-http://argocd:8080}
+      ARGOCD_TOKEN: ${ARGOCD_TOKEN:-}
+      # K8s live backend
+      K8S_NAMESPACE: ${K8S_NAMESPACE:-default}
+      K8S_FIXTURE_PATH: ${K8S_FIXTURE_PATH:-demo/faults/k8s.json}
+      # SMTP
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_TLS_MODE: ${SMTP_TLS_MODE:-auto}
@@ -127,7 +174,10 @@ services:
       SRE_EMAIL_LIST: ${SRE_EMAIL_LIST:-}
       WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:5173}
       NOTIFICATION_TIMEZONE: ${NOTIFICATION_TIMEZONE:-UTC}
+      # Auth & CORS
       API_KEY_AUTH_ENABLED: ${API_KEY_AUTH_ENABLED:-false}
+      API_KEY_INITIAL_SEED: ${API_KEY_INITIAL_SEED:-}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2).read()"]
       interval: 30s
@@ -163,10 +213,46 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
       OTEL_COLLECTOR_URL: http://otel-collector:4318
-      TRACE_FIXTURE_PATH: demo/faults/traces.json
-      GIT_CHANGES_FIXTURE_PATH: demo/faults/git_changes.json
-      LLM_PROVIDER: fake
-      EMBEDDING_PROVIDER: fake
+      # LLM
+      LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-fake-diagnosis-model}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://localhost:8001/v1}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-512}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.1}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
+      LLM_REASONING_ENABLED: ${LLM_REASONING_ENABLED:-false}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-medium}
+      # Embedding & RAG
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
+      EMBEDDING_BGE_ZH_URL: ${EMBEDDING_BGE_ZH_URL:-http://localhost:8083}
+      EMBEDDING_TEXT2VEC_URL: ${EMBEDDING_TEXT2VEC_URL:-http://localhost:8084}
+      RERANKER_PROVIDER: ${RERANKER_PROVIDER:-fake}
+      RERANKER_COHERE_API_KEY: ${RERANKER_COHERE_API_KEY:-}
+      RERANKER_JINA_BASE_URL: ${RERANKER_JINA_BASE_URL:-http://localhost:8081/v1}
+      RERANKER_BGE_BASE_URL: ${RERANKER_BGE_BASE_URL:-http://localhost:8082}
+      # Tool backends
+      TRACE_BACKEND: ${TRACE_BACKEND:-fixture}
+      TRACE_FIXTURE_PATH: ${TRACE_FIXTURE_PATH:-demo/faults/traces.json}
+      DEPLOYMENT_BACKEND: ${DEPLOYMENT_BACKEND:-fixture}
+      GIT_CHANGES_FIXTURE_PATH: ${GIT_CHANGES_FIXTURE_PATH:-demo/faults/git_changes.json}
+      K8S_BACKEND: ${K8S_BACKEND:-fixture}
+      DB_DIAGNOSTICS_BACKEND: ${DB_DIAGNOSTICS_BACKEND:-fixture}
+      DB_DIAGNOSTICS_FIXTURE_PATH: ${DB_DIAGNOSTICS_FIXTURE_PATH:-demo/faults/db_diagnostics.json}
+      DB_DIAGNOSTICS_URL: ${DB_DIAGNOSTICS_URL:-}
+      # Trace backend URLs
+      JAEGER_URL: ${JAEGER_URL:-http://jaeger:16686}
+      TEMPO_URL: ${TEMPO_URL:-http://tempo:3200}
+      # Deployment backend config
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      ARGOCD_URL: ${ARGOCD_URL:-http://argocd:8080}
+      ARGOCD_TOKEN: ${ARGOCD_TOKEN:-}
+      # K8s live backend
+      K8S_NAMESPACE: ${K8S_NAMESPACE:-default}
+      K8S_FIXTURE_PATH: ${K8S_FIXTURE_PATH:-demo/faults/k8s.json}
+      # SMTP
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_TLS_MODE: ${SMTP_TLS_MODE:-auto}
@@ -177,7 +263,9 @@ services:
       SRE_EMAIL_LIST: ${SRE_EMAIL_LIST:-}
       WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:5173}
       NOTIFICATION_TIMEZONE: ${NOTIFICATION_TIMEZONE:-UTC}
+      # Auth
       API_KEY_AUTH_ENABLED: ${API_KEY_AUTH_ENABLED:-false}
+      API_KEY_INITIAL_SEED: ${API_KEY_INITIAL_SEED:-}
     depends_on:
       api:
         condition: service_healthy
@@ -206,10 +294,46 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
       OTEL_COLLECTOR_URL: http://otel-collector:4318
-      TRACE_FIXTURE_PATH: demo/faults/traces.json
-      GIT_CHANGES_FIXTURE_PATH: demo/faults/git_changes.json
-      LLM_PROVIDER: fake
-      EMBEDDING_PROVIDER: fake
+      # LLM
+      LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-fake-diagnosis-model}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://localhost:8001/v1}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-512}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.1}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
+      LLM_REASONING_ENABLED: ${LLM_REASONING_ENABLED:-false}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-medium}
+      # Embedding & RAG
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
+      EMBEDDING_BGE_ZH_URL: ${EMBEDDING_BGE_ZH_URL:-http://localhost:8083}
+      EMBEDDING_TEXT2VEC_URL: ${EMBEDDING_TEXT2VEC_URL:-http://localhost:8084}
+      RERANKER_PROVIDER: ${RERANKER_PROVIDER:-fake}
+      RERANKER_COHERE_API_KEY: ${RERANKER_COHERE_API_KEY:-}
+      RERANKER_JINA_BASE_URL: ${RERANKER_JINA_BASE_URL:-http://localhost:8081/v1}
+      RERANKER_BGE_BASE_URL: ${RERANKER_BGE_BASE_URL:-http://localhost:8082}
+      # Tool backends
+      TRACE_BACKEND: ${TRACE_BACKEND:-fixture}
+      TRACE_FIXTURE_PATH: ${TRACE_FIXTURE_PATH:-demo/faults/traces.json}
+      DEPLOYMENT_BACKEND: ${DEPLOYMENT_BACKEND:-fixture}
+      GIT_CHANGES_FIXTURE_PATH: ${GIT_CHANGES_FIXTURE_PATH:-demo/faults/git_changes.json}
+      K8S_BACKEND: ${K8S_BACKEND:-fixture}
+      DB_DIAGNOSTICS_BACKEND: ${DB_DIAGNOSTICS_BACKEND:-fixture}
+      DB_DIAGNOSTICS_FIXTURE_PATH: ${DB_DIAGNOSTICS_FIXTURE_PATH:-demo/faults/db_diagnostics.json}
+      DB_DIAGNOSTICS_URL: ${DB_DIAGNOSTICS_URL:-}
+      # Trace backend URLs
+      JAEGER_URL: ${JAEGER_URL:-http://jaeger:16686}
+      TEMPO_URL: ${TEMPO_URL:-http://tempo:3200}
+      # Deployment backend config
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      ARGOCD_URL: ${ARGOCD_URL:-http://argocd:8080}
+      ARGOCD_TOKEN: ${ARGOCD_TOKEN:-}
+      # K8s live backend
+      K8S_NAMESPACE: ${K8S_NAMESPACE:-default}
+      K8S_FIXTURE_PATH: ${K8S_FIXTURE_PATH:-demo/faults/k8s.json}
+      # SMTP
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_TLS_MODE: ${SMTP_TLS_MODE:-auto}
@@ -220,7 +344,9 @@ services:
       SRE_EMAIL_LIST: ${SRE_EMAIL_LIST:-}
       WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:5173}
       NOTIFICATION_TIMEZONE: ${NOTIFICATION_TIMEZONE:-UTC}
+      # Auth
       API_KEY_AUTH_ENABLED: ${API_KEY_AUTH_ENABLED:-false}
+      API_KEY_INITIAL_SEED: ${API_KEY_INITIAL_SEED:-}
     depends_on:
       api:
         condition: service_healthy

@@ -13,8 +13,8 @@ from pydantic import BaseModel, Field, field_validator
 from packages.db.models import RunbookChunk
 from packages.db.repositories.runbooks import RunbookChunkRepository
 from packages.rag.bm25 import adaptive_alpha, build_tsquery, normalize_bm25
-from packages.rag.embedding_factory import EmbeddingProvider, FakeEmbeddingProvider
-from packages.rag.reranker import rerank_score
+from packages.rag.embedding_factory import EmbeddingProvider, build_embedding_provider
+from packages.rag.reranker_backends import RerankerBackend, build_reranker_backend
 
 WORD_RE = re.compile(r"[a-z0-9_]+")
 
@@ -77,9 +77,13 @@ class RunbookRetriever:
         use_hybrid: bool = True,
     ) -> None:
         self.repository = repository
-        self.embedding_provider: EmbeddingProvider = embedding_provider or FakeEmbeddingProvider()
+        if embedding_provider is None:
+            from packages.common.settings import get_settings
+            embedding_provider = build_embedding_provider(get_settings())
+        self.embedding_provider: EmbeddingProvider = embedding_provider
         self.cache = cache
         self.use_hybrid = use_hybrid
+        self._reranker: RerankerBackend | None = None  # lazy-init from settings
 
     def search(self, query: RunbookSearchQuery) -> RunbookSearchResultList:
         normalized_query = RunbookSearchQuery.model_validate(query)
@@ -129,21 +133,24 @@ class RunbookRetriever:
             candidates = list(all_chunks.values())
 
         recalled = sorted(candidates, key=lambda item: item[1], reverse=True)[:20]
+        # Rerank via configured backend (batch call, then sort by rerank score)
+        if self._reranker is None:
+            from packages.common.settings import get_settings
+            self._reranker = build_reranker_backend(get_settings())
+        docs = [
+            {
+                "metadata": chunk.metadata_json,
+                "title": chunk.title,
+                "score": vector_score,
+                "service": normalized_query.service or "",
+                "incident_type": normalized_query.incident_type or "",
+            }
+            for chunk, vector_score in recalled
+        ]
+        reranked = self._reranker.rerank(normalized_query.query, docs, top_k=len(docs))
+        score_by_idx = dict(reranked)
         ranked = sorted(
-            (
-                (
-                    chunk,
-                    rerank_score(
-                        query=normalized_query.query,
-                        metadata=chunk.metadata_json,
-                        title=chunk.title,
-                        vector_score=vector_score,
-                        service=normalized_query.service,
-                        incident_type=normalized_query.incident_type,
-                    ),
-                )
-                for chunk, vector_score in recalled
-            ),
+            ((recalled[idx][0], score_by_idx.get(idx, recalled[idx][1])) for idx, _ in enumerate(recalled)),
             key=lambda item: (-item[1], item[0].chunk_id),
         )
         results = [

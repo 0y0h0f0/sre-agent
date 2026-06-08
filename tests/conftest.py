@@ -23,8 +23,10 @@ from packages.common.settings import Settings, get_settings
 
 @pytest.fixture(autouse=True)
 def _disable_auth_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Disable API key auth for all tests."""
+    """Disable API key auth and force fake providers for all tests."""
     monkeypatch.setenv("API_KEY_AUTH_ENABLED", "false")
+    monkeypatch.setenv("LLM_PROVIDER", "fake")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
     get_settings.cache_clear()
 from packages.db import models  # noqa: F401
 from packages.db.base import Base
@@ -98,6 +100,8 @@ def test_settings() -> Settings:
         celery_result_backend="memory://backend",
         api_key_auth_enabled=False,
         celery_task_always_eager=True,
+        llm_provider="fake",
+        embedding_provider="fake",
     )
 
 

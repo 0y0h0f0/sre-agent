@@ -98,7 +98,26 @@ class EmailService:
         return str(result) if result is not None else None
 
     def send_sync(self, content: EmailContent) -> str | None:
-        return asyncio.run(self.send(content))
+        from time import perf_counter
+
+        from packages.common import metrics as agent_metrics
+
+        started = perf_counter()
+        try:
+            result = asyncio.run(self.send(content))
+            agent_metrics.AgentMetricsCollector.record_email_send(
+                notification_type=content.notification_type,
+                status="sent",
+                duration_seconds=perf_counter() - started,
+            )
+            return result
+        except Exception:
+            agent_metrics.AgentMetricsCollector.record_email_send(
+                notification_type=content.notification_type,
+                status="failed",
+                duration_seconds=perf_counter() - started,
+            )
+            raise
 
     def _smtp_tls_flags(self) -> tuple[bool, bool]:
         mode = self.settings.smtp_tls_mode.strip().lower()

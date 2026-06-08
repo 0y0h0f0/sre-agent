@@ -73,14 +73,14 @@ def test_splitter_preserves_heading_hierarchy() -> None:
     assert detection.source_path == "runbooks/high-5xx.md"
 
 
-def test_fake_embedding_is_deterministic_384_dimensions() -> None:
+def test_fake_embedding_is_deterministic_512_dimensions() -> None:
     embedding = FakeEmbedding()
 
     first = embedding.embed_text("checkout high 5xx")
     second = embedding.embed_text("checkout high 5xx")
 
     assert first == second
-    assert len(first) == 384
+    assert len(first) == 512
     assert first != embedding.embed_text("redis cache avalanche")
 
 
@@ -407,7 +407,7 @@ def test_fake_embedding_embed_many_returns_list() -> None:
     embedding = FakeEmbedding()
     results = embedding.embed_many(["text one", "text two"])
     assert len(results) == 2
-    assert all(len(vec) == 384 for vec in results)
+    assert all(len(vec) == 512 for vec in results)
 
 
 # ---------------------------------------------------------------------------
@@ -598,13 +598,13 @@ def test_fake_embedding_provider_conforms_to_protocol() -> None:
 
     provider = FakeEmbeddingProvider()
     assert isinstance(provider, EmbeddingProvider)
-    assert provider.dimension == 384
-    assert provider.model_name == "fake-384"
+    assert provider.dimension == 512
+    assert provider.model_name == "fake-512"
     vec = provider.embed_text("test")
-    assert len(vec) == 384
+    assert len(vec) == 512
     many = provider.embed_many(["a", "b"])
     assert len(many) == 2
-    assert all(len(v) == 384 for v in many)
+    assert all(len(v) == 512 for v in many)
 
 
 def test_fake_embedding_is_deterministic_via_provider() -> None:

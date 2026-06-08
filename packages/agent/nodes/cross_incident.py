@@ -73,7 +73,10 @@ def cross_incident(state: IncidentState, deps: AgentDeps) -> IncidentState:
                     correlation_type="same_fingerprint",
                 )
             except Exception:
-                pass  # correlation recording is informational; never abort diagnosis
+                logger.debug(
+                    "failed to record same_fingerprint correlation %s<->%s",
+                    incident_id, related.incident_id, exc_info=True,
+                )
 
         # 2. Same-service matches (fill up to max_results)
         if len(context) < max_results:
@@ -104,7 +107,10 @@ def cross_incident(state: IncidentState, deps: AgentDeps) -> IncidentState:
                         correlation_type="similar_service",
                     )
                 except Exception:
-                    pass  # correlation recording is informational; never abort diagnosis
+                    logger.debug(
+                        "failed to record similar_service correlation %s<->%s",
+                        incident_id, related.incident_id, exc_info=True,
+                    )
                 if len(context) >= max_results:
                     break
 

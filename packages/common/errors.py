@@ -61,3 +61,8 @@ class DependencyUnavailableError(AppError):
 class ApprovalRequiredError(AppError):
     def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__("APPROVAL_REQUIRED", message, status_code=403, details=details)
+
+
+class TooManyRequestsError(AppError):
+    def __init__(self, message: str = "Rate limit exceeded", *, details: dict[str, Any] | None = None) -> None:
+        super().__init__("TOO_MANY_REQUESTS", message, status_code=429, details=details)

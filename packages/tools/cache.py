@@ -16,8 +16,11 @@ from packages.tools.base import ToolResult
 class RequestLocalToolCache:
     """Small in-memory cache intended for a single agent run."""
 
+    _MAX_ITEMS = 200
+
     def __init__(self) -> None:
         self._items: dict[str, ToolResult] = {}
+        self._keys: list[str] = []
         self.hit_count: int = 0
         self.miss_count: int = 0
 
@@ -30,6 +33,11 @@ class RequestLocalToolCache:
         return cached.model_copy(update={"cache_hit": True})
 
     def set(self, key: str, result: ToolResult) -> None:
+        if len(self._items) >= self._MAX_ITEMS and key not in self._items:
+            oldest = self._keys.pop(0)
+            self._items.pop(oldest, None)
+        if key not in self._items:
+            self._keys.append(key)
         self._items[key] = result.model_copy(update={"cache_hit": False})
 
 

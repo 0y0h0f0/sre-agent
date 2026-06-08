@@ -133,9 +133,9 @@ test('renders incident rows, filters, and empty state', async () => {
   expect(await screen.findByText('checkout-api')).toBeInTheDocument();
   expect(screen.getByText('High5xxAfterDeploy')).toBeInTheDocument();
 
-  await userEvent.type(screen.getByLabelText('Service'), 'checkout-api');
-  await userEvent.selectOptions(screen.getByLabelText('Status'), 'open');
-  await userEvent.click(screen.getByRole('button', { name: 'Filter' }));
+  await userEvent.type(screen.getByLabelText('服务'), 'checkout-api');
+  await userEvent.selectOptions(screen.getByLabelText('状态'), 'open');
+  await userEvent.click(screen.getByRole('button', { name: '筛选' }));
 
   await waitFor(() => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('service=checkout-api') && String(url).includes('status=open'))).toBe(true);
@@ -149,9 +149,9 @@ test('renders the incidents error state', async () => {
 
   renderApp('/incidents');
 
-  expect(await screen.findByText('Unable to load incidents')).toBeInTheDocument();
+  expect(await screen.findByText('无法加载事件')).toBeInTheDocument();
   expect(screen.getByText('boom')).toBeInTheDocument();
-  expect(screen.getByText('Code SERVER_ERROR')).toBeInTheDocument();
+  expect(screen.getByText('错误码 SERVER_ERROR')).toBeInTheDocument();
 });
 
 test('shows API key guidance when incident loading is unauthorized', async () => {
@@ -161,9 +161,9 @@ test('shows API key guidance when incident loading is unauthorized', async () =>
 
   renderApp('/incidents');
 
-  expect(await screen.findByText('Unable to load incidents')).toBeInTheDocument();
-  expect(screen.getByText('Set or generate an API key in the sidebar Authentication panel.')).toBeInTheDocument();
-  expect(screen.getByRole('region', { name: 'API authentication' })).toBeInTheDocument();
+  expect(await screen.findByText('无法加载事件')).toBeInTheDocument();
+  expect(screen.getByText('请在侧边栏身份认证面板中设置或生成 API 密钥。')).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'API 认证' })).toBeInTheDocument();
 });
 
 test('generates and saves an API key from the authentication panel', async () => {
@@ -171,7 +171,7 @@ test('generates and saves an API key from the authentication panel', async () =>
     'GET /api/incidents': () => jsonResponse({ items: [], total: 0, page: 1, page_size: 50 }),
     'POST /api/api-keys': () => jsonResponse({
       key_id: 'apik_1',
-      description: 'local web key',
+      description: '本地 Web 密钥',
       raw_key: 'web-raw-key',
       created_by: 'system',
       expires_at: null,
@@ -181,11 +181,11 @@ test('generates and saves an API key from the authentication panel', async () =>
 
   renderApp('/incidents');
 
-  await screen.findByText('No incidents');
-  await userEvent.type(screen.getByLabelText('Bootstrap seed or admin key'), 'bootstrap-secret');
-  await userEvent.click(screen.getByRole('button', { name: 'Generate key' }));
+  await screen.findByText('无事件');
+  await userEvent.type(screen.getByLabelText('引导种子或管理员密钥'), 'bootstrap-secret');
+  await userEvent.click(screen.getByRole('button', { name: '生成密钥' }));
 
-  expect(await screen.findByText('Created apik_1 and saved it for this browser.')).toBeInTheDocument();
+  expect(await screen.findByText('已创建 apik_1 并保存至浏览器。')).toBeInTheDocument();
   expect(screen.getByText('web-raw-key')).toBeInTheDocument();
   expect(window.localStorage.getItem('sre_api_key')).toBe('web-raw-key');
 
@@ -208,8 +208,8 @@ test('renders incident detail with diagnosis, actions, approvals, and run link',
   expect(await screen.findByText('New checkout release introduced downstream timeouts')).toBeInTheDocument();
   expect(screen.getByText('Timeout errors')).toBeInTheDocument();
   expect(screen.getAllByText('rollback_release').length).toBeGreaterThan(0);
-  expect(screen.getByRole('link', { name: 'Agent run' })).toHaveAttribute('href', '/agent-runs/run_1');
-  expect(screen.getByRole('link', { name: 'Report' })).toHaveAttribute('href', '/incidents/inc_1/report');
+  expect(screen.getByRole('link', { name: 'Agent 运行' })).toHaveAttribute('href', '/agent-runs/run_1');
+  expect(screen.getByRole('link', { name: '报告' })).toHaveAttribute('href', '/incidents/inc_1/report');
 });
 
 test('renders agent run timeline, tool calls, and context summary', async () => {
@@ -240,13 +240,13 @@ test('renders agent run timeline, tool calls, and context summary', async () => 
 
   expect((await screen.findAllByText('parse_alert')).length).toBeGreaterThan(0);
   expect(screen.getByText('MetricsTool')).toBeInTheDocument();
-  expect(screen.getByText('cache hit')).toBeInTheDocument();
+  expect(screen.getByText('缓存命中')).toBeInTheDocument();
   expect(screen.getByText('123')).toBeInTheDocument();
-  expect(screen.getByText('Run progress')).toBeInTheDocument();
-  expect(screen.getByText('1 of 1 nodes complete')).toBeInTheDocument();
-  expect(screen.getByText('Signal swimlanes')).toBeInTheDocument();
-  expect(screen.getByText('Dependency graph')).toBeInTheDocument();
-  expect(screen.getByText('Evidence network')).toBeInTheDocument();
+  expect(screen.getByText('运行进度')).toBeInTheDocument();
+  expect(screen.getByText('1 / 1 个节点已完成')).toBeInTheDocument();
+  expect(screen.getByText('信号泳道')).toBeInTheDocument();
+  expect(screen.getByText('依赖关系图')).toBeInTheDocument();
+  expect(screen.getByText('证据网络')).toBeInTheDocument();
 });
 
 
@@ -304,7 +304,7 @@ test('shows dynamic run progress and live websocket node updates', async () => {
 
   renderApp('/agent-runs/run_live');
 
-  expect(await screen.findByText('1 of 3 nodes complete')).toBeInTheDocument();
+  expect(await screen.findByText('1 / 3 个节点已完成')).toBeInTheDocument();
   expect(screen.getByText('collect_logs')).toBeInTheDocument();
   await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
   expect(MockWebSocket.instances[0].url).toContain('/api/ws/incidents/inc_1');
@@ -324,7 +324,7 @@ test('shows dynamic run progress and live websocket node updates', async () => {
   });
 
   expect(await screen.findByText('tailing checkout logs')).toBeInTheDocument();
-  expect(screen.getByText('Open')).toBeInTheDocument();
+  expect(screen.getByText('已连接')).toBeInTheDocument();
 });
 
 
@@ -335,7 +335,7 @@ test('renders the approval notification control', async () => {
 
   renderApp('/approvals');
 
-  expect(await screen.findByRole('button', { name: /Notifications unavailable|Enable notifications|Notifications on|Notifications blocked/ })).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: /通知不可用|启用通知|通知已开启|通知已阻止/ })).toBeInTheDocument();
 });
 
 
@@ -369,14 +369,14 @@ test('enables approval notifications and notifies for newly arrived approvals', 
 
   renderApp('/approvals');
 
-  await userEvent.click(await screen.findByRole('button', { name: 'Enable notifications' }));
+  await userEvent.click(await screen.findByRole('button', { name: '启用通知' }));
   await waitFor(() => expect(requestPermission).toHaveBeenCalled());
-  expect(await screen.findByRole('button', { name: 'Notifications on' })).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: '通知已开启' })).toBeInTheDocument();
   expect(register).toHaveBeenCalledWith('/sw.js');
 
-  await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await userEvent.click(screen.getByRole('button', { name: '刷新' }));
   await waitFor(() => expect(showNotification).toHaveBeenCalledWith(
-    'L3 approval requested',
+    'L3 审批请求',
     expect.objectContaining({ tag: 'apv_2' })
   ));
 });
@@ -390,10 +390,10 @@ test('opens a direct linked approval route in the review dialog', async () => {
 
   renderApp('/approvals/apv_1');
 
-  const dialog = await screen.findByRole('dialog', { name: 'Review action' });
+  const dialog = await screen.findByRole('dialog', { name: '审核操作' });
   expect(within(dialog).getByText('apv_1')).toBeInTheDocument();
   expect(await within(dialog).findByText('checkout-api')).toBeInTheDocument();
-  expect(within(dialog).getByLabelText('Confirm action type')).toBeInTheDocument();
+  expect(within(dialog).getByLabelText('确认操作类型')).toBeInTheDocument();
 });
 
 test('approves an L3 approval with secondary confirmation', async () => {
@@ -409,16 +409,16 @@ test('approves an L3 approval with secondary confirmation', async () => {
 
   renderApp('/approvals');
 
-  await userEvent.click(await screen.findByRole('button', { name: 'Review' }));
-  const dialog = await screen.findByRole('dialog', { name: 'Review action' });
+  await userEvent.click(await screen.findByRole('button', { name: '审核' }));
+  const dialog = await screen.findByRole('dialog', { name: '审核操作' });
   expect(await within(dialog).findByText('checkout-api')).toBeInTheDocument();
 
-  await userEvent.type(within(dialog).getByLabelText('Approver'), 'sre-oncall');
-  await userEvent.type(within(dialog).getByLabelText('Comment'), 'approved with confirmation');
-  await userEvent.click(within(dialog).getByLabelText('Risk acknowledged'));
-  await userEvent.type(within(dialog).getByLabelText('Confirm action type'), 'rollback_release');
-  await userEvent.type(within(dialog).getByLabelText('Confirm target'), 'checkout-api');
-  const approveButtons = within(dialog).getAllByRole('button', { name: 'Approve' });
+  await userEvent.type(within(dialog).getByLabelText('审批人'), 'sre-oncall');
+  await userEvent.type(within(dialog).getByLabelText('备注'), 'approved with confirmation');
+  await userEvent.click(within(dialog).getByLabelText('已确认风险'));
+  await userEvent.type(within(dialog).getByLabelText('确认操作类型'), 'rollback_release');
+  await userEvent.type(within(dialog).getByLabelText('确认目标'), 'checkout-api');
+  const approveButtons = within(dialog).getAllByRole('button', { name: '批准' });
   await userEvent.click(approveButtons[approveButtons.length - 1]);
 
   await waitFor(() => expect(approvePayload).toEqual(expect.objectContaining({ risk_ack: true, confirm_action_type: 'rollback_release', confirm_target: 'checkout-api' })));
@@ -432,13 +432,13 @@ test('reject flow requires a rejection reason', async () => {
 
   renderApp('/approvals');
 
-  await userEvent.click(await screen.findByRole('button', { name: 'Review' }));
-  const dialog = await screen.findByRole('dialog', { name: 'Review action' });
-  await userEvent.click(within(dialog).getAllByRole('button', { name: 'Reject' })[0]);
-  await userEvent.type(within(dialog).getByLabelText('Approver'), 'sre-oncall');
-  await userEvent.click(within(dialog).getAllByRole('button', { name: 'Reject' })[1]);
+  await userEvent.click(await screen.findByRole('button', { name: '审核' }));
+  const dialog = await screen.findByRole('dialog', { name: '审核操作' });
+  await userEvent.click(within(dialog).getAllByRole('button', { name: '拒绝' })[0]);
+  await userEvent.type(within(dialog).getByLabelText('审批人'), 'sre-oncall');
+  await userEvent.click(within(dialog).getAllByRole('button', { name: '拒绝' })[1]);
 
-  expect(await within(dialog).findByText('Rejection reason is required')).toBeInTheDocument();
+  expect(await within(dialog).findByText('请填写拒绝原因')).toBeInTheDocument();
 });
 
 test('renders report and regenerates it', async () => {
@@ -481,7 +481,7 @@ test('renders report and regenerates it', async () => {
 
   expect(await screen.findByText('Bad release caused elevated 5xx')).toBeInTheDocument();
   expect(screen.getByText('evd_1')).toBeInTheDocument();
-  await userEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
+  await userEvent.click(screen.getByRole('button', { name: '重新生成' }));
   await waitFor(() => expect(regenerated).toBe(true));
 });
 
@@ -503,11 +503,11 @@ test('renders incident detail empty states and compact alert values', async () =
 
   renderApp('/incidents/inc_empty');
 
-  expect(await screen.findByText('Diagnosis pending')).toBeInTheDocument();
-  expect(screen.getByText('No evidence')).toBeInTheDocument();
-  expect(screen.getByText('No actions')).toBeInTheDocument();
-  expect(screen.getByText('No approvals')).toBeInTheDocument();
-  expect(screen.getByText(/missing=n\/a/)).toBeInTheDocument();
+  expect(await screen.findByText('诊断等待中')).toBeInTheDocument();
+  expect(screen.getByText('无证据')).toBeInTheDocument();
+  expect(screen.getByText('无操作')).toBeInTheDocument();
+  expect(screen.getByText('无审批')).toBeInTheDocument();
+  expect(screen.getByText(/missing=暂无/)).toBeInTheDocument();
   expect(screen.getByText(/nested=/)).toBeInTheDocument();
 });
 
@@ -540,23 +540,23 @@ test('handles incident detail feedback, comments, and audit trail interactions',
 
   renderApp('/incidents/inc_1');
 
-  expect(await screen.findByText('Related incidents')).toBeInTheDocument();
+  expect(await screen.findByText('相关事件')).toBeInTheDocument();
   expect(await screen.findByText('alice')).toBeInTheDocument();
   expect(await screen.findByText('sre-system')).toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole('button', { name: 'Correct root cause' }));
+  await userEvent.click(screen.getByRole('button', { name: '修正根因' }));
   const rootCauseBox = screen.getByDisplayValue('New checkout release introduced downstream timeouts');
   await userEvent.clear(rootCauseBox);
   await userEvent.type(rootCauseBox, 'Corrected downstream timeout root cause');
-  await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
+  await userEvent.click(screen.getByRole('button', { name: '保存修正' }));
   await waitFor(() => expect(correctionPayload).toEqual({ corrected_summary: 'Corrected downstream timeout root cause' }));
 
-  await userEvent.click(screen.getByRole('button', { name: 'NFA' }));
+  await userEvent.click(screen.getByRole('button', { name: '标记无效' }));
   await waitFor(() => expect(nfaCalled).toBe(true));
 
-  await userEvent.type(screen.getByLabelText('Name'), 'bob');
-  await userEvent.type(screen.getByLabelText('Comment'), 'added note');
-  await userEvent.click(screen.getByRole('button', { name: 'Post comment' }));
+  await userEvent.type(screen.getByLabelText('名称'), 'bob');
+  await userEvent.type(screen.getByLabelText('评论'), 'added note');
+  await userEvent.click(screen.getByRole('button', { name: '发表评论' }));
   await waitFor(() => expect(commentPayload).toEqual({ author: 'bob', content: 'added note' }));
 });
 
@@ -583,8 +583,8 @@ test('renders failed agent run empty states', async () => {
   renderApp('/agent-runs/run_failed');
 
   expect(await screen.findByText('NODE_FAILED: metrics unavailable')).toBeInTheDocument();
-  expect(screen.getByText('No nodes recorded')).toBeInTheDocument();
-  expect(screen.getByText('No tool calls')).toBeInTheDocument();
+  expect(screen.getByText('无节点记录')).toBeInTheDocument();
+  expect(screen.getByText('无工具调用')).toBeInTheDocument();
   expect(screen.getByText('4000')).toBeInTheDocument();
 });
 
@@ -601,12 +601,12 @@ test('rejects an approval with a reason', async () => {
 
   renderApp('/approvals');
 
-  await userEvent.click(await screen.findByRole('button', { name: 'Review' }));
-  const dialog = await screen.findByRole('dialog', { name: 'Review action' });
-  await userEvent.click(within(dialog).getAllByRole('button', { name: 'Reject' })[0]);
-  await userEvent.type(within(dialog).getByLabelText('Approver'), 'sre-oncall');
-  await userEvent.type(within(dialog).getByLabelText('Rejection reason'), 'too risky');
-  await userEvent.click(within(dialog).getAllByRole('button', { name: 'Reject' })[1]);
+  await userEvent.click(await screen.findByRole('button', { name: '审核' }));
+  const dialog = await screen.findByRole('dialog', { name: '审核操作' });
+  await userEvent.click(within(dialog).getAllByRole('button', { name: '拒绝' })[0]);
+  await userEvent.type(within(dialog).getByLabelText('审批人'), 'sre-oncall');
+  await userEvent.type(within(dialog).getByLabelText('拒绝原因'), 'too risky');
+  await userEvent.click(within(dialog).getAllByRole('button', { name: '拒绝' })[1]);
 
   await waitFor(() => expect(rejectPayload).toEqual(expect.objectContaining({ approver: 'sre-oncall', comment: 'too risky' })));
 });
@@ -636,14 +636,14 @@ test('renders missing report empty state and generates a report', async () => {
 
   renderApp('/incidents/inc_empty/report');
 
-  expect(await screen.findByText('No report available')).toBeInTheDocument();
-  await userEvent.click(screen.getByRole('button', { name: 'Generate' }));
+  expect(await screen.findByText('无可用报告')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: '生成' }));
   await waitFor(() => expect(generated).toBe(true));
 });
 
 test('renders the not found route', () => {
   renderApp('/missing-route');
 
-  expect(screen.getByText('Page not found')).toBeInTheDocument();
-  expect(screen.getByText('Unknown route')).toBeInTheDocument();
+  expect(screen.getByText('页面未找到')).toBeInTheDocument();
+  expect(screen.getByText('未知路由')).toBeInTheDocument();
 });

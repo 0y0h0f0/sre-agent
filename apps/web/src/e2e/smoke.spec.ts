@@ -94,23 +94,23 @@ test('reviews an incident and approval in the console', async ({ page }) => {
     });
   });
   expect(alertCreated).toBe(true);
-  await expect(page.getByRole('heading', { name: 'SRE Incident Console' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'SRE 事件控制台' })).toBeVisible();
   await expect(page.getByText('High5xxAfterDeploy')).toBeVisible();
 
   await page.getByText('High5xxAfterDeploy').click();
   await expect(page.getByText('New release caused downstream timeouts')).toBeVisible();
 
-  await page.getByRole('link', { name: 'Report' }).click();
+  await page.getByRole('link', { name: '报告' }).click();
   await expect(page.getByText('Checkout failures affected a subset of requests')).toBeVisible();
   await expect(page.getByText('evd_1')).toBeVisible();
 
-  await page.getByRole('link', { name: 'Approvals' }).click();
-  await page.getByRole('button', { name: 'Review' }).click();
-  await page.getByLabel('Approver').fill('sre-oncall');
-  await page.getByLabel('Comment').fill('approved');
-  await page.getByLabel('Risk acknowledged').check();
-  await page.getByLabel('Confirm action type').fill('rollback_release');
-  await page.getByLabel('Confirm target').fill('checkout-api');
-  await page.getByRole('dialog').getByRole('button', { name: 'Approve' }).last().click();
+  await page.getByRole('link', { name: '审批' }).click();
+  await page.getByRole('button', { name: '审核' }).click();
+  await page.getByLabel('审批人').fill('sre-oncall');
+  await page.getByLabel('备注').fill('approved');
+  await page.getByLabel('已确认风险').check();
+  await page.getByLabel('确认操作类型').fill('rollback_release');
+  await page.getByLabel('确认目标').fill('checkout-api');
+  await page.getByRole('dialog').getByRole('button', { name: '批准' }).last().click();
   await expect(page.getByRole('dialog')).toBeHidden();
 });

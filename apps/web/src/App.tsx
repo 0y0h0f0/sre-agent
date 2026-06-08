@@ -82,6 +82,74 @@ import {
 const LIVE_STATUSES = new Set(['open', 'diagnosing', 'waiting_approval', 'queued', 'running', 'executing']);
 
 // ---------------------------------------------------------------------------
+// 中文状态标签映射
+// ---------------------------------------------------------------------------
+
+const STATUS_LABELS_ZH: Record<string, string> = {
+  open: '待处理',
+  diagnosing: '诊断中',
+  waiting_approval: '等待审批',
+  waiting: '等待中',
+  mitigated: '已缓解',
+  resolved: '已解决',
+  failed: '失败',
+  succeeded: '成功',
+  success: '成功',
+  completed: '已完成',
+  approved: '已批准',
+  rejected: '已拒绝',
+  expired: '已过期',
+  blocked: '已阻止',
+  skipped: '已跳过',
+  queued: '排队中',
+  running: '运行中',
+  executing: '执行中',
+  proposed: '已提议',
+  cancelled: '已取消',
+  pending: '等待中',
+  in_progress: '进行中',
+  started: '已开始',
+  disabled: '已禁用',
+  connecting: '连接中',
+  closed: '已关闭',
+  error: '错误',
+  node_update: '节点更新',
+  unknown: '未知',
+  same_fingerprint: '相同指纹',
+  same_service: '相同服务',
+  idle: '空闲',
+  none: '无',
+  unassigned: '未分配',
+  metrics: '指标',
+  logs: '日志',
+  traces: '链路',
+  git: '部署变更',
+  runbook: '预案',
+  agent: 'Agent',
+  root_cause_updated: '根因已更新',
+  nfa_marked: '已标记无效',
+  comment_added: '已添加评论',
+  action_approved: '操作已批准',
+  action_rejected: '操作已拒绝',
+};
+
+function humanize(value: string): string {
+  return STATUS_LABELS_ZH[value] ?? value.replace(/_/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+const CONNECTION_STATE_LABELS: Record<string, string> = {
+  disabled: '已禁用',
+  connecting: '连接中',
+  open: '已连接',
+  closed: '已关闭',
+  error: '错误',
+};
+
+function connectionStateLabel(state: string): string {
+  return CONNECTION_STATE_LABELS[state] ?? humanize(state);
+}
+
+// ---------------------------------------------------------------------------
 // Phase 8: WebSocket hook for real-time updates
 // ---------------------------------------------------------------------------
 
@@ -197,17 +265,17 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 export default function App() {
   return (
     <div className="appShell">
-      <aside className="sidebar" aria-label="Primary navigation">
+      <aside className="sidebar" aria-label="主导航">
         <div className="brand">
           <Activity size={22} />
           <div>
-            <h1>SRE Incident Console</h1>
-            <span>Local response workspace</span>
+            <h1>SRE 事件控制台</h1>
+            <span>本地响应工作区</span>
           </div>
         </div>
         <nav className="navLinks">
-          <NavItem to="/incidents" icon={<AlertTriangle size={18} />} label="Incidents" />
-          <NavItem to="/approvals" icon={<ClipboardCheck size={18} />} label="Approvals" />
+          <NavItem to="/incidents" icon={<AlertTriangle size={18} />} label="事件" />
+          <NavItem to="/approvals" icon={<ClipboardCheck size={18} />} label="审批" />
         </nav>
         <AuthPanel />
       </aside>
@@ -244,7 +312,7 @@ function AuthPanel() {
   const [savedKey, setSavedKey] = useState(() => getStoredApiKey() ?? '');
   const [manualKey, setManualKey] = useState('');
   const [bootstrapToken, setBootstrapToken] = useState('');
-  const [description, setDescription] = useState('local web key');
+  const [description, setDescription] = useState('本地 Web 密钥');
   const [expiresInDays, setExpiresInDays] = useState('90');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
@@ -259,13 +327,13 @@ function AuthPanel() {
     mutationFn: () => {
       const authToken = bootstrapToken.trim();
       if (!authToken) {
-        throw new Error('Enter a bootstrap seed or an existing admin API key.');
+        throw new Error('请输入引导种子或已有的管理员 API 密钥。');
       }
-      const trimmedDescription = description.trim() || 'local web key';
+      const trimmedDescription = description.trim() || '本地 Web 密钥';
       const expiryText = expiresInDays.trim();
       const expiry = expiryText ? Number(expiryText) : null;
       if (expiryText && (!Number.isInteger(expiry) || Number(expiry) <= 0)) {
-        throw new Error('Expires in days must be a positive whole number.');
+        throw new Error('过期天数必须为正整数。');
       }
       return createApiKey({ description: trimmedDescription, expires_in_days: expiry }, authToken);
     },
@@ -275,7 +343,7 @@ function AuthPanel() {
       setManualKey('');
       setBootstrapToken('');
       setGeneratedKey(created.raw_key);
-      setStatusMessage(`Created ${created.key_id} and saved it for this browser.`);
+      setStatusMessage(`已创建 ${created.key_id} 并保存至浏览器。`);
       setCopyStatus(null);
       refreshActiveQueries();
     }
@@ -285,7 +353,7 @@ function AuthPanel() {
     event.preventDefault();
     const trimmed = manualKey.trim();
     if (!trimmed) {
-      setStatusMessage('Enter an API key before saving.');
+      setStatusMessage('请先输入 API 密钥再保存。');
       return;
     }
     setStoredApiKey(trimmed);
@@ -293,7 +361,7 @@ function AuthPanel() {
     setManualKey('');
     setGeneratedKey(null);
     setCopyStatus(null);
-    setStatusMessage('API key saved for this browser.');
+    setStatusMessage('API 密钥已保存至浏览器。');
     refreshActiveQueries();
   }
 
@@ -303,32 +371,32 @@ function AuthPanel() {
     setManualKey('');
     setGeneratedKey(null);
     setCopyStatus(null);
-    setStatusMessage('Saved API key cleared.');
+    setStatusMessage('已清除保存的 API 密钥。');
     refreshActiveQueries();
   }
 
   async function copyGeneratedKey() {
     if (!generatedKey || !navigator.clipboard) {
-      setCopyStatus('Copy unavailable');
+      setCopyStatus('复制不可用');
       return;
     }
     try {
       await navigator.clipboard.writeText(generatedKey);
-      setCopyStatus('Copied');
+      setCopyStatus('已复制');
     } catch {
-      setCopyStatus('Copy failed');
+      setCopyStatus('复制失败');
     }
   }
 
   const hasSavedKey = Boolean(savedKey);
 
   return (
-    <section className="authPanel" aria-label="API authentication">
+    <section className="authPanel" aria-label="API 认证">
       <div className="authHeader">
         <KeyRound size={18} />
         <div>
-          <strong>Authentication</strong>
-          <span>{hasSavedKey ? `Saved ${maskApiKey(savedKey)}` : 'No API key saved'}</span>
+          <strong>身份认证</strong>
+          <span>{hasSavedKey ? `已保存 ${maskApiKey(savedKey)}` : '未保存 API 密钥'}</span>
         </div>
       </div>
 
@@ -336,11 +404,11 @@ function AuthPanel() {
 
       {generatedKey ? (
         <div className="generatedKeyBox">
-          <span>Generated key</span>
+          <span>已生成的密钥</span>
           <code>{generatedKey}</code>
           <button className="iconTextButton" type="button" onClick={() => void copyGeneratedKey()}>
             <Copy size={15} />
-            Copy
+            复制
           </button>
           {copyStatus ? <small>{copyStatus}</small> : null}
         </div>
@@ -348,11 +416,11 @@ function AuthPanel() {
 
       <form className="authForm" onSubmit={handleSaveExisting}>
         <label>
-          <span>API key</span>
+          <span>API 密钥</span>
           <input
-            aria-label="API key"
+            aria-label="API 密钥"
             autoComplete="off"
-            placeholder={hasSavedKey ? 'Replace saved key' : 'Paste raw key'}
+            placeholder={hasSavedKey ? '替换已保存密钥' : '粘贴原始密钥'}
             type="password"
             value={manualKey}
             onChange={(event) => setManualKey(event.target.value)}
@@ -360,15 +428,15 @@ function AuthPanel() {
         </label>
         <button className="iconTextButton fullWidth" type="submit">
           <Check size={16} />
-          Save key
+          保存密钥
         </button>
       </form>
 
       <form className="authForm" onSubmit={(event) => { event.preventDefault(); generateMutation.mutate(); }}>
         <label>
-          <span>Bootstrap seed or admin key</span>
+          <span>引导种子或管理员密钥</span>
           <input
-            aria-label="Bootstrap seed or admin key"
+            aria-label="引导种子或管理员密钥"
             autoComplete="off"
             placeholder="dev-bootstrap-secret"
             type="password"
@@ -377,17 +445,17 @@ function AuthPanel() {
           />
         </label>
         <label>
-          <span>Description</span>
+          <span>描述</span>
           <input
-            aria-label="API key description"
+            aria-label="API 密钥描述"
             value={description}
             onChange={(event) => setDescription(event.target.value)}
           />
         </label>
         <label>
-          <span>Expires in days</span>
+          <span>过期天数</span>
           <input
-            aria-label="API key expiry days"
+            aria-label="API 密钥过期天数"
             min="1"
             inputMode="numeric"
             value={expiresInDays}
@@ -397,14 +465,14 @@ function AuthPanel() {
         {generateMutation.isError ? <div className="formError">{generateMutation.error.message}</div> : null}
         <button className="iconTextButton primary fullWidth" type="submit" disabled={generateMutation.isPending}>
           {generateMutation.isPending ? <Loader2 className="spin" size={16} /> : <KeyRound size={16} />}
-          Generate key
+          生成密钥
         </button>
       </form>
 
       {hasSavedKey ? (
         <button className="iconTextButton fullWidth" type="button" onClick={handleClearKey}>
           <LogOut size={16} />
-          Clear key
+          清除密钥
         </button>
       ) : null}
     </section>
@@ -413,7 +481,7 @@ function AuthPanel() {
 
 function maskApiKey(value: string): string {
   if (value.length <= 10) {
-    return 'key set';
+    return '密钥已设置';
   }
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
@@ -454,37 +522,37 @@ function IncidentsPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Incidents"
-        title="Active diagnosis queue"
+        eyebrow="事件"
+        title="活跃诊断队列"
         actions={
           <button className="iconTextButton" type="button" onClick={() => void query.refetch()}>
             <RefreshCw size={17} />
-            Refresh
+            刷新
           </button>
         }
       />
 
       <form className="filterBar" key={searchParams.toString()} onSubmit={onFilter}>
         <label>
-          <span>Service</span>
+          <span>服务</span>
           <input name="service" defaultValue={filters.service ?? ''} placeholder="checkout-api" />
         </label>
         <label>
-          <span>Status</span>
+          <span>状态</span>
           <select name="status" defaultValue={filters.status ?? ''}>
-            <option value="">Any</option>
-            <option value="open">Open</option>
-            <option value="diagnosing">Diagnosing</option>
-            <option value="waiting_approval">Waiting approval</option>
-            <option value="mitigated">Mitigated</option>
-            <option value="resolved">Resolved</option>
-            <option value="failed">Failed</option>
+            <option value="">全部</option>
+            <option value="open">待处理</option>
+            <option value="diagnosing">诊断中</option>
+            <option value="waiting_approval">等待审批</option>
+            <option value="mitigated">已缓解</option>
+            <option value="resolved">已解决</option>
+            <option value="failed">失败</option>
           </select>
         </label>
         <label>
-          <span>Severity</span>
+          <span>严重级别</span>
           <select name="severity" defaultValue={filters.severity ?? ''}>
-            <option value="">Any</option>
+            <option value="">全部</option>
             <option value="P1">P1</option>
             <option value="P2">P2</option>
             <option value="P3">P3</option>
@@ -493,32 +561,32 @@ function IncidentsPage() {
         </label>
         <button className="iconTextButton primary" type="submit">
           <Search size={17} />
-          Filter
+          筛选
         </button>
         <button className="iconTextButton" type="button" onClick={() => setSearchParams(new URLSearchParams())}>
           <X size={17} />
-          Clear
+          清除
         </button>
       </form>
 
-      <section className="dataSurface" aria-label="Incident list">
+      <section className="dataSurface" aria-label="事件列表">
         <div className="dataToolbar">
-          <strong>{query.data?.total ?? 0} incidents</strong>
-          <span>Updated {query.data ? formatDate(new Date().toISOString()) : 'after load'}</span>
+          <strong>{query.data?.total ?? 0} 个事件</strong>
+          <span>更新于 {query.data ? formatDate(new Date().toISOString()) : '加载后'}</span>
         </div>
         <div className="dataTable incidentGrid">
           <div className="tableHeader" role="row">
-            <span>Service</span>
-            <span>Alert</span>
-            <span>Severity</span>
-            <span>Status</span>
-            <span>Root cause</span>
-            <span>Updated</span>
+            <span>服务</span>
+            <span>告警</span>
+            <span>严重级别</span>
+            <span>状态</span>
+            <span>根因</span>
+            <span>更新时间</span>
           </div>
-          {query.isLoading ? <LoadingRows label="Loading incidents" count={4} /> : null}
-          {query.isError ? <ErrorState title="Unable to load incidents" error={query.error} onRetry={() => void query.refetch()} /> : null}
+          {query.isLoading ? <LoadingRows label="加载事件中" count={4} /> : null}
+          {query.isError ? <ErrorState title="无法加载事件" error={query.error} onRetry={() => void query.refetch()} /> : null}
           {!query.isLoading && !query.isError && query.data?.items.length === 0 ? (
-            <EmptyState title="No incidents" detail="No incidents match the current filters." />
+            <EmptyState title="无事件" detail="没有符合当前筛选条件的事件。" />
           ) : null}
           {query.data?.items.map((incident) => (
             <Link className="tableRow linkedRow" to={`/incidents/${incident.incident_id}`} key={incident.incident_id}>
@@ -526,7 +594,7 @@ function IncidentsPage() {
               <span>{incident.alert_name}</span>
               <span><SeverityBadge value={incident.severity} /></span>
               <span><StatusBadge value={incident.status} /></span>
-              <span className="mutedCell">{incident.root_cause_summary ?? 'Pending diagnosis'}</span>
+              <span className="mutedCell">{incident.root_cause_summary ?? '等待诊断'}</span>
               <span className="mutedCell">{formatDate(incident.updated_at)}</span>
             </Link>
           ))}
@@ -563,7 +631,7 @@ function IncidentDetailPage() {
     }
   });
 
-  // Root cause correction
+  // 根因修正
   const [editingRootCause, setEditingRootCause] = useState(false);
   const rootCauseMutation = useMutation({
     mutationFn: (corrected_summary: string) => correctIncidentRootCause(incidentId, { corrected_summary }),
@@ -574,15 +642,15 @@ function IncidentDetailPage() {
   });
 
   if (incidentQuery.isLoading) {
-    return <LoadingPage title="Loading incident" />;
+    return <LoadingPage title="加载事件中" />;
   }
   if (incidentQuery.isError) {
-    return <ErrorState title="Unable to load incident" error={incidentQuery.error} onRetry={() => void incidentQuery.refetch()} />;
+    return <ErrorState title="无法加载事件" error={incidentQuery.error} onRetry={() => void incidentQuery.refetch()} />;
   }
 
   const incident = incidentQuery.data;
   if (!incident) {
-    return <EmptyState title="Incident unavailable" detail="The incident response was empty." />;
+    return <EmptyState title="事件不可用" detail="事件响应为空。" />;
   }
   const latestRun = runsQuery.data?.[0];
   const approvals = approvalsQuery.data ?? [];
@@ -599,7 +667,7 @@ function IncidentDetailPage() {
 
   return (
     <>
-      <BackLink to="/incidents">Incidents</BackLink>
+      <BackLink to="/incidents">事件</BackLink>
       <PageHeader
         eyebrow={incident.service}
         title={stringValue(incident.alert.alert_name) || incident.incident_id}
@@ -609,25 +677,25 @@ function IncidentDetailPage() {
             {latestRun ? (
               <Link className="iconTextButton" to={`/agent-runs/${latestRun.agent_run_id}`}>
                 <History size={17} />
-                Agent run
+                Agent 运行
               </Link>
             ) : null}
             <Link className="iconTextButton" to={`/incidents/${incident.incident_id}/report`}>
               <FileText size={17} />
-              Report
+              报告
             </Link>
             <button
               className="iconTextButton"
               type="button"
               onClick={() => {
-                if (confirm('Mark this incident as Not Actionable?')) {
+                if (confirm('将此事件标记为不可操作？')) {
                   nfaMutation.mutate(undefined);
                 }
               }}
               disabled={nfaMutation.isPending}
             >
               <EyeOff size={17} />
-              {nfaMutation.isPending ? 'Marking...' : 'NFA'}
+              {nfaMutation.isPending ? '标记中...' : '标记无效'}
             </button>
           </>
         }
@@ -645,7 +713,7 @@ function IncidentDetailPage() {
 
       <div className="detailGrid">
         <section className="sectionBlock wide">
-          <SectionTitle icon={<Gauge size={18} />} title="Diagnosis" />
+          <SectionTitle icon={<Gauge size={18} />} title="诊断" />
           {incident.root_cause ? (
             editingRootCause ? (
               <form className="inlineForm" onSubmit={handleRootCauseSubmit}>
@@ -653,11 +721,11 @@ function IncidentDetailPage() {
                 <div className="inlineFormActions">
                   <button className="iconTextButton primary" type="submit" disabled={rootCauseMutation.isPending}>
                     <Check size={17} />
-                    Save correction
+                    保存修正
                   </button>
                   <button className="iconTextButton" type="button" onClick={() => setEditingRootCause(false)}>
                     <X size={17} />
-                    Cancel
+                    取消
                   </button>
                 </div>
               </form>
@@ -665,17 +733,17 @@ function IncidentDetailPage() {
               <div className="diagnosisBox">
                 <p>{incident.root_cause.summary}</p>
                 <div className="inlineMeta">
-                  <span>Confidence {formatPercent(incident.root_cause.confidence)}</span>
-                  <span>Evidence {incident.root_cause.evidence_ids.length || incident.evidence.length}</span>
+                  <span>置信度 {formatPercent(incident.root_cause.confidence)}</span>
+                  <span>证据 {incident.root_cause.evidence_ids.length || incident.evidence.length}</span>
                 </div>
                 <button className="iconTextButton" type="button" onClick={() => setEditingRootCause(true)}>
                   <Edit3 size={16} />
-                  Correct root cause
+                  修正根因
                 </button>
               </div>
             )
           ) : (
-            <EmptyState title="Diagnosis pending" detail="The agent has not written a root cause yet." />
+            <EmptyState title="诊断等待中" detail="Agent 尚未生成根因分析。" />
           )}
           {rootCauseMutation.isError ? (
             <div className="formError">{(rootCauseMutation.error as ApiError).message}</div>
@@ -683,18 +751,18 @@ function IncidentDetailPage() {
         </section>
 
         <section className="sectionBlock">
-          <SectionTitle icon={<AlertTriangle size={18} />} title="Alert" />
+          <SectionTitle icon={<AlertTriangle size={18} />} title="告警" />
           <AlertSummary alert={incident.alert} />
         </section>
 
         <section className="sectionBlock wide">
-          <SectionTitle icon={<ListChecks size={18} />} title="Evidence" />
+          <SectionTitle icon={<ListChecks size={18} />} title="证据" />
           <EvidenceList items={incident.evidence} />
         </section>
 
         {correlated.length > 0 ? (
           <section className="sectionBlock wide">
-            <SectionTitle icon={<GitBranch size={18} />} title="Related incidents" />
+            <SectionTitle icon={<GitBranch size={18} />} title="相关事件" />
             <div className="compactList">
               {correlated.map((ci) => (
                 <article className="actionItem" key={ci.incident_id}>
@@ -702,10 +770,10 @@ function IncidentDetailPage() {
                     <Link to={`/incidents/${ci.incident_id}`}>
                       <strong>{ci.service}</strong>
                     </Link>
-                    <span className="chip">{ci.correlation_type === 'same_fingerprint' ? 'Same fingerprint' : 'Same service'}</span>
+                    <span className="chip">{ci.correlation_type === 'same_fingerprint' ? '相同指纹' : '相同服务'}</span>
                     <SeverityBadge value={ci.severity} />
                   </div>
-                  <p>{ci.root_cause_summary ?? 'No root cause recorded'}</p>
+                  <p>{ci.root_cause_summary ?? '未记录根因'}</p>
                   <div className="inlineMeta">
                     <span>{ci.alert_name}</span>
                     <span>{formatDate(ci.created_at)}</span>
@@ -717,22 +785,22 @@ function IncidentDetailPage() {
         ) : null}
 
         <section className="sectionBlock wide">
-          <SectionTitle icon={<ShieldAlert size={18} />} title="Recommended actions" />
+          <SectionTitle icon={<ShieldAlert size={18} />} title="建议操作" />
           <ActionList actions={incident.recommended_actions} />
         </section>
 
         <section className="sectionBlock wide">
-          <SectionTitle icon={<ClipboardCheck size={18} />} title="Approvals" />
+          <SectionTitle icon={<ClipboardCheck size={18} />} title="审批" />
           <ApprovalSummary approvals={approvals} loading={approvalsQuery.isLoading} />
         </section>
 
         <section className="sectionBlock wide">
-          <SectionTitle icon={<MessageSquare size={18} />} title="Comments" />
+          <SectionTitle icon={<MessageSquare size={18} />} title="评论" />
           <CommentSection incidentId={incident.incident_id} />
         </section>
 
         <section className="sectionBlock wide">
-          <SectionTitle icon={<History size={18} />} title="Audit trail" />
+          <SectionTitle icon={<History size={18} />} title="审计追踪" />
           <AuditSection incidentId={incident.incident_id} />
         </section>
       </div>
@@ -770,40 +838,40 @@ function AgentRunPage() {
   }, [agentRunId, live.events, query.data?.incident_id, queryClient]);
 
   if (query.isLoading) {
-    return <LoadingPage title="Loading agent run" />;
+    return <LoadingPage title="加载 Agent 运行中" />;
   }
   if (query.isError) {
-    return <ErrorState title="Unable to load agent run" error={query.error} onRetry={() => void query.refetch()} />;
+    return <ErrorState title="无法加载 Agent 运行" error={query.error} onRetry={() => void query.refetch()} />;
   }
 
   const run = query.data;
   if (!run) {
-    return <EmptyState title="Run unavailable" detail="The agent run response was empty." />;
+    return <EmptyState title="运行不可用" detail="Agent 运行响应为空。" />;
   }
   const compressionEvents = asRecordArray(run.state.compression_events);
   const progress = getRunProgress(run);
 
   return (
     <>
-      <BackLink to={`/incidents/${run.incident_id}`}>Incident</BackLink>
+      <BackLink to={`/incidents/${run.incident_id}`}>事件</BackLink>
       <PageHeader
         eyebrow={run.agent_run_id}
-        title="Agent run trace"
+        title="Agent 运行追踪"
         meta={<StatusBadge value={run.status} />}
         actions={
           <button className="iconTextButton" type="button" onClick={() => void query.refetch()}>
             <RefreshCw size={17} />
-            Refresh
+            刷新
           </button>
         }
       />
 
       <div className="metricStrip">
-        <Metric label="Progress" value={`${progress.completed}/${progress.total}`} />
-        <Metric label="Current node" value={progress.currentNode ?? 'idle'} />
-        <Metric label="Checkpoint" value={run.latest_checkpoint_id ?? run.checkpoint_thread_id ?? 'none'} />
-        <Metric label="Tool calls" value={String(run.tool_calls.length)} />
-        <Metric label="Compression" value={String(compressionEvents.length)} />
+        <Metric label="进度" value={`${progress.completed}/${progress.total}`} />
+        <Metric label="当前节点" value={progress.currentNode ?? '空闲'} />
+        <Metric label="检查点" value={run.latest_checkpoint_id ?? run.checkpoint_thread_id ?? '无'} />
+        <Metric label="工具调用" value={String(run.tool_calls.length)} />
+        <Metric label="压缩事件" value={String(compressionEvents.length)} />
       </div>
 
       <RunProgress progress={progress} connectionState={live.connectionState} />
@@ -817,27 +885,27 @@ function AgentRunPage() {
       ) : null}
 
       <section className="sectionBlock wide">
-        <SectionTitle icon={<History size={18} />} title="Timeline" />
-        {progress.entries.length === 0 ? <EmptyState title="No nodes recorded" detail="The run has not emitted node trace events." /> : <RunTimeline run={run} progress={progress} />}
+        <SectionTitle icon={<History size={18} />} title="时间线" />
+        {progress.entries.length === 0 ? <EmptyState title="无节点记录" detail="该运行尚未产生节点追踪事件。" /> : <RunTimeline run={run} progress={progress} />}
       </section>
 
       <section className="sectionBlock wide">
-        <SectionTitle icon={<Radio size={18} />} title="Live node log" />
+        <SectionTitle icon={<Radio size={18} />} title="实时节点日志" />
         <LiveNodeLog events={live.events} run={run} />
       </section>
 
       <section className="sectionBlock wide">
-        <SectionTitle icon={<Workflow size={18} />} title="Diagnosis visualizations" />
+        <SectionTitle icon={<Workflow size={18} />} title="诊断可视化" />
         <DiagnosisVisualizations run={run} />
       </section>
 
       <section className="sectionBlock wide">
-        <SectionTitle icon={<Activity size={18} />} title="Tool calls" />
-        {run.tool_calls.length === 0 ? <EmptyState title="No tool calls" detail="No tool calls have been audited for this run." /> : <ToolCallList run={run} />}
+        <SectionTitle icon={<Activity size={18} />} title="工具调用" />
+        {run.tool_calls.length === 0 ? <EmptyState title="无工具调用" detail="该运行尚未审计到任何工具调用。" /> : <ToolCallList run={run} />}
       </section>
 
       <section className="sectionBlock wide">
-        <SectionTitle icon={<Gauge size={18} />} title="Token and context" />
+        <SectionTitle icon={<Gauge size={18} />} title="Token 与上下文" />
         <ContextSummary state={run.state} compressionEvents={compressionEvents} />
       </section>
     </>
@@ -855,17 +923,17 @@ function PendingApprovalsSection({ incidentId, agentRunId }: { incidentId: strin
 
   return (
     <section className="sectionBlock wide">
-      <SectionTitle icon={<ClipboardCheck size={18} />} title="Pending approvals" />
-      {approvalsQuery.isLoading ? <LoadingRows label="Loading pending approvals" count={1} /> : null}
+      <SectionTitle icon={<ClipboardCheck size={18} />} title="待审批" />
+      {approvalsQuery.isLoading ? <LoadingRows label="加载待审批项" count={1} /> : null}
       {!approvalsQuery.isLoading && pending.length === 0 ? (
-        <EmptyState title="No pending approvals" detail="All approvals for this run have been decided — the run should resume shortly." />
+        <EmptyState title="无待审批项" detail="此运行的所有审批已处理完毕——运行即将恢复。" />
       ) : null}
       {pending.length > 0 ? (
         <div className="callout warning">
           <Bell size={18} />
           <div>
-            <strong>Approval required</strong>
-            <p>{pending.length} action{pending.length > 1 ? 's' : ''} waiting for approval. An email with approve/reject links has been sent to the SRE team. You can also review and decide in the <Link to="/approvals">Approvals</Link> page.</p>
+            <strong>需要审批</strong>
+            <p>{pending.length} 个操作等待审批。已向 SRE 团队发送包含批准/拒绝链接的邮件。您也可以在<Link to="/approvals">审批</Link>页面中审核并决定。</p>
           </div>
         </div>
       ) : null}
@@ -886,7 +954,7 @@ function PendingApprovalsSection({ incidentId, agentRunId }: { incidentId: strin
           <div className="approvalActions">
             <Link className="iconTextButton" to={`/approvals/${approval.approval_id}`}>
               <ClipboardCheck size={16} />
-              Review
+              审核
             </Link>
           </div>
         </article>
@@ -949,7 +1017,7 @@ function ApprovalsPage() {
     batchMutation.mutate({
       decision,
       approver: 'sre-batch',
-      comment: decision === 'approve' ? 'Batch approved' : 'Batch rejected',
+      comment: decision === 'approve' ? '批量批准' : '批量拒绝',
       approval_ids: Array.from(checkedIds)
     });
   }
@@ -959,20 +1027,20 @@ function ApprovalsPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Approvals"
-        title="Action approval queue"
+        eyebrow="审批"
+        title="操作审批队列"
         actions={
           <>
             <button className="iconTextButton" type="button" onClick={() => void query.refetch()}>
               <RefreshCw size={17} />
-              Refresh
+              刷新
             </button>
             <ApprovalNotificationControl approvals={waitingItems} />
           </>
         }
       />
 
-      <div className="segmented" role="tablist" aria-label="Approval status">
+      <div className="segmented" role="tablist" aria-label="审批状态">
         {['waiting', 'approved', 'rejected', 'expired'].map((item) => (
           <button className={item === status ? 'segment active' : 'segment'} key={item} type="button" onClick={() => setStatus(item)}>
             {humanize(item)}
@@ -980,28 +1048,28 @@ function ApprovalsPage() {
         ))}
       </div>
 
-      {directQuery.isLoading ? <LoadingPage title="Loading approval" /> : null}
-      {directQuery.isError ? <ErrorState title="Unable to load linked approval" error={directQuery.error} onRetry={() => void directQuery.refetch()} /> : null}
+      {directQuery.isLoading ? <LoadingPage title="加载审批中" /> : null}
+      {directQuery.isError ? <ErrorState title="无法加载关联审批" error={directQuery.error} onRetry={() => void directQuery.refetch()} /> : null}
 
       {status === 'waiting' && waitingItems.length > 0 && checkedIds.size > 0 ? (
         <div className="batchBar">
-          <span>{checkedIds.size} selected</span>
+          <span>已选 {checkedIds.size} 项</span>
           <button className="iconTextButton success" type="button" onClick={() => batchDecide('approve')} disabled={batchMutation.isPending}>
             <Check size={16} />
-            Batch approve
+            批量批准
           </button>
           <button className="iconTextButton danger" type="button" onClick={() => batchDecide('reject')} disabled={batchMutation.isPending}>
             <X size={16} />
-            Batch reject
+            批量拒绝
           </button>
         </div>
       ) : null}
 
-      <section className="approvalList" aria-label="Approvals">
-        {query.isLoading ? <LoadingRows label="Loading approvals" count={3} /> : null}
-        {query.isError ? <ErrorState title="Unable to load approvals" error={query.error} onRetry={() => void query.refetch()} /> : null}
+      <section className="approvalList" aria-label="审批列表">
+        {query.isLoading ? <LoadingRows label="加载审批中" count={3} /> : null}
+        {query.isError ? <ErrorState title="无法加载审批" error={query.error} onRetry={() => void query.refetch()} /> : null}
         {!query.isLoading && !query.isError && query.data?.items.length === 0 ? (
-          <EmptyState title="No approvals" detail="No approval records match this status." />
+          <EmptyState title="无审批记录" detail="没有符合该状态的审批记录。" />
         ) : null}
         {query.data?.items.map((approval) => (
           <article className={selected?.approval_id === approval.approval_id ? 'approvalItem selected' : 'approvalItem'} key={approval.approval_id}>
@@ -1018,13 +1086,13 @@ function ApprovalsPage() {
               <div className="inlineMeta">
                 <Link to={`/incidents/${approval.incident_id}`}>{approval.service}</Link>
                 <span>{formatDate(approval.requested_at)}</span>
-                <span>{approval.rollback_plan ?? 'No rollback plan'}</span>
+                <span>{approval.rollback_plan ?? '无回滚计划'}</span>
               </div>
             </div>
             {approval.approval_status === 'waiting' ? (
               <button className="iconTextButton primary" type="button" onClick={() => setSelected(approval)}>
                 <ClipboardCheck size={17} />
-                Review
+                审核
               </button>
             ) : null}
           </article>
@@ -1075,7 +1143,7 @@ function ApprovalNotificationControl({ approvals }: { approvals: ApprovalItem[] 
     return (
       <button className="iconTextButton" type="button" disabled>
         <BellOff size={17} />
-        Notifications unavailable
+        通知不可用
       </button>
     );
   }
@@ -1084,7 +1152,7 @@ function ApprovalNotificationControl({ approvals }: { approvals: ApprovalItem[] 
     return (
       <button className="iconTextButton success" type="button" disabled>
         <Bell size={17} />
-        Notifications on
+        通知已开启
       </button>
     );
   }
@@ -1093,7 +1161,7 @@ function ApprovalNotificationControl({ approvals }: { approvals: ApprovalItem[] 
     return (
       <button className="iconTextButton" type="button" disabled>
         <BellOff size={17} />
-        Notifications blocked
+        通知已阻止
       </button>
     );
   }
@@ -1101,14 +1169,14 @@ function ApprovalNotificationControl({ approvals }: { approvals: ApprovalItem[] 
   return (
     <button className="iconTextButton" type="button" onClick={() => void enableNotifications()}>
       <Bell size={17} />
-      Enable notifications
+      启用通知
     </button>
   );
 }
 
 async function showApprovalNotification(approval: ApprovalItem): Promise<void> {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const title = `${approval.risk_level} approval requested`;
+  const title = `${approval.risk_level} 审批请求`;
   const options: NotificationOptions = {
     body: `${approval.service}: ${approval.action_type}`,
     data: { url: `/approvals/${approval.approval_id}` },
@@ -1154,11 +1222,11 @@ function ApprovalDialog({ approval, onClose }: { approval: ApprovalItem; onClose
     const approver = String(data.get('approver') ?? '').trim();
     const comment = String(data.get('comment') ?? '').trim();
     if (!approver) {
-      setFormError('Approver is required');
+      setFormError('请填写审批人');
       return;
     }
     if (decision === 'reject' && !comment) {
-      setFormError('Rejection reason is required');
+      setFormError('请填写拒绝原因');
       return;
     }
 
@@ -1178,39 +1246,39 @@ function ApprovalDialog({ approval, onClose }: { approval: ApprovalItem; onClose
       <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="approval-title">
         <div className="dialogHeader">
           <div>
-            <h2 id="approval-title">Review action</h2>
+            <h2 id="approval-title">审核操作</h2>
             <p>{approval.approval_id}</p>
           </div>
-          <button className="iconButton" type="button" aria-label="Close approval dialog" onClick={onClose}>
+          <button className="iconButton" type="button" aria-label="关闭审核对话框" onClick={onClose}>
             <X size={18} />
           </button>
         </div>
 
         <div className="approvalFacts">
-          <Metric label="Risk" value={approval.risk_level} />
-          <Metric label="Action" value={approval.action_type} />
-          <Metric label="Target" value={action?.target ?? 'loading'} />
+          <Metric label="风险" value={approval.risk_level} />
+          <Metric label="操作" value={approval.action_type} />
+          <Metric label="目标" value={action?.target ?? '加载中'} />
         </div>
         <p className="dialogReason">{approval.reason}</p>
-        {approval.rollback_plan ? <p className="rollbackText">Rollback: {approval.rollback_plan}</p> : null}
-        {actionQuery.isError ? <ErrorState title="Unable to load action" error={actionQuery.error} /> : null}
+        {approval.rollback_plan ? <p className="rollbackText">回滚方案: {approval.rollback_plan}</p> : null}
+        {actionQuery.isError ? <ErrorState title="无法加载操作" error={actionQuery.error} /> : null}
 
-        <div className="segmented compact" role="tablist" aria-label="Approval decision">
+        <div className="segmented compact" role="tablist" aria-label="审批决定">
           <button className={decision === 'approve' ? 'segment active' : 'segment'} type="button" onClick={() => setDecision('approve')}>
-            Approve
+            批准
           </button>
           <button className={decision === 'reject' ? 'segment active' : 'segment'} type="button" onClick={() => setDecision('reject')}>
-            Reject
+            拒绝
           </button>
         </div>
 
         <form className="decisionForm" onSubmit={onSubmit}>
           <label>
-            <span>Approver</span>
+            <span>审批人</span>
             <input name="approver" autoFocus placeholder="sre-oncall" />
           </label>
           <label>
-            <span>{decision === 'reject' ? 'Rejection reason' : 'Comment'}</span>
+            <span>{decision === 'reject' ? '拒绝原因' : '备注'}</span>
             <textarea name="comment" rows={3} />
           </label>
 
@@ -1218,27 +1286,27 @@ function ApprovalDialog({ approval, onClose }: { approval: ApprovalItem; onClose
             <div className="l3Confirm">
               <label className="checkboxRow">
                 <input name="risk_ack" type="checkbox" />
-                <span>Risk acknowledged</span>
+                <span>已确认风险</span>
               </label>
               <label>
-                <span>Confirm action type</span>
+                <span>确认操作类型</span>
                 <input name="confirm_action_type" placeholder={action?.type ?? approval.action_type} />
               </label>
               <label>
-                <span>Confirm target</span>
+                <span>确认目标</span>
                 <input name="confirm_target" placeholder={action?.target ?? ''} />
               </label>
             </div>
           ) : null}
 
           {formError ? <div className="formError">{formError}</div> : null}
-          {mutation.isError ? <ErrorState title="Decision failed" error={mutation.error as ApiError} /> : null}
+          {mutation.isError ? <ErrorState title="决策失败" error={mutation.error as ApiError} /> : null}
 
           <div className="dialogActions">
-            <button className="iconTextButton" type="button" onClick={onClose}>Cancel</button>
+            <button className="iconTextButton" type="button" onClick={onClose}>取消</button>
             <button className={decision === 'approve' ? 'iconTextButton success' : 'iconTextButton danger'} type="submit" disabled={mutation.isPending}>
               {decision === 'approve' ? <Check size={17} /> : <X size={17} />}
-              {decision === 'approve' ? 'Approve' : 'Reject'}
+              {decision === 'approve' ? '批准' : '拒绝'}
             </button>
           </div>
         </form>
@@ -1264,22 +1332,22 @@ function ReportPage() {
 
   return (
     <>
-      <BackLink to={`/incidents/${incidentId}`}>Incident</BackLink>
+      <BackLink to={`/incidents/${incidentId}`}>事件</BackLink>
       <PageHeader
-        eyebrow="Report"
-        title="Post-incident report"
+        eyebrow="报告"
+        title="事后分析报告"
         actions={
           <button className="iconTextButton primary" type="button" onClick={() => regenerate.mutate()} disabled={regenerate.isPending}>
             <RotateCw size={17} />
-            {query.data ? 'Regenerate' : 'Generate'}
+            {query.data ? '重新生成' : '生成'}
           </button>
         }
       />
 
-      {query.isLoading ? <LoadingPage title="Loading report" /> : null}
-      {query.isError && query.error.status !== 404 ? <ErrorState title="Unable to load report" error={query.error} onRetry={() => void query.refetch()} /> : null}
-      {query.isError && query.error.status === 404 ? <EmptyState title="No report available" detail="No report version exists for this incident yet." /> : null}
-      {regenerate.isError ? <ErrorState title="Unable to regenerate report" error={regenerate.error} /> : null}
+      {query.isLoading ? <LoadingPage title="加载报告中" /> : null}
+      {query.isError && query.error.status !== 404 ? <ErrorState title="无法加载报告" error={query.error} onRetry={() => void query.refetch()} /> : null}
+      {query.isError && query.error.status === 404 ? <EmptyState title="无可用报告" detail="该事件尚无报告版本。" /> : null}
+      {regenerate.isError ? <ErrorState title="无法重新生成报告" error={regenerate.error} /> : null}
       {query.data ? <ReportView report={query.data} /> : null}
     </>
   );
@@ -1289,47 +1357,47 @@ function ReportView({ report }: { report: IncidentReport }) {
   return (
     <div className="reportLayout">
       <div className="metricStrip">
-        <Metric label="Version" value={`v${report.version}`} />
-        <Metric label="Run" value={report.agent_run_id} />
-        <Metric label="Evidence refs" value={String(report.evidence_ids.length)} />
-        <Metric label="Created" value={formatDate(report.created_at)} />
+        <Metric label="版本" value={`v${report.version}`} />
+        <Metric label="运行" value={report.agent_run_id} />
+        <Metric label="证据引用" value={String(report.evidence_ids.length)} />
+        <Metric label="创建时间" value={formatDate(report.created_at)} />
       </div>
 
       <section className="sectionBlock wide">
-        <SectionTitle icon={<Gauge size={18} />} title="Root cause" />
+        <SectionTitle icon={<Gauge size={18} />} title="根因" />
         <p className="reportLead">{report.root_cause}</p>
       </section>
       <section className="sectionBlock wide">
-        <SectionTitle icon={<AlertTriangle size={18} />} title="Impact" />
+        <SectionTitle icon={<AlertTriangle size={18} />} title="影响" />
         <p>{report.impact}</p>
       </section>
       <section className="sectionBlock wide">
-        <SectionTitle icon={<Clock size={18} />} title="Timeline" />
-        {report.timeline.length === 0 ? <EmptyState title="No timeline" detail="The report does not include timeline entries." /> : (
+        <SectionTitle icon={<Clock size={18} />} title="时间线" />
+        {report.timeline.length === 0 ? <EmptyState title="无时间线" detail="该报告不包含时间线条目。" /> : (
           <ol className="timelineList">
             {report.timeline.map((item, index) => <li key={index}>{formatTimelineItem(item)}</li>)}
           </ol>
         )}
       </section>
       <section className="sectionBlock wide">
-        <SectionTitle icon={<ShieldAlert size={18} />} title="Actions" />
-        {report.actions.length === 0 ? <EmptyState title="No actions" detail="The report does not include action entries." /> : (
+        <SectionTitle icon={<ShieldAlert size={18} />} title="操作" />
+        {report.actions.length === 0 ? <EmptyState title="无操作" detail="该报告不包含操作条目。" /> : (
           <div className="compactList">
             {report.actions.map((item, index) => <KeyValueRecord record={item} key={index} />)}
           </div>
         )}
       </section>
       <section className="sectionBlock wide">
-        <SectionTitle icon={<ListChecks size={18} />} title="Follow-ups" />
-        {report.follow_ups.length === 0 ? <EmptyState title="No follow-ups" detail="The report does not include follow-up items." /> : (
+        <SectionTitle icon={<ListChecks size={18} />} title="后续跟进" />
+        {report.follow_ups.length === 0 ? <EmptyState title="无后续跟进" detail="该报告不包含后续跟进事项。" /> : (
           <ul className="plainList">
             {report.follow_ups.map((item, index) => <li key={index}>{typeof item === 'string' ? item : formatRecord(item)}</li>)}
           </ul>
         )}
       </section>
       <section className="sectionBlock wide">
-        <SectionTitle icon={<FileText size={18} />} title="Evidence references" />
-        {report.evidence_ids.length === 0 ? <EmptyState title="No evidence references" detail="No evidence IDs were attached to this report." /> : (
+        <SectionTitle icon={<FileText size={18} />} title="证据引用" />
+        {report.evidence_ids.length === 0 ? <EmptyState title="无证据引用" detail="该报告未附带证据 ID。" /> : (
           <div className="chipRow">{report.evidence_ids.map((id) => <span className="chip" key={id}>{id}</span>)}</div>
         )}
       </section>
@@ -1342,13 +1410,13 @@ function AlertSummary({ alert }: { alert: Record<string, unknown> }) {
   const annotations = recordEntries(alert.annotations);
   return (
     <div className="alertSummary">
-      <KeyValue label="Fingerprint" value={stringValue(alert.fingerprint)} />
-      <KeyValue label="Source" value={stringValue(alert.source)} />
-      <KeyValue label="Started" value={formatDate(stringValue(alert.starts_at))} />
-      <KeyValue label="Labels" value={labels.length ? labels.map(([key, value]) => `${key}=${value}`).join(', ') : 'none'} />
-      <KeyValue label="Annotations" value={annotations.length ? annotations.map(([key, value]) => `${key}=${value}`).join(', ') : 'none'} />
+      <KeyValue label="指纹" value={stringValue(alert.fingerprint)} />
+      <KeyValue label="来源" value={stringValue(alert.source)} />
+      <KeyValue label="开始时间" value={formatDate(stringValue(alert.starts_at))} />
+      <KeyValue label="标签" value={labels.length ? labels.map(([key, value]) => `${key}=${value}`).join(', ') : '无'} />
+      <KeyValue label="注解" value={annotations.length ? annotations.map(([key, value]) => `${key}=${value}`).join(', ') : '无'} />
       <details>
-        <summary>Raw alert</summary>
+        <summary>原始告警</summary>
         <pre>{JSON.stringify(alert, null, 2)}</pre>
       </details>
     </div>
@@ -1357,7 +1425,7 @@ function AlertSummary({ alert }: { alert: Record<string, unknown> }) {
 
 function EvidenceList({ items }: { items: EvidenceItem[] }) {
   if (items.length === 0) {
-    return <EmptyState title="No evidence" detail="No evidence has been persisted for this incident." />;
+    return <EmptyState title="无证据" detail="该事件尚未保存任何证据。" />;
   }
   return (
     <div className="evidenceList">
@@ -1382,7 +1450,7 @@ function EvidenceList({ items }: { items: EvidenceItem[] }) {
 
 function ActionList({ actions }: { actions: ActionSummary[] }) {
   if (actions.length === 0) {
-    return <EmptyState title="No actions" detail="No remediation actions have been proposed." />;
+    return <EmptyState title="无操作" detail="尚未提出任何修复操作。" />;
   }
   return (
     <div className="compactList">
@@ -1394,7 +1462,7 @@ function ActionList({ actions }: { actions: ActionSummary[] }) {
             <StatusBadge value={action.status} />
           </div>
           <p>{action.reason}</p>
-          {action.rollback_plan ? <p className="rollbackText">Rollback: {action.rollback_plan}</p> : null}
+          {action.rollback_plan ? <p className="rollbackText">回滚方案: {action.rollback_plan}</p> : null}
         </article>
       ))}
     </div>
@@ -1403,10 +1471,10 @@ function ActionList({ actions }: { actions: ActionSummary[] }) {
 
 function ApprovalSummary({ approvals, loading }: { approvals: ApprovalItem[]; loading: boolean }) {
   if (loading) {
-    return <LoadingRows label="Loading incident approvals" count={2} />;
+    return <LoadingRows label="加载事件审批中" count={2} />;
   }
   if (approvals.length === 0) {
-    return <EmptyState title="No approvals" detail="No approvals are attached to this incident." />;
+    return <EmptyState title="无审批" detail="该事件没有关联的审批。" />;
   }
   return (
     <div className="compactList">
@@ -1419,8 +1487,8 @@ function ApprovalSummary({ approvals, loading }: { approvals: ApprovalItem[]; lo
           </div>
           <p>{approval.reason}</p>
           <div className="inlineMeta">
-            <span>{approval.approver ?? 'unassigned'}</span>
-            <Link to={`/approvals/${approval.approval_id}`}>Review</Link>
+            <span>{approval.approver ?? '未分配'}</span>
+            <Link to={`/approvals/${approval.approval_id}`}>审核</Link>
           </div>
         </article>
       ))}
@@ -1521,21 +1589,21 @@ function isRunningNodeStatus(status: string): boolean {
 
 function RunProgress({ progress, connectionState }: { progress: RunProgressModel; connectionState: WsConnectionState }) {
   return (
-    <section className="runProgressPanel" aria-label="Run progress">
+    <section className="runProgressPanel" aria-label="运行进度">
       <div className="progressHeader">
         <div>
-          <strong>Run progress</strong>
-          <span>{progress.completed} of {progress.total} nodes complete</span>
+          <strong>运行进度</strong>
+          <span>{progress.completed} / {progress.total} 个节点已完成</span>
         </div>
         <span className={`connectionPill ${connectionState}`}>
           {connectionState === 'open' ? <Radio size={14} /> : <Clock size={14} />}
-          {humanize(connectionState)}
+          {connectionStateLabel(connectionState)}
         </span>
       </div>
-      <div className="progressTrack" aria-label={`${progress.percent}% complete`}>
+      <div className="progressTrack" aria-label={`${progress.percent}% 已完成`}>
         <div className="progressFill" style={{ width: `${progress.percent}%` }} />
       </div>
-      <div className="nodeRail" aria-label="Graph nodes">
+      <div className="nodeRail" aria-label="图谱节点">
         {progress.entries.map((node) => (
           <span className={`nodeDot ${nodeStatusClass(node.status)}`} title={`${node.name}: ${humanize(node.status)}`} key={node.name} />
         ))}
@@ -1569,8 +1637,8 @@ function RunTimeline({ run, progress }: { run: AgentRunDetail; progress: RunProg
               <span>{formatDuration(node.duration_ms)}</span>
               <span>{formatDate(node.started_at)}</span>
             </div>
-            {node.input_summary ? <p>Input: {node.input_summary}</p> : null}
-            {node.output_summary ? <p>Output: {node.output_summary}</p> : null}
+            {node.input_summary ? <p>输入: {node.input_summary}</p> : null}
+            {node.output_summary ? <p>输出: {node.output_summary}</p> : null}
           </div>
         </li>
       ))}
@@ -1604,7 +1672,7 @@ function LiveNodeLog({ events, run }: { events: WsEvent[]; run: AgentRunDetail }
     const currentNode = getRunProgress(run).currentNode;
     const latestNode = currentNode ? run.nodes.find((node) => node.name === currentNode) : null;
     if (!latestNode) {
-      return <EmptyState title="Waiting for node events" detail="No live node updates have been received for this run." />;
+      return <EmptyState title="等待节点事件" detail="尚未收到该运行的实时节点更新。" />;
     }
     return (
       <div className="liveLogList">
@@ -1613,7 +1681,7 @@ function LiveNodeLog({ events, run }: { events: WsEvent[]; run: AgentRunDetail }
             <strong>{latestNode.name}</strong>
             <StatusBadge value={latestNode.status} />
           </div>
-          <p>{latestNode.output_summary ?? latestNode.input_summary ?? 'Node trace is recorded without an intermediate summary.'}</p>
+          <p>{latestNode.output_summary ?? latestNode.input_summary ?? '已记录节点追踪，但无中间摘要。'}</p>
         </article>
       </div>
     );
@@ -1624,8 +1692,8 @@ function LiveNodeLog({ events, run }: { events: WsEvent[]; run: AgentRunDetail }
       {nodeEvents.map((event, index) => (
         <article className="liveLogItem" key={`${event.timestamp ?? 'event'}-${index}`}>
           <div className="itemHeader">
-            <strong>{stringValue(event.payload.node_name) || 'node'}</strong>
-            <StatusBadge value={stringValue(event.payload.status) || 'unknown'} />
+            <strong>{stringValue(event.payload.node_name) || '节点'}</strong>
+            <StatusBadge value={stringValue(event.payload.status) || '未知'} />
           </div>
           <p>{stringValue(event.payload.output_summary) || stringValue(event.payload.input_summary) || formatRecord(event.payload)}</p>
           <div className="inlineMeta">
@@ -1651,15 +1719,15 @@ function DiagnosisVisualizations({ run }: { run: AgentRunDetail }) {
 function SignalSwimlanes({ run }: { run: AgentRunDetail }) {
   const rows = buildSwimlaneRows(run);
   if (rows.length === 0) {
-    return <VisualPanel title="Signal swimlanes" icon={<Activity size={17} />}><EmptyState title="No signal events" detail="No tool calls are available to align by data source." /></VisualPanel>;
+    return <VisualPanel title="信号泳道" icon={<Activity size={17} />}><EmptyState title="无信号事件" detail="没有可用的工具调用按数据源对齐。" /></VisualPanel>;
   }
 
   return (
-    <VisualPanel title="Signal swimlanes" icon={<Activity size={17} />}>
+    <VisualPanel title="信号泳道" icon={<Activity size={17} />}>
       <div className="swimlaneChart">
         {rows.map((row) => (
           <div className="swimlaneRow" key={row.source}>
-            <span className="swimlaneLabel">{row.source}</span>
+            <span className="swimlaneLabel">{humanize(row.source)}</span>
             <div className="swimlaneTrack">
               {row.events.map((event) => (
                 <span
@@ -1680,8 +1748,8 @@ function SignalSwimlanes({ run }: { run: AgentRunDetail }) {
 function DependencyGraph({ run }: { run: AgentRunDetail }) {
   const graph = buildDependencyGraph(run);
   return (
-    <VisualPanel title="Dependency graph" icon={<Network size={17} />}>
-      <svg className="dependencyGraph" viewBox="0 0 360 240" role="img" aria-label="Service dependency graph">
+    <VisualPanel title="依赖关系图" icon={<Network size={17} />}>
+      <svg className="dependencyGraph" viewBox="0 0 360 240" role="img" aria-label="服务依赖关系图">
         {graph.edges.map((edge) => {
           const from = graph.nodes.find((node) => node.id === edge.from);
           const to = graph.nodes.find((node) => node.id === edge.to);
@@ -1702,10 +1770,10 @@ function DependencyGraph({ run }: { run: AgentRunDetail }) {
 function EvidenceNetwork({ run }: { run: AgentRunDetail }) {
   const network = buildEvidenceNetwork(run);
   return (
-    <VisualPanel title="Evidence network" icon={<GitBranch size={17} />}>
+    <VisualPanel title="证据网络" icon={<GitBranch size={17} />}>
       <div className="evidenceNetwork">
         <div className="networkColumn">
-          <strong>Hypotheses</strong>
+          <strong>假设</strong>
           {network.hypotheses.map((item) => (
             <span className="networkNode hypothesis" key={item.id}>{item.summary}</span>
           ))}
@@ -1716,7 +1784,7 @@ function EvidenceNetwork({ run }: { run: AgentRunDetail }) {
           ))}
         </div>
         <div className="networkColumn">
-          <strong>Evidence</strong>
+          <strong>证据</strong>
           {network.evidence.map((item) => (
             <span className="networkNode evidence" key={item.id}>{item.label}</span>
           ))}
@@ -1849,19 +1917,19 @@ function buildEvidenceNetwork(run: AgentRunDetail): EvidenceNetworkModel {
     : asRecordArray(run.state.hypotheses);
   const hypotheses = rawHypotheses.map((item, index) => ({
     id: stringValue(item.id) || stringValue(item.hypothesis_id) || `hyp_${index + 1}`,
-    summary: stringValue(item.summary) || stringValue(item.root_cause) || stringValue(item.title) || `Hypothesis ${index + 1}`,
+    summary: stringValue(item.summary) || stringValue(item.root_cause) || stringValue(item.title) || `假设 ${index + 1}`,
     confidence: boundedConfidence(numberValue(item.confidence))
   }));
 
   if (hypotheses.length === 0 && diagnosis) {
     hypotheses.push({
       id: 'root_cause',
-      summary: stringValue(diagnosis.summary) || stringValue(diagnosis.root_cause) || 'Root cause pending',
+      summary: stringValue(diagnosis.summary) || stringValue(diagnosis.root_cause) || '根因待定',
       confidence: boundedConfidence(numberValue(diagnosis.confidence))
     });
   }
   if (hypotheses.length === 0) {
-    hypotheses.push({ id: 'agent_hypothesis', summary: 'Diagnosis pending', confidence: 0.2 });
+    hypotheses.push({ id: 'agent_hypothesis', summary: '诊断等待中', confidence: 0.2 });
   }
 
   const evidenceIds = readStringArray(run.state.evidence_ids)
@@ -1870,7 +1938,7 @@ function buildEvidenceNetwork(run: AgentRunDetail): EvidenceNetworkModel {
   const uniqueEvidence = Array.from(new Set(evidenceIds)).slice(0, 8);
   const evidence = uniqueEvidence.length > 0
     ? uniqueEvidence.map((id) => ({ id, label: id }))
-    : [{ id: 'evidence_pending', label: 'Evidence pending' }];
+    : [{ id: 'evidence_pending', label: '证据待收集' }];
   return { hypotheses: hypotheses.slice(0, 5), evidence };
 }
 
@@ -1915,7 +1983,7 @@ function ToolCallList({ run }: { run: AgentRunDetail }) {
           <div className="itemHeader">
             <strong>{call.tool_name}</strong>
             <StatusBadge value={call.status} />
-            {call.cache_hit ? <span className="chip successChip">cache hit</span> : <span className="chip">cache miss</span>}
+            {call.cache_hit ? <span className="chip successChip">缓存命中</span> : <span className="chip">缓存未命中</span>}
           </div>
           <p>{call.output_summary ?? call.input_summary}</p>
           <div className="inlineMeta">
@@ -1935,10 +2003,10 @@ function ContextSummary({ state, compressionEvents }: { state: Record<string, un
   const contextBudget = asRecord(state.context_budget);
   return (
     <div className="contextGrid">
-      <Metric label="Prompt tokens" value={stringValue(tokenUsage?.prompt_tokens) || stringValue(contextBudget?.prompt_tokens) || 'unknown'} />
-      <Metric label="Completion tokens" value={stringValue(tokenUsage?.completion_tokens) || 'unknown'} />
-      <Metric label="Budget" value={stringValue(contextBudget?.max_tokens) || 'unknown'} />
-      <Metric label="Compression events" value={String(compressionEvents.length)} />
+      <Metric label="Prompt Tokens" value={stringValue(tokenUsage?.prompt_tokens) || stringValue(contextBudget?.prompt_tokens) || '未知'} />
+      <Metric label="Completion Tokens" value={stringValue(tokenUsage?.completion_tokens) || '未知'} />
+      <Metric label="预算" value={stringValue(contextBudget?.max_tokens) || '未知'} />
+      <Metric label="压缩事件" value={String(compressionEvents.length)} />
       {compressionEvents.length > 0 ? (
         <div className="compactList spanAll">
           {compressionEvents.map((event, index) => <KeyValueRecord record={event} key={index} />)}
@@ -1993,12 +2061,12 @@ function ErrorState({ title, error, onRetry }: { title: string; error?: Error | 
       <CircleAlertIcon />
       <div>
         <strong>{title}</strong>
-        <p>{error?.message ?? 'Unknown error'}</p>
-        {apiError?.code ? <small>Code {apiError.code}</small> : null}
-        {apiError?.status === 401 ? <small>Set or generate an API key in the sidebar Authentication panel.</small> : null}
-        {apiError?.requestId ? <small>Request {apiError.requestId}</small> : null}
+        <p>{error?.message ?? '未知错误'}</p>
+        {apiError?.code ? <small>错误码 {apiError.code}</small> : null}
+        {apiError?.status === 401 ? <small>请在侧边栏身份认证面板中设置或生成 API 密钥。</small> : null}
+        {apiError?.requestId ? <small>请求 {apiError.requestId}</small> : null}
       </div>
-      {onRetry ? <button className="iconTextButton" type="button" onClick={onRetry}><RefreshCw size={16} />Retry</button> : null}
+      {onRetry ? <button className="iconTextButton" type="button" onClick={onRetry}><RefreshCw size={16} />重试</button> : null}
     </div>
   );
 }
@@ -2063,7 +2131,7 @@ function KeyValueRecord({ record }: { record: Record<string, unknown> }) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 6: Comment Section
+// Phase 6: 评论区域
 // ---------------------------------------------------------------------------
 
 function CommentSection({ incidentId }: { incidentId: string }) {
@@ -2094,9 +2162,9 @@ function CommentSection({ incidentId }: { incidentId: string }) {
 
   return (
     <div className="commentSection">
-      {isLoading ? <LoadingRows label="Loading comments" count={1} /> : null}
-      {error ? <ErrorState title="Unable to load comments" error={error} onRetry={() => void commentsQuery.refetch()} /> : null}
-      {!isLoading && comments.length === 0 ? <EmptyState title="No comments" detail="No one has commented on this incident yet." /> : null}
+      {isLoading ? <LoadingRows label="加载评论中" count={1} /> : null}
+      {error ? <ErrorState title="无法加载评论" error={error} onRetry={() => void commentsQuery.refetch()} /> : null}
+      {!isLoading && comments.length === 0 ? <EmptyState title="暂无评论" detail="还没有人对此事件发表评论。" /> : null}
       {comments.map((comment) => (
         <article className="commentItem" key={comment.comment_id}>
           <div className="itemHeader">
@@ -2106,7 +2174,7 @@ function CommentSection({ incidentId }: { incidentId: string }) {
           <p>{comment.content}</p>
           {comment.mentioned_users.length > 0 ? (
             <div className="inlineMeta">
-              <small>Mentioned: {comment.mentioned_users.join(', ')}</small>
+              <small>提及: {comment.mentioned_users.join(', ')}</small>
             </div>
           ) : null}
         </article>
@@ -2114,16 +2182,16 @@ function CommentSection({ incidentId }: { incidentId: string }) {
 
       <form className="commentForm" onSubmit={onSubmit}>
         <label>
-          <span>Name</span>
-          <input name="author" placeholder="Your name" required />
+          <span>名称</span>
+          <input name="author" placeholder="您的名称" required />
         </label>
         <label>
-          <span>Comment</span>
-          <textarea name="content" rows={2} placeholder="Add a comment... use @handle to mention" required />
+          <span>评论</span>
+          <textarea name="content" rows={2} placeholder="添加评论... 使用 @handle 提及他人" required />
         </label>
         <button className="iconTextButton primary" type="submit" disabled={createMutation.isPending}>
           <MessageSquare size={16} />
-          {createMutation.isPending ? 'Posting...' : 'Post comment'}
+          {createMutation.isPending ? '发表中...' : '发表评论'}
         </button>
       </form>
     </div>
@@ -2131,7 +2199,7 @@ function CommentSection({ incidentId }: { incidentId: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 6: Audit Section
+// Phase 6: 审计区域
 // ---------------------------------------------------------------------------
 
 function AuditSection({ incidentId }: { incidentId: string }) {
@@ -2142,15 +2210,15 @@ function AuditSection({ incidentId }: { incidentId: string }) {
   });
 
   if (query.isLoading) {
-    return <LoadingRows label="Loading audit trail" count={2} />;
+    return <LoadingRows label="加载审计追踪中" count={2} />;
   }
   if (query.isError) {
-    return <ErrorState title="Unable to load audit trail" error={query.error} onRetry={() => void query.refetch()} />;
+    return <ErrorState title="无法加载审计追踪" error={query.error} onRetry={() => void query.refetch()} />;
   }
 
   const items = query.data?.items ?? [];
   if (items.length === 0) {
-    return <EmptyState title="No audit entries" detail="No operations have been recorded for this incident." />;
+    return <EmptyState title="无审计记录" detail="该事件尚无操作记录。" />;
   }
 
   return (
@@ -2174,8 +2242,8 @@ function AuditSection({ incidentId }: { incidentId: string }) {
 function NotFoundPage() {
   return (
     <>
-      <PageHeader eyebrow="404" title="Page not found" />
-      <EmptyState title="Unknown route" detail="The requested console page does not exist." />
+      <PageHeader eyebrow="404" title="页面未找到" />
+      <EmptyState title="未知路由" detail="请求的控制台页面不存在。" />
     </>
   );
 }
@@ -2191,34 +2259,30 @@ function useRequiredParam(name: string): string {
 
 function formatDate(value: string | null | undefined): string {
   if (!value) {
-    return 'n/a';
+    return '暂无';
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
 function formatDuration(value: number | null): string {
   if (value === null) {
-    return 'pending';
+    return '等待中';
   }
   if (value < 1000) {
-    return `${value} ms`;
+    return `${value} 毫秒`;
   }
-  return `${(value / 1000).toFixed(1)} s`;
+  return `${(value / 1000).toFixed(1)} 秒`;
 }
 
 function formatPercent(value: number | null): string {
   if (value === null) {
-    return 'unknown';
+    return '未知';
   }
   return `${Math.round(value * 100)}%`;
-}
-
-function humanize(value: string): string {
-  return value.replace(/_/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function badgeTone(value: string): string {
@@ -2262,7 +2326,7 @@ function stringValue(value: unknown): string {
 
 function displayValue(value: unknown): string {
   if (value === null || value === undefined) {
-    return 'n/a';
+    return '暂无';
   }
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     return String(value);

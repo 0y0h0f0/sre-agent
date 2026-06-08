@@ -36,7 +36,7 @@ redis_cache_hit_rate = Gauge(
     ["service"],
 )
 process_memory = Gauge(
-    "process_resident_memory_bytes",
+    "demo_process_resident_memory_bytes",
     "Process resident memory",
     ["service"],
 )

@@ -120,11 +120,13 @@ class Settings(BaseSettings):
     # --- Phase 6: Collaboration & Approval Enhancement ---
     approval_auto_approve_minutes: int = Field(default=0, ge=0)
     approval_auto_approve_max_risk: str = "L2"
+    rate_limit_max_requests: int = Field(default=10, ge=1)
+    rate_limit_window_seconds: int = Field(default=60, ge=1)
 
     # --- Phase 7: Ops & Engineering ---
     # 7.1 Auth
     api_key_auth_enabled: bool = True
-    api_key_open_paths: str = "/healthz,/readyz,/metrics,/docs,/openapi.json"
+    api_key_open_paths: str = "/healthz,/readyz,/metrics,/docs,/openapi.json,/api/approvals/by-token"
     api_key_default_expiry_days: int = Field(default=90, gt=0)
     api_key_initial_seed: SecretStr | None = None
     # 7.2 Observability

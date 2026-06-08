@@ -12,6 +12,7 @@ node_modules/
 apps/web/node_modules/
 apps/web/coverage/
 apps/web/.vite-cache/
+apps/web/dist/
 apps/web/playwright-report/
 apps/web/test-results/
 
@@ -22,3 +23,8 @@ tzplan.md
 
 # Generated eval reports
 reports/
+
+# Celery beat runtime files
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal

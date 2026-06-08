@@ -14,8 +14,8 @@ from math import sqrt
 class FakeEmbedding:
     """Generate deterministic normalized vectors without external services."""
 
-    dimension = 384
-    model_name = "fake-384"
+    dimension = 512
+    model_name = "fake-512"
 
     def embed_text(self, text: str) -> list[float]:
         values: list[float] = []

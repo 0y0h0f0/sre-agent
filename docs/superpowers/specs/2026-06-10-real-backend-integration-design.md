@@ -802,7 +802,86 @@ docker compose up -d api worker web postgres redis
 
 ---
 
-## 12. 实施路线
+## 12. 部署注意事项
+
+### 12.1 精简服务栈
+
+agentp 的 `docker-compose.yml` 默认启动了完整 demo 环境（Prometheus、Loki、Grafana、Jaeger、OTel Collector、BGE-ZH、Mailpit、demo-service）。**接入已有可观测性栈后，这些全部不需要**，只需要保留 agentp 自身的核心服务：
+
+```
+保留（必须）:
+
+  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────┐
+  │   api    │   │  worker  │   │   web    │   │ postgres │   │ redis │
+  │  :8000   │   │  (无端口) │   │  :5173   │   │  :5432   │   │ :6379 │
+  └──────────┘   └──────────┘   └──────────┘   └──────────┘   └──────┘
+
+可以移除（已有真实后端替代）:
+
+  Prometheus  :9090     → 用 PROMETHEUS_URL 指向已有
+  Loki        :3100     → 用 LOKI_URL 指向已有
+  Grafana     :3000     → 用已有的 Grafana
+  Jaeger      :16686    → 用 JAEGER_URL 指向已有
+  OTel Col    :4317/8   → 用已有的 OTel Collector
+  BGE-ZH      :8083     → 如用 OpenAI embedding 可移除
+  Mailpit     :8025     → 配置真实 SMTP 后移除
+  demo-svc    :8080     → 故障注入 demo，不需要
+  Promtail    (日志采集) → 已有 Loki + Promtail 栈
+```
+
+对应的 `docker-compose.yml` 只需要保留 4 个核心 service 定义，其余全部删掉或注释。
+
+### 12.2 端口冲突处理
+
+如果宿主机上已有服务占用了默认端口：
+
+```yaml
+# docker-compose.yml — 端口映射调整
+services:
+  api:
+    ports:
+      - "8001:8000"    # 宿主机 8001 -> 容器 8000
+
+  web:
+    ports:
+      - "5174:5173"    # 宿主机 5174 -> 容器 5173
+
+  postgres:
+    ports:
+      - "5433:5432"    # 避开宿主机已有的 PostgreSQL
+```
+
+对应的 `.env` 调整：
+
+```bash
+WEB_BASE_URL=http://localhost:5174       # 匹配 web 端口
+DATABASE_URL=postgresql+psycopg://sre:sre@localhost:5433/sre  # 匹配 PG 端口
+```
+
+### 12.3 K8s 环境
+
+如果 agentp 部署在 K8s 集群内（推荐），没有端口冲突问题——每个 Pod 有独立 IP。只需注意：
+
+- K8s Discovery 需要 ServiceAccount 权限（read-only：list pods/deployments/services/namespaces）
+- 可观测性后端通过 K8s Service DNS 访问：`http://prometheus-k8s.monitoring.svc:9090`
+- PostgreSQL + Redis 可用 StatefulSet 或外部托管服务
+
+### 12.4 Alertmanager Webhook 配置
+
+```yaml
+# alertmanager.yml
+receivers:
+  - name: 'sre-agent'
+    webhook_configs:
+      - url: 'http://agentp-api:8000/api/alerts'
+        send_resolved: true
+```
+
+Alertmanager 发的标准 JSON payload 会被 `_from_alertmanager()` 自动解析。无需格式转换。
+
+---
+
+## 13. 实施路线
 
 ### Phase 1: Core Discovery (3-4 天)
 - `DiscoveryResult`、`MetricMapping`、`LabelConvention` 等数据模型

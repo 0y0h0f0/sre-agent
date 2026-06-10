@@ -343,14 +343,13 @@ DiscoveryResult (服务名、指标映射、能力矩阵、拓扑)
         │       Jinja2 模板 + discovery 变量 -> 基础 Runbook 骨架
         │       标记 source=template, confidence=medium
         │
-        ├──> 第二层: 联网搜索 (可选, RUNBOOK_WEB_SEARCH_ENABLED)
-        │       RunbookWebSearcher -> 外部 runbook / 故障案例 / 最佳实践
-        │       并行搜索，去重，提取相关段落
-        │
-        └──> 第三层: LLM 生成 (可选, RUNBOOK_LLM_GENERATION_ENABLED)
-                LLMRunbookGenerator -> 结合 discovery + 搜索结果
-                输出: RunbookDraft (正文 + SelfCritique + 来源追溯)
+        └──> 第二层: LLM + Tool Use 生成 (可选, RUNBOOK_LLM_GENERATION_ENABLED)
+                LLM 拥有 web_search 工具，可在生成过程中主动搜索
+                循环: 生成段落 -> 发现缺口 -> 搜索 -> 补充 -> 继续
+                输出: RunbookDraft (正文 + SelfCritique + 完整搜索追溯)
 ```
+
+**关键变化**：联网搜索不再是独立的预处理步骤，而是 LLM 手中的一个 Tool。LLM 在生成 Runbook 时，遇到不确定的细节（如某个数据库版本的具体参数、某个中间件的已知 bug）可以主动发起搜索，拿到结果后继续写。这比"提前搜好喂给 LLM"更精准——LLM 知道自己的知识缺口在哪里。
 
 ### 6.2 Runbook 模板结构
 
@@ -391,30 +390,202 @@ runbooks/
 ...
 ```
 
-### 6.3 LLM 生成 Prompt
+### 6.3 LLM + Web Search Tool Use
+
+#### 工具定义
+
+LLM 在生成 Runbook 时可调用以下工具：
+
+```python
+# packages/discovery/runbook_tools.py
+
+class WebSearchTool:
+    """LLM 可在生成过程中随时调用的搜索工具。"""
+
+    name = "web_search"
+    description = (
+        "Search the web for runbook best practices, known issues, "
+        "postmortems, or configuration references. Use when you need "
+        "to verify a detail or find information not covered by discovery."
+    )
+
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query in natural language or keywords"
+            },
+            "purpose": {
+                "type": "string",
+                "description": "Why you are searching — helps trace the reasoning chain"
+            },
+            "max_results": {
+                "type": "integer",
+                "default": 5,
+                "description": "Number of results to return"
+            },
+        },
+        "required": ["query", "purpose"],
+    }
+
+    async def execute(self, query: str, purpose: str, max_results: int = 5) -> SearchToolResult:
+        # 1. 搜索
+        raw = await self.searcher.search(query, max_results)
+        # 2. 对高相关度结果抓取全文摘要
+        enriched = await self._enrich(raw)
+        # 3. 返回结构化结果 + URL 供最终追溯
+        return SearchToolResult(
+            query=query,
+            purpose=purpose,
+            results=enriched,
+        )
+
+
+class FetchUrlTool:
+    """LLM 可在需要深读某个页面时调用。"""
+
+    name = "fetch_url"
+    description = "Fetch and extract the full content of a URL for detailed reading."
+
+    parameters = {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "The URL to fetch"},
+            "reason": {"type": "string", "description": "Why you need to read this page"},
+        },
+        "required": ["url", "reason"],
+    }
+```
+
+#### 生成循环
+
+```
+LLMRunbookGenerator.generate(fault_type, discovery_context)
+
+    输入:
+    - fault_type: 故障类型名
+    - discovery_context: 服务名、指标映射、能力矩阵、拓扑
+    - tools: [web_search, fetch_url]
+
+    循环 (最多 N 轮):
+
+    第 1 轮: LLM 收到 System Prompt + Discovery 上下文 + 模板骨架
+         LLM 开始生成 Runbook 草稿
+         |
+         写 Symptoms 段落 -> OK（discovery 中有足够信息）
+         |
+         写 Root Causes 段落 -> LLM: "我不确定这个特定 PG 版本的最大连接数默认值"
+         |
+         LLM 调用 web_search(
+             query="PostgreSQL 15 max_connections default value configuration",
+             purpose="verify default value for root cause section"
+         )
+         |
+         搜索结果返回 -> LLM 收到 {"PostgreSQL 15 默认 max_connections=100", ...}
+         |
+         LLM 继续写 Root Causes，引用搜索结果
+
+    第 2 轮: LLM 继续生成 Remediation 段落
+         |
+         LLM: "这个中间件的已知 bug 我需要确认"
+         |
+         LLM 调用 web_search(
+             query="PgBouncer transaction mode connection leak bug CVE",
+             purpose="check known PgBouncer issues for remediation section"
+         )
+         |
+         发现相关 CVE -> LLM 调用 fetch_url(url="https://...", reason="read full CVE details")
+         |
+         获取完整信息 -> LLM 写入 Remediation 段落，附引用
+
+    第 N 轮: LLM 完成草稿
+         |
+         LLM 生成 Self-Critique
+         |
+         输出: RunbookDraft (包含完整 search_trail)
+```
+
+#### System Prompt
 
 ```
 System:
 You are an SRE expert writing runbooks for a production service.
+Generate a concise, actionable runbook for the specified fault type.
+
+You have access to:
+- web_search: search the web for runbook best practices, known issues, configuration
+  references, and postmortems
+- fetch_url: fetch and read the full content of a URL for details
 
 Rules:
-- Use the ACTUAL metric names from the context, never invent placeholders
-- Only include diagnostic steps executable with available tools
-- Reference external sources when relevant, cite them
-- Append a Self-Critique section
+- Use ACTUAL metric names from the Discovery context, never invent placeholders
+- Only include diagnostic steps executable with the available tools
+- When you are uncertain about a detail (version-specific defaults, known bugs,
+  configuration parameters), use web_search to verify rather than guessing
+- Always record the *purpose* of each search — this becomes part of the audit trail
+- Cite sources in the runbook body where they contributed specific information
+- Stop searching when you have enough to write confidently (max 8 tool calls per draft)
+- After the runbook, append a Self-Critique section
 
-Context:
-- Service: {service_name}
+Discovery Context:
+- Service: {service_name} (namespace: {namespace})
 - Available Tools: {capabilities}
-- Metric Mappings: {actual_metric -> semantic_type}
+- Metric Mappings: {actual_metric_name -> semantic_type}
 - Service Dependencies: {topology}
-- External References: {search_results_summary}
 - Template Skeleton: {template_outline}
+```
+
+#### 搜索追溯
+
+每次 tool call 都被记录，最终作为 RunbookDraft 的一部分呈现给审查者：
+
+```json
+{
+  "search_trail": [
+    {
+      "round": 1,
+      "tool": "web_search",
+      "query": "PostgreSQL 15 max_connections default value configuration",
+      "purpose": "verify default value for root cause section",
+      "results_count": 5,
+      "used_in_section": "Root Causes",
+      "citations": [
+        {"url": "https://postgresql.org/docs/15/runtime-config-connection.html", "title": "PostgreSQL Docs - Connection Settings"}
+      ]
+    },
+    {
+      "round": 2,
+      "tool": "web_search",
+      "query": "PgBouncer transaction mode connection leak bug CVE",
+      "purpose": "check known PgBouncer issues for remediation section",
+      "results_count": 3,
+      "used_in_section": "Remediation",
+      "citations": [
+        {"url": "https://github.com/pgbouncer/pgbouncer/issues/1234", "title": "PgBouncer #1234 - Connection leak in transaction mode"}
+      ]
+    }
+  ]
+}
 ```
 
 ### 6.4 RunbookDraft 数据结构
 
 ```python
+class SearchTrailEntry(BaseModel):
+    """LLM 每次 tool call 的完整记录"""
+    round: int                         # 第几轮 tool call
+    tool: Literal["web_search", "fetch_url"]
+    query: str                         # 搜索查询或 URL
+    purpose: str                       # LLM 解释为什么搜这个
+    results_count: int
+    used_in_section: str               # 结果用在了 Runbook 哪个段落
+    citations: list[Citation] = []     # 引用的 URL
+
+class Citation(BaseModel):
+    url: str
+    title: str
+
 class SelfCritique(BaseModel):
     confidence: Literal["high", "medium", "low"]
     weaknesses: list[str]
@@ -433,9 +604,28 @@ class RunbookDraft(BaseModel):
     markdown_content: str
     self_critique: SelfCritique
     sources: list[DraftSource]
+    search_trail: list[SearchTrailEntry] = []  # 完整搜索链路
+    tool_call_count: int = 0                   # 总 tool call 次数
     generated_at: datetime
     model: str
     status: Literal["pending_review", "reviewed", "rejected"] = "pending_review"
+```
+
+### 6.5 搜索成本控制
+
+| 机制 | 说明 |
+|------|------|
+| 单草稿最大 tool call 数 | 默认 8 次，超过后 LLM 必须基于现有信息完成 |
+| 搜索结果缓存 | 同一 query 在 24h 内不重复搜索 |
+| 搜索超时 | 单次搜索 5 秒超时，失败不阻断生成 |
+| 搜索并发 | 同一轮内多个独立搜索可并行发出 |
+
+```python
+class RunbookGenerationConfig:
+    max_tool_calls_per_draft: int = 8
+    search_cache_ttl_seconds: int = 86400     # 24h
+    search_timeout_seconds: float = 5.0
+    max_parallel_searches: int = 3
 ```
 
 ### 6.5 审查 API
@@ -474,9 +664,10 @@ Incident 完成
               │     ├── 根因置信度 >= 0.7
               │     └── 有实际成功执行的动作
               │
-              ├── LLM 差异分析:
+              ├── LLM 差异分析 (带 web_search tool):
               │     ├── 对比本次诊断 vs 现有 Runbook
               │     ├── 识别缺失/过时内容
+              │     ├── 可主动搜索外部资料验证修正建议
               │     └── 生成 RunbookAmendment
               │
               └── -> 人工审批 -> 写入 runbook_chunks 表

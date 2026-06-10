@@ -191,12 +191,20 @@ def _infer_source(payload: dict[str, Any]) -> str:
 
 def _from_alertmanager(payload: dict[str, Any]) -> dict[str, Any]:
     first = _first_alert(payload)
-    labels = {**_dict(payload.get("commonLabels")), **_dict(first.get("labels"))}
+    # Merge groupLabels as well — "service" is commonly placed there
+    # by kube-prometheus-stack and other common Alertmanager configurations.
+    labels = {
+        **_dict(payload.get("groupLabels")),
+        **_dict(payload.get("commonLabels")),
+        **_dict(first.get("labels")),
+    }
     annotations = {**_dict(payload.get("commonAnnotations")), **_dict(first.get("annotations"))}
     alert_name = _string(labels.get("alertname") or annotations.get("summary"), "AlertmanagerAlert")
     service = _string(labels.get("service") or labels.get("job") or labels.get("app"), "unknown")
+    # Derive a stable fingerprint from the service+alertname pair when the
+    # per-alert fingerprint is absent (some Alertmanager versions omit it).
     fingerprint = _string(
-        first.get("fingerprint") or payload.get("groupKey") or labels.get("fingerprint"),
+        first.get("fingerprint") or labels.get("fingerprint"),
         f"alertmanager:{service}:{alert_name}",
     )
     return {

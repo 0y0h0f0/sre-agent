@@ -197,17 +197,19 @@ class Compressor:
         return payload if isinstance(payload, dict) else item
 
     @staticmethod
-    def _base_item(item: dict[str, Any], etype: str) -> dict[str, Any]:
+    def _base_item(item: dict[str, Any] | None, etype: str) -> dict[str, Any]:
+        if item is None:
+            return {"type": etype, "source": "unknown"}
         payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
         out: dict[str, Any] = {
             "type": etype,
-            "source": item.get("source") or payload.get("source", "unknown"),
+            "source": item.get("source") or payload.get("source", "unknown"),  # type: ignore[union-attr]
         }
         for key in (
             "evidence_id", "source_id", "title",
             "summary", "status", "service", "timestamp",
         ):
-            value = item.get(key, payload.get(key))
+            value = item.get(key, payload.get(key))  # type: ignore[union-attr]
             if value not in (None, ""):
                 out[key] = value
         return out

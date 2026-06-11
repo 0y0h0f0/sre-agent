@@ -11,6 +11,7 @@ from apps.api.schemas.approval_groups import (
     ApprovalGroupUpdate,
 )
 from packages.common.errors import ConflictError, NotFoundError
+from packages.db.models import ApprovalGroup
 from packages.db.repositories.approval_groups import ApprovalGroupRepository
 
 
@@ -66,7 +67,7 @@ class ApprovalGroupService:
             raise NotFoundError("approval_group", group_id)
         self.db.commit()
 
-    def _item(self, group) -> ApprovalGroupItem:
+    def _item(self, group: ApprovalGroup) -> ApprovalGroupItem:
         return ApprovalGroupItem(
             group_id=group.group_id,
             name=group.name,

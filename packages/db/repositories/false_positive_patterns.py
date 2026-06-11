@@ -131,4 +131,4 @@ class FalsePositivePatternRepository:
             .values(nfa_count=0)
         )
         result = self.db.execute(stmt)
-        return result.rowcount  # type: ignore[no-any-return]
+        return result.rowcount  # type: ignore[attr-defined,no-any-return]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import timedelta
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -58,7 +59,7 @@ class ApiKeyService:
             raise NotFoundError("api_key", key_id)
         self._db.commit()
 
-    def verify(self, raw_key: str) -> dict | None:
+    def verify(self, raw_key: str) -> dict[str, Any] | None:
         """Verify a raw key and return identity info, or None if invalid."""
         key_hash = _hash_key(raw_key)
         key = self._repo.get_by_hash(key_hash)

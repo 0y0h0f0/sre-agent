@@ -57,8 +57,8 @@ async def incident_events(
             socket_timeout=settings.redis_socket_timeout,
             retry_on_timeout=settings.redis_retry_on_timeout,
         )
-        pubsub = client.pubsub()
-        pubsub.subscribe(f"incident:{incident_id}")
+        pubsub = client.pubsub()  # type: ignore[no-untyped-call]
+        pubsub.subscribe(f"incident:{incident_id}")  # type: ignore[no-untyped-call]
 
         await websocket.send_json({"type": "connected", "incident_id": incident_id})
 
@@ -83,7 +83,7 @@ async def incident_events(
     finally:
         if pubsub is not None:
             try:
-                pubsub.unsubscribe(f"incident:{incident_id}")
+                pubsub.unsubscribe(f"incident:{incident_id}")  # type: ignore[no-untyped-call]
             except Exception:
                 logger.warning(
                     "failed to unsubscribe pubsub for incident %s", incident_id, exc_info=True

@@ -113,8 +113,8 @@ class LiveK8sBackend:
                 deploy = apps.read_namespaced_deployment(
                     query.service, ns, _request_timeout=timeout
                 )
-                spec = deploy.spec or {}
-                status = deploy.status or {}
+                spec: Any = deploy.spec or {}
+                status: Any = deploy.status or {}
                 payload = {
                     "name": query.service,
                     "namespace": ns,

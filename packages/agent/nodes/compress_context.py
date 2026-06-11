@@ -95,6 +95,7 @@ def compress_context(state: IncidentState, deps: AgentDeps) -> IncidentState:
             input_summary=f"compression_events={len(compression_events)}",
             output_summary=f"wrote {written} compressed memory entries",
         )
+        return state
     except Exception as exc:
         deps.node_tracer(
             node_id=node_id, agent_run_id=state.get("agent_run_id", ""),

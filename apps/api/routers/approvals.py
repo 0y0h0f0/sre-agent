@@ -131,7 +131,7 @@ def generate_email_token(
     approval_id: str,
     db: Session = Depends(get_db),
     enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
-) -> dict:
+) -> dict[str, str]:
     token = _service(db, enqueue_resume).generate_email_token(approval_id)
     return {"approval_id": approval_id, "email_token": token}
 

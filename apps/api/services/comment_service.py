@@ -13,6 +13,7 @@ from apps.api.schemas.comments import (
     CommentListResponse,
 )
 from packages.common.errors import NotFoundError
+from packages.db.models import EvidenceAnnotation, IncidentComment
 from packages.db.repositories.audit_logs import AuditLogRepository
 from packages.db.repositories.comments import CommentRepository
 from packages.db.repositories.evidence_annotations import EvidenceAnnotationRepository
@@ -65,7 +66,7 @@ class CommentService:
             raise NotFoundError("comment", comment_id)
         self.db.commit()
 
-    def _comment_item(self, comment) -> CommentItem:
+    def _comment_item(self, comment: IncidentComment) -> CommentItem:
         return CommentItem(
             comment_id=comment.comment_id,
             incident_id=comment.incident_id,
@@ -106,7 +107,7 @@ class CommentService:
             total=len(items),
         )
 
-    def _annotation_item(self, annotation) -> AnnotationItem:
+    def _annotation_item(self, annotation: EvidenceAnnotation) -> AnnotationItem:
         return AnnotationItem(
             annotation_id=annotation.annotation_id,
             evidence_id=annotation.evidence_id,

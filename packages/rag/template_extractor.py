@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -36,7 +37,7 @@ class TemplateExtractor:
         fingerprint: str | None = None,
     ) -> list[TemplateCandidate]:
         incidents = self.incident_repo.list_all()
-        groups: dict[str, list[dict]] = {}
+        groups: dict[str, list[dict[str, Any]]] = {}
 
         for incident in incidents:
             fp = incident.fingerprint

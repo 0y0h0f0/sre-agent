@@ -76,7 +76,7 @@ class AgentRunner:
             # empty initial state.
             return {
                 "status": "waiting_approval",
-                "state": _checkpoint_state(graph, config, initial_state),
+                "state": _checkpoint_state(graph, config, dict(initial_state)),
             }
         except Exception as exc:
             return {"status": "failed", "error": str(exc), "state": initial_state}

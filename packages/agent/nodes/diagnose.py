@@ -179,7 +179,8 @@ def _state_evidence_ids(state: IncidentState) -> list[str]:
         "traces_evidence",
         "deployment_evidence",
     ):
-        for item in state.get(key, []) or []:
+        items = state.get(key, []) or []
+        for item in items if isinstance(items, list) else []:
             evidence_id = item.get("evidence_id") if isinstance(item, dict) else None
             if isinstance(evidence_id, str) and evidence_id and evidence_id not in ids:
                 ids.append(evidence_id)

@@ -72,7 +72,7 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
                 state.get("alert_name", ""), _ACTIONS_MAP["High5xxAfterDeploy"]
             )
             actions = fallback
-            meta: dict[str, object] = {"fallback": True}
+            meta = {"fallback": True}  # type: ignore[no-redef]
         else:
             try:
                 meta = capture_metadata(deps.llm)

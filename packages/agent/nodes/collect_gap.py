@@ -180,7 +180,7 @@ def collect_gap(state: IncidentState, deps: AgentDeps) -> IncidentState:
                 deps.db, state["incident_id"], state["agent_run_id"], tagged
             )
             state_key = evidence_keys[tool_name]
-            existing = list(state.get(state_key, []) or [])
+            existing = list(state.get(state_key, []) or [])  # type: ignore[call-overload]
             state_update[state_key] = existing + persisted
 
         tool_names = sorted(collected.keys())
@@ -201,7 +201,7 @@ def collect_gap(state: IncidentState, deps: AgentDeps) -> IncidentState:
             ),
         )
 
-        return {**state, **state_update}  # type: ignore[typeddict-unknown-key]
+        return {**state, **state_update}  # type: ignore[typeddict-item,typeddict-unknown-key]
 
     except Exception as exc:
         logger.error(

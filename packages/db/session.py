@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from typing import Any
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -14,7 +15,7 @@ def create_db_engine(database_url: str | None = None) -> Engine:
     settings = get_settings()
     url = database_url or settings.database_url
     if url.startswith("sqlite"):
-        connect_args: dict = {"check_same_thread": False}
+        connect_args: dict[str, Any] = {"check_same_thread": False}
         return create_engine(url, connect_args=connect_args)
 
     connect_args = {"connect_timeout": settings.db_connect_timeout_seconds}

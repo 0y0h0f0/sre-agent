@@ -16,6 +16,7 @@ from apps.api.schemas.runbooks import (
 )
 from packages.agent.llm.base import LLMProvider
 from packages.common.errors import NotFoundError, ValidationAppError
+from packages.db.models import RunbookDraft
 from packages.db.repositories.incidents import IncidentRepository
 from packages.db.repositories.runbook_drafts import RunbookDraftRepository
 from packages.db.repositories.runbook_versions import RunbookVersionRepository
@@ -157,7 +158,7 @@ class RunbookService:
         ]
 
 
-def _draft_to_item(draft) -> RunbookDraftItem:
+def _draft_to_item(draft: RunbookDraft) -> RunbookDraftItem:
     return RunbookDraftItem(
         draft_id=draft.draft_id,
         fingerprint=draft.fingerprint,

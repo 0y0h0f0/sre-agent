@@ -482,7 +482,7 @@ def _run_duration_seconds(run: Any) -> float:
     finished = run.finished_at or utc_now()
     if started is None:
         return 0.0
-    return max(0, (finished - started).total_seconds())
+    return max(0, (finished - started).total_seconds())  # type: ignore[no-any-return]
 
 
 def _record_approval_metrics(
@@ -720,7 +720,7 @@ def send_email_notification(
 
     if result.get("retryable") and int(getattr(self.request, "retries", 0)) < 3:
         raise self.retry(countdown=5, exc=TransientError(str(result.get("error", "email failed"))))
-    return result
+    return result  # type: ignore[no-any-return]
 
 
 @celery_app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]
@@ -742,7 +742,7 @@ def send_daily_incident_summary(
             countdown=5,
             exc=TransientError(str(result.get("error", "email failed"))),
         )
-    return result
+    return result  # type: ignore[no-any-return]
 
 
 @celery_app.task(bind=True)  # type: ignore[untyped-decorator]

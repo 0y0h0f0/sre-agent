@@ -13,6 +13,7 @@ from packages.memory.context_builder import ContextBuilder
 from packages.memory.memory_store import MemoryStore
 from packages.tools.base import BaseTool
 from packages.tools.cache import RequestLocalToolCache
+from packages.tools.executor_backends import ExecutorBackend
 
 
 class Hypothesis(BaseModel):
@@ -77,6 +78,7 @@ class AgentDeps:
         tool_call_recorder: Callable[..., None],
         k8s_tool: BaseTool | None = None,
         db_diagnostics_tool: BaseTool | None = None,
+        executor_backend: ExecutorBackend | None = None,
     ) -> None:
         self.db = db
         self.settings = settings
@@ -90,6 +92,7 @@ class AgentDeps:
         # existing call sites and the deterministic test harness unchanged).
         self.k8s_tool = k8s_tool
         self.db_diagnostics_tool = db_diagnostics_tool
+        self.executor_backend = executor_backend
         self.memory_store = memory_store
         self.context_builder = context_builder
         self.llm = llm

@@ -13,7 +13,6 @@ compressed summary at the start of the next turn.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
@@ -103,7 +102,8 @@ def compress_context(state: IncidentState, deps: AgentDeps) -> IncidentState:
             started_at=started_at, finished_at=utc_now(),
             error_message=str(exc),
         )
-        state.setdefault("errors", []).append(
+        errors = list(state.get("errors", []))
+        errors.append(
             {"node": "compress_context", "error": str(exc)}
         )
-    return state
+        return {**state, "errors": errors}

@@ -25,7 +25,7 @@ from packages.tools.base import ToolResult, ToolStatus, compact_summary, elapsed
 # the read-only check in K8sDiagnosticsTool.run is the single, testable
 # enforcement point — a write-class operation reaches the tool and is refused.
 _READ_ONLY_OPERATIONS: frozenset[str] = frozenset(
-    {"describe_pod", "logs", "events", "rollout_status"}
+    {"describe_pod", "logs", "events", "rollout_status", "get_deployment"}
 )
 
 
@@ -107,6 +107,36 @@ class LiveK8sBackend:
         if query.operation == "describe_pod" and query.pod:  # pragma: no cover
             pod = core.read_namespaced_pod(query.pod, ns, _request_timeout=timeout)
             return {"operation": "describe_pod", "payload": pod.to_dict()}
+        if query.operation == "get_deployment":  # pragma: no cover
+            apps = client.AppsV1Api()
+            try:
+                deploy = apps.read_namespaced_deployment(
+                    query.service, ns, _request_timeout=timeout
+                )
+                spec = deploy.spec or {}
+                status = deploy.status or {}
+                payload = {
+                    "name": query.service,
+                    "namespace": ns,
+                    "replicas": spec.replicas if spec else None,
+                    "revision": deploy.metadata.annotations.get(
+                        "deployment.kubernetes.io/revision"
+                    ) if deploy.metadata and deploy.metadata.annotations else None,
+                    "image": (
+                        spec.template.spec.containers[0].image
+                        if spec and spec.template and spec.template.spec and spec.template.spec.containers
+                        else None
+                    ),
+                    "ready_replicas": status.ready_replicas if status else None,
+                    "available_replicas": status.available_replicas if status else None,
+                    "conditions": [
+                        {"type": c.type, "status": c.status}
+                        for c in (status.conditions or [])
+                    ] if status else [],
+                }
+                return {"operation": "get_deployment", "payload": payload}
+            except Exception:
+                return {"operation": "get_deployment", "payload": {"error": "not_found"}}
         return {"operation": query.operation, "payload": {}}  # pragma: no cover
 
 

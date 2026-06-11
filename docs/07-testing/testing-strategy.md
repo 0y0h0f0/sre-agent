@@ -7,6 +7,8 @@
 - fingerprint 去重。
 - Celery 幂等性。
 - LangGraph checkpoint resume。
+- post-action snapshot、verify 和 degraded 回滚/replan。
+- fixture executor 默认、live executor opt-in 与 namespace 传递。
 - L2/L3 审批阻断执行。
 - L3 缺少二次确认。
 - L4 直接拒绝。

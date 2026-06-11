@@ -128,8 +128,9 @@ def human_approval(state: IncidentState, deps: AgentDeps) -> IncidentState:
             finished_at=utc_now(),
             error_message=str(exc),
         )
-        state.setdefault("errors", []).append({"node": "human_approval", "error": str(exc)})
-        return state
+        errors = list(state.get("errors", []))
+        errors.append({"node": "human_approval", "error": str(exc)})
+        return {**state, "errors": errors}
 
 
 def _auto_approve(
@@ -185,10 +186,13 @@ def _apply_db_decisions(
     - waiting   -> left pending; ``execute_action`` skips it (never auto-runs)
     """
     status_by_action: dict[str, str] = {}
+    rejection_comments: list[str] = []
     for approval_id in approval_ids:
         approval = approval_repo.get_by_public_id(approval_id)
         if approval is not None:
             status_by_action[approval.action_id] = approval.status
+            if approval.status == "rejected" and approval.comment:
+                rejection_comments.append(approval.comment)
 
     any_approved = False
     for action in approval_actions:
@@ -201,6 +205,7 @@ def _apply_db_decisions(
             action["requires_approval"] = False
 
     actions = state.get("recommended_actions", [])
+    rejection_feedback = "; ".join(rejection_comments) if rejection_comments else ""
 
     if any_approved:
         # At least one approved action — proceed to execute the approved ones.
@@ -223,6 +228,7 @@ def _apply_db_decisions(
         "recommended_actions": actions,
         "approval_status": {"status": "rejected", "approval_ids": approval_ids},
         "approval_decision": "",
+        "rejection_feedback": rejection_feedback,
         "_replan_count": replan_count,
         "phase": "approval_rejected",
     }  # type: ignore[typeddict-unknown-key]

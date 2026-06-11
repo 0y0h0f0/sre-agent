@@ -53,7 +53,14 @@ class AgentRunner:
             "_needs_approval": False,
             "_all_l4": False,
             "approval_decision": "",
+            "rejection_feedback": "",
             "_replan_count": 0,
+            "verify_result": "",
+            "verify_evidence": [],
+            "_verify_cycles": 0,
+            "_collect_gap_cycles": 0,
+            "pre_action_snapshot": {},
+            # rollback_count removed (dead field)
             "_interrupts_enabled": self.checkpointer is not None,
         }
 

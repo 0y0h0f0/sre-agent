@@ -19,7 +19,7 @@ from packages.common.ids import new_id
 from packages.db.models import Action
 from packages.db.repositories.actions import ActionRepository
 from packages.db.repositories.approvals import ApprovalRepository
-from packages.tools.mock_executor import MOCK_EXECUTOR_RESULTS
+from packages.tools.executor_backends import ExecutionContext, FixtureExecutorBackend
 
 
 class ActionService:
@@ -102,15 +102,22 @@ class ActionService:
         action.status = ActionStatus.EXECUTING.value
         self.db.flush()
 
-        # Execute via mock executor
-        mock_result = MOCK_EXECUTOR_RESULTS.get(
-            action.type,
-            {"status": "succeeded", "message": f"mock {action.type} completed"},
+        # Execute via fixture executor (same backend as the graph node).
+        # The fixture backend is deterministic by action type alone, so the
+        # ExecutionContext fields are passed for audit consistency only.
+        backend = FixtureExecutorBackend()
+        exec_result = backend.execute(
+            {"type": action.type, "target": action.target or "", "params": action.params or {}},
+            ExecutionContext(
+                service="",
+                incident_id=action.incident_id,
+                agent_run_id=action.agent_run_id,
+            ),
         )
 
         # Update action status
         action.status = ActionStatus.SUCCEEDED.value
-        action.execution_result = mock_result
+        action.execution_result = exec_result.model_dump()
         self.db.flush()
 
         execution_id = new_id("exec_")

@@ -41,13 +41,24 @@ parse_alert
   -> build_context
   -> diagnose
   -> compress_context
+  -> conditional:
+       missing evidence and cycle budget remains -> collect_gap -> build_context
+       otherwise -> rank_hypotheses
   -> rank_hypotheses
   -> plan_actions
   -> guardrail_check
   -> conditional:
-       execute_action
-       human_approval
-       generate_report
+       L0/L1 -> take_snapshot -> execute_action
+       L2/L3 -> human_approval
+       L4    -> generate_report
+  -> conditional after approval:
+       approved -> take_snapshot -> execute_action
+       rejected -> plan_actions, bounded by replan cap
+       otherwise -> generate_report
+  -> verify
+  -> conditional:
+       resolved/unknown/max cycles -> generate_report
+       improving/unchanged/degraded -> plan_actions
   -> generate_report
   -> persist_memory
   -> END
@@ -85,7 +96,9 @@ parse_alert
 | `llm_calls` | LLM 调用和 token/cache 信息 |
 | `recommended_actions` | 推荐动作 |
 | `approval_status` | 审批状态 |
-| `execution_results` | mock 执行结果 |
+| `execution_results` | fixture/live executor 执行结果 |
+| `pre_action_snapshot` | 动作执行前的证据与 K8s 部署快照，用于 verify 和 degraded 回滚 |
+| `verify_result`、`verify_evidence` | 动作后验证结果和新鲜证据 |
 | `incident_report` | 报告内容 |
 | `token_budget` | token 预算和估算 |
 | `compression_events` | 压缩事件 |
@@ -172,17 +185,27 @@ Worker 的 node tracer 还会通过 Redis 发布 WebSocket 节点事件。
 
 ## 条件路由
 
+`compress_context` 后路由：
+
+- `missing_evidence` 非空且 collect-gap cycle 未超限：进入 `collect_gap` 后回到 `build_context`。
+- 其他：进入 `rank_hypotheses`。
+
 `guardrail_check` 后路由：
 
 - `_all_l4=True`：直接进入 `generate_report`。
 - `_needs_approval=True`：进入 `human_approval`。
-- 其他：进入 `execute_action`。
+- 其他：进入 `take_snapshot` 后再 `execute_action`。
 
 `human_approval` 后路由：
 
-- `phase == "approval_approved"`：进入 `execute_action`。
+- `phase == "approval_approved"`：进入 `take_snapshot` 后再 `execute_action`。
 - `phase == "approval_rejected"`：最多 replan 3 次，超过后进入 report。
 - 其他：进入 report。
+
+`verify` 后路由：
+
+- `resolved`、`unknown` 或 verify cycle 超限：进入 `generate_report`。
+- `improving`、`unchanged`、`degraded`：回到 `plan_actions`。`degraded` 时 planner 只接收裁剪后的 `pre_action_snapshot` 摘要，执行回滚类动作时 executor 使用该快照补具体参数。
 
 ## 结束条件
 

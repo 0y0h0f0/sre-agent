@@ -37,7 +37,7 @@ class BaseTool(Protocol):
 | K8sDiagnosticsTool | `packages/tools/k8s.py` | `K8sQuery` | fixture | 无 request cache |
 | DbDiagnosticsTool | `packages/tools/db_diagnostics.py` | `DbDiagnosticsQuery` | fixture | 无 request cache |
 | RunbookSearchTool | `packages/tools/runbook_search.py` | Runbook search query | RAG retriever | tool cache |
-| Mock executor | `packages/tools/mock_executor.py` | action dict | fixed map | 不适用 |
+| Executor backend | `packages/tools/executor_backends.py` | action dict | fixture | 不适用 |
 
 ## Cache key
 
@@ -157,8 +157,10 @@ Live backend 使用固定 SELECT 模板，不拼接用户 SQL。它会：
 - 设置 statement timeout。
 - 拒绝包含写关键字的 SQL。
 
-## Mock executor
+## Executor backend
 
-MVP 所有执行动作使用 mock executor。mock executor 是固定结果映射，保证 graph node 和 API action service 的行为一致。
+默认执行后端是 `FixtureExecutorBackend`，用于测试、本地 demo 和 CI，返回固定的确定性执行结果。`EXECUTOR_BACKEND=live` 是显式 operator opt-in，只允许在 guardrail、审批和 L3 二次确认之后执行窄范围 Kubernetes 变更：Deployment rolling restart、Deployment scale/scale_back、Deployment rollback。
 
-禁止新增真实 executor 作为默认路径。若未来实现真实执行，也必须保持 guardrail、审批和 dry-run/手动确认边界。
+`execute_action` 会把 `EXECUTOR_K8S_NAMESPACE` 传入执行上下文。`take_snapshot` 在动作前读取同一 namespace 的 Deployment 状态；如果 verify 判定动作导致 `degraded`，后续回滚类动作会保留原始 `pre_action_snapshot`，executor 使用其中的 revision、replicas 等具体值补齐 rollback 参数。
+
+真实 executor 不能成为默认路径，不能增加云资源写入、数据库写入、数据删除、真实缓存 flush 等能力。未实现的 live action 必须 fail closed。

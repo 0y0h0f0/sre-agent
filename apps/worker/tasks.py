@@ -34,6 +34,7 @@ from packages.tools import (
     TraceTool,
     build_db_diagnostics_backend,
     build_deployment_backend,
+    build_executor_backend,
     build_k8s_backend,
     build_trace_backend,
 )
@@ -98,8 +99,11 @@ def run_incident_diagnosis(self: Any, incident_id: str, agent_run_id: str) -> di
         if isinstance(exc, SoftTimeLimitExceeded):
             raise TransientError(str(exc)) from exc
         raise
-    with SessionLocal() as db:
-        return run_incident_diagnosis_logic(db, incident_id, agent_run_id)
+    # NOTE: all paths above either return or raise; this line is unreachable
+    # and kept as a comment to prevent future maintainers from accidentally
+    # re-adding a double-execution path.
+    # with SessionLocal() as db:
+    #     return run_incident_diagnosis_logic(db, incident_id, agent_run_id)
 
 
 def run_incident_diagnosis_logic(
@@ -328,6 +332,7 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
     db_diagnostics_tool = DbDiagnosticsTool(
         backend=build_db_diagnostics_backend(settings), timeout_seconds=timeout
     )
+    executor_backend = build_executor_backend(settings)
 
     chunk_repo = RunbookChunkRepository(db)
     retriever = RunbookRetriever(
@@ -412,10 +417,22 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
         llm=llm,
         node_tracer=node_tracer,
         tool_call_recorder=tool_call_recorder,
+        executor_backend=executor_backend,
     )
 
 
 def _sync_incident_diagnosis(incident: Any, state: dict[str, Any]) -> None:
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    # Surface accumulated node errors so operators can see them in logs.
+    errors = state.get("errors")
+    if isinstance(errors, list) and errors:
+        _logger.warning(
+            "diagnosis completed with %d node errors: %s",
+            len(errors), [e.get("node", "?") for e in errors[-10:]],
+        )
+
     root_cause = state.get("root_cause")
     summary = root_cause.get("summary") if isinstance(root_cause, dict) else None
     if not summary:

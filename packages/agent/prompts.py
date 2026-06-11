@@ -106,6 +106,9 @@ _ALLOWED_ACTIONS = {
     "restart_service": "L2",
     "enable_rate_limit": "L3",
     "rollback_release": "L3",
+    "scale_back": "L2",
+    "revert_config": "L2",
+    "cancel_deployment": "L3",
 }
 
 PLAN_ACTIONS_PROMPT_TEMPLATE = """\
@@ -116,6 +119,7 @@ Root cause: {root_cause_summary} (confidence: {root_cause_confidence})
 
 Allowed action types and their risk levels (use ONLY these types):
 {allowed_actions_table}
+{rejection_feedback}{verify_feedback}{degraded_feedback}{snapshot_context}
 
 For each action specify:
 - type: one of the allowed types above
@@ -127,9 +131,10 @@ For each action specify:
 
 Rules:
 - Prefer lower-risk actions first (L0/L1 before L2/L3)
-- L3 actions (enable_rate_limit, rollback_release) require secondary confirmation
+- L3 actions (enable_rate_limit, rollback_release, cancel_deployment) require secondary confirmation
 - Never propose L4 actions (delete_data, truncate_table, flush_cache, modify_database)
 - Every action must have a rollback_plan unless it is read-only (L0)
+{rejection_feedback_rules}{verify_feedback_rules}{degraded_rules}
 
 Return a JSON array of action objects.
 """

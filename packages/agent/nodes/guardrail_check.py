@@ -56,5 +56,6 @@ def guardrail_check(state: IncidentState, deps: AgentDeps) -> IncidentState:
             finished_at=utc_now(),
             error_message=str(exc),
         )
-        state.setdefault("errors", []).append({"node": "guardrail_check", "error": str(exc)})
-        return state
+        errors = list(state.get("errors", []))
+        errors.append({"node": "guardrail_check", "error": str(exc)})
+        return {**state, "errors": errors}

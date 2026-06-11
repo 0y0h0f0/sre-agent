@@ -11,13 +11,13 @@ The source of truth is:
 
 For implementation details, prefer the more specific `docs/` files and this `AGENTS.md` over older high-level wording in `plan.md`. Do not invent a different architecture when implementation details are already specified.
 
-`tzplan.md` / `plans/11-roadmap/` preserve roadmap background and phase completion notes; they do not relax current safety boundaries. They never override the Mandatory Boundaries below. Do not implement roadmap items — especially ones that relax scope (real LLM as a CI gate, real K8s/cloud writes, RBAC/SSO, model fine-tuning) — unless the user explicitly asks for that specific slice.
+`tzplan.md` / `plans/11-roadmap/` preserve roadmap background and phase completion notes. Some roadmap slices have since been implemented; treat the current code and detailed `docs/` files as the source of truth over older MVP wording. Do not implement new roadmap items that relax safety boundaries (new real write paths, RBAC/SSO expansion, model fine-tuning, real LLM as a stable CI gate) unless the user explicitly asks for that specific slice.
 
 ## Project Summary
 
-Maintain a completed SRE Incident Response Agent for a local demo environment.
+Maintain a completed SRE Incident Response Agent for a local demo environment, with several post-MVP productionization slices already present behind explicit configuration flags.
 
-The system receives alerts, creates incidents, runs a LangGraph diagnosis workflow through Celery, collects metrics/logs/traces/Git changes/Runbook context, produces root cause analysis, proposes actions, applies guardrails, waits for human approval for risky actions, executes only mock actions, and generates incident reports.
+The system receives alerts, creates incidents, runs a LangGraph diagnosis workflow through Celery, collects metrics/logs/traces/deployment/Kubernetes/database/Runbook/Memory context, produces root cause analysis, proposes actions, applies deterministic guardrails, waits for human approval for risky actions, executes through a fixture executor by default, can optionally execute a narrow set of live Kubernetes remediations when `EXECUTOR_BACKEND=live`, verifies the result, replans when needed, generates incident reports, and persists memory.
 
 Fixed stack:
 
@@ -29,7 +29,10 @@ Fixed stack:
 - Queue/cache: Redis.
 - Metrics: Prometheus.
 - Logs: Loki.
-- Trace: OpenTelemetry demo data or mock data.
+- Trace: fixture data by default, with Jaeger/Tempo adapters.
+- Deployment changes: fixture data by default, with GitHub/Argo CD read adapters.
+- Kubernetes diagnostics: fixture data by default, with a live read-only adapter.
+- Database diagnostics: fixture data by default, with a live read-only PostgreSQL adapter.
 - Frontend: React + TypeScript + Vite.
 - Tests: pytest, pytest-cov, Vitest, React Testing Library, Playwright.
 
@@ -37,16 +40,35 @@ Do not replace these with OpenAI Agents SDK, Dramatiq, Elasticsearch, Next.js, S
 
 ## Mandatory Boundaries
 
-- MVP is a single-tenant local demo system.
-- MVP supports exactly 4 initial incident types:
+- The default local/demo path is single-tenant and safe-by-default.
+- Deterministic FakeLLM/demo coverage includes the original incident types:
   - database connection exhaustion
   - high 5xx after deploy
   - Redis cache avalanche
   - Pod restart loop with mock Kubernetes events
-- Do not perform real production Kubernetes write operations.
+- Deterministic FakeLLM/demo coverage also includes expanded fault classes:
+  - CPU throttling
+  - memory leak
+  - disk full
+  - certificate expiry
+  - DNS failure
+  - message queue lag
+  - rate limit triggered
+  - slow API
+  - error budget burn
+  - P0 site outage
+  - downstream timeout
+- Alert ingestion accepts arbitrary alert names, but unknown FakeLLM alerts fall back to the high-5xx diagnosis path.
+- Do not add new real Kubernetes write paths beyond the existing opt-in `LiveK8sExecutorBackend`.
+- The default executor is `fixture`; tests, local demo, and CI must keep using fixture/mock execution.
+- `EXECUTOR_BACKEND=live` is an explicit operator opt-in. In that mode, the current live executor may perform only these Kubernetes mutations after guardrails and approval:
+  - rolling restart via Deployment patch for `restart_pod` / `restart_service`
+  - Deployment scale patch for `scale_deployment` / `scale_back`
+  - Deployment rollback subresource call for `rollback_release`
 - Do not perform real cloud resource write operations.
-- Do not delete data, modify databases, truncate tables, or flush real caches.
-- All execution actions use the mock executor in MVP.
+- Do not delete data, modify application databases, truncate tables, or flush real caches.
+- Live database diagnostics must remain read-only and limited to predefined SELECT queries.
+- Live Kubernetes diagnostics must remain read-only and limited to describe/logs/events/rollout status/get deployment.
 - L2 and L3 actions require human approval.
 - L3 approval requires explicit second confirmation fields:
   - `risk_ack=true`
@@ -76,7 +98,7 @@ Before implementing or changing a module, read the matching document:
 - Documentation quality gate: `plans/10-codegen/documentation-quality-gate.md`
 - Post-MVP roadmap and completion notes: `plans/11-roadmap/README.md`
 
-If implementation guidance conflicts, prefer the more specific document. If still ambiguous, prefer the safer option: mock executor, FakeLLM, no real external writes, explicit schema, and stronger tests.
+If implementation guidance conflicts, prefer the more specific document and current code. If still ambiguous, prefer the safer option: fixture executor, FakeLLM, no new real external writes, explicit schema, and stronger tests.
 
 ## Implementation Order
 
@@ -195,6 +217,8 @@ Core endpoints:
 - `GET /api/incidents/{incident_id}/report`
 - `POST /api/incidents/{incident_id}/report/regenerate`
 
+Additional implemented API surfaces include incident NFA/feedback/correlation/audit endpoints, runbook drafts and versions, approval batch/email-token flows, comments and evidence annotations, approval groups, API keys, eval runs, shadow evals, metrics, and WebSocket node updates.
+
 Important behavior:
 
 - `POST /api/alerts` must create incident and agent run, then enqueue Celery. It must not run LangGraph inline.
@@ -248,7 +272,7 @@ Rules:
 
 ## Agent Workflow
 
-Implement the workflow from `docs/02-agent/workflow.md`:
+Keep the implemented workflow aligned with `packages/agent/graph.py` and `docs/02-agent/workflow.md`:
 
 ```text
 parse_alert
@@ -264,13 +288,24 @@ parse_alert
   -> build_context
   -> diagnose
   -> compress_context
+  -> conditional:
+       missing evidence and cycle budget remains -> collect_gap -> build_context
+       otherwise -> rank_hypotheses
   -> rank_hypotheses
   -> plan_actions
   -> guardrail_check
   -> conditional:
-       L0/L1 -> execute_action
+       L0/L1 -> take_snapshot -> execute_action
        L2/L3 -> human_approval interrupt
        L4    -> generate_report
+  -> conditional after approval:
+       approved -> take_snapshot -> execute_action
+       rejected -> plan_actions, bounded by replan cap
+       otherwise -> generate_report
+  -> verify
+  -> conditional:
+       resolved/unknown/max cycles -> generate_report
+       improving/unchanged/degraded -> plan_actions
   -> generate_report
   -> persist_memory
   -> END
@@ -298,12 +333,14 @@ Tools:
 
 - `MetricsTool`: Prometheus.
 - `LogsTool`: Loki.
-- `TraceTool`: mock/OpenTelemetry demo data.
-- `GitChangeTool`: demo fixture.
+- `TraceTool`: fixture by default; Jaeger/Tempo read adapters are implemented.
+- `GitChangeTool`: fixture by default; GitHub/Argo CD read adapters are implemented.
 - `K8sDiagnosticsTool`: read-only Kubernetes diagnostics (fixture or live).
 - `DbDiagnosticsTool`: read-only database diagnostics (fixture or live).
 - `RunbookSearchTool`: RAG wrapper.
-- `ActionExecutorTool`: mock executor only.
+- Executor backends:
+  - `FixtureExecutorBackend`: default for tests, local demo, and CI.
+  - `LiveK8sExecutorBackend`: opt-in via `EXECUTOR_BACKEND=live`; limited to restart/scale/rollback Kubernetes mutations after guardrails and approval.
 
 Tool cache rules:
 
@@ -347,12 +384,12 @@ Important distinction:
 - App prompt segment cache is the system's Redis/application cache.
 - Do not treat Redis cache hit rate as provider prompt cache hit rate.
 
-Memory levels:
+Memory levels in the current implementation:
 
-- L0 run-local memory: LangGraph state + Redis short TTL.
-- L1 incident memory: PostgreSQL `memory_items`.
-- L2 service memory: PostgreSQL + pgvector.
-- L3 procedural memory: versioned static knowledge.
+- L0 run-local memory: LangGraph state plus `memory_items` scoped to `run`.
+- L1 incident memory: PostgreSQL `memory_items` scoped to `incident`.
+- L2 service memory: PostgreSQL `memory_items` scoped to `service`; pgvector search when available, lexical fallback otherwise.
+- L3 procedural memory: PostgreSQL `memory_items` scoped to `global` for successful lower-risk action patterns; versioned static knowledge remains in runbooks/runbook versions.
 
 Context compression must trigger when:
 
@@ -373,13 +410,15 @@ Responsibility boundary:
 
 Risk levels:
 
-- L0: read-only query, automatic.
-- L1: low-risk write such as report/ticket, automatic.
-- L2: restart pod or scale deployment, approval required.
-- L3: rollback or rate-limit change, approval plus second confirmation required.
-- L4: delete data, truncate table, flush cache, modify database, direct reject.
+- L0: read-only query, automatic (`query_metrics`, `query_logs`, `query_traces`, `query_git`).
+- L1: low-risk local/system action, automatic (`create_ticket`, `generate_report`, `warmup_cache`, `adjust_connection_pool`).
+- L2: service/Kubernetes operational action, approval required (`restart_pod`, `scale_deployment`, `restart_service`, `scale_back`, `revert_config`).
+- L3: rollback/rate-limit/deployment cancellation, approval plus second confirmation required (`enable_rate_limit`, `rollback_release`, `cancel_deployment`).
+- L4: destructive data/cache/database action, direct reject (`delete_data`, `truncate_table`, `flush_cache`, `modify_database`).
 
 Never trust the model to decide final execution permission. Use deterministic guardrail rules.
+
+Unknown action types default conservatively to L2 and require approval. Forbidden keywords such as `delete`, `drop`, `truncate`, `modify_database`, and `flush` escalate the action to L4 even if the action type is otherwise safe.
 
 L3 approval validation:
 
@@ -448,9 +487,13 @@ Must test:
 - fingerprint deduplication.
 - Celery idempotency.
 - LangGraph checkpoint resume.
+- collect_gap bounded re-collection.
+- post-action snapshot and verify/replan cycle.
 - L2/L3 approval blocking execution.
 - L3 missing second confirmation.
 - L4 direct rejection.
+- fixture executor remains the default.
+- live executor is opt-in and limited to the supported Kubernetes mutations.
 - FakeEmbedding determinism.
 - context compression trigger.
 - evidence IDs retained after compression.

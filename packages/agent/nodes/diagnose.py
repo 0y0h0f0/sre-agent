@@ -139,8 +139,9 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
             finished_at=utc_now(),
             error_message=str(exc),
         )
-        state.setdefault("errors", []).append({"node": "diagnose", "error": str(exc)})
-        return state
+        errors = list(state.get("errors", []))
+        errors.append({"node": "diagnose", "error": str(exc)})
+        return {**state, "errors": errors}
 
 
 def _build_rationale(
@@ -188,7 +189,7 @@ def _state_evidence_ids(state: IncidentState) -> list[str]:
 def _clear_llm_metadata(llm: object) -> None:
     if hasattr(llm, "last_metadata"):
         try:
-            setattr(llm, "last_metadata", {})
+            llm.last_metadata = {}
         except Exception:
             pass
 

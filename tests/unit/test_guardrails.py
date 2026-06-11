@@ -32,6 +32,9 @@ _RISK_MATRIX = [
     # L3: approval + secondary confirmation
     ("enable_rate_limit", "L3", True, True),
     ("rollback_release", "L3", True, True),
+    ("scale_back", "L2", True, True),
+    ("revert_config", "L2", True, True),
+    ("cancel_deployment", "L3", True, True),
     # L4: always blocked
     ("delete_data", "L4", False, False),
     ("truncate_table", "L4", False, False),

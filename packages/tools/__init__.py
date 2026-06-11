@@ -7,6 +7,7 @@ from packages.tools.db_diagnostics import (
     build_db_diagnostics_backend,
 )
 from packages.tools.deployment_backends import build_deployment_backend
+from packages.tools.executor_backends import build_executor_backend
 from packages.tools.git_changes import GitChangeQuery, GitChangeTool
 from packages.tools.k8s import (
     K8sDiagnosticsTool,
@@ -38,6 +39,7 @@ __all__ = [
     "TraceTool",
     "build_db_diagnostics_backend",
     "build_deployment_backend",
+    "build_executor_backend",
     "build_k8s_backend",
     "build_remediation_suggestions",
     "build_trace_backend",

@@ -44,6 +44,14 @@ class IncidentState(TypedDict, total=False):
     _needs_approval: bool
     _all_l4: bool
     approval_decision: str
+    rejection_feedback: str
     _replan_count: int
+    # ReAct micro-loop state
+    verify_result: str
+    verify_evidence: list[dict[str, Any]]
+    _verify_cycles: int
+    _collect_gap_cycles: int
+    # Snapshot + rollback (Phase 2.5)
+    pre_action_snapshot: dict[str, Any]
     _built_messages: list[dict[str, Any]]
     _interrupts_enabled: bool

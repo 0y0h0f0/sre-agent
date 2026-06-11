@@ -586,6 +586,284 @@ class TestExecuteActionNode:
         assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
 
 
+class TestSnapshotVerifyRollbackFlow:
+    def test_verify_records_tool_calls_with_current_run_id(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.common.time import utc_now
+        from packages.db.models import AgentRun, Incident
+        from packages.tools.base import ToolResult
+
+        db_session.add(
+            Incident(
+                incident_id="inc_verify",
+                fingerprint="fp_verify",
+                source="mock",
+                service="checkout",
+                severity="P1",
+                alert_name="High5xxAfterDeploy",
+                status="diagnosing",
+                starts_at=utc_now(),
+                labels={},
+                annotations={},
+            )
+        )
+        db_session.add(
+            AgentRun(
+                agent_run_id="run_verify",
+                incident_id="inc_verify",
+                status="running",
+            )
+        )
+        db_session.flush()
+
+        class StaticTool:
+            def __init__(self, name: str, result: ToolResult) -> None:
+                self.name = name
+                self.timeout_seconds = 1.0
+                self.result = result
+
+            def run(self, query):
+                return self.result
+
+        calls = []
+        deps = _make_deps(db_session)
+        deps.metrics_tool = StaticTool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {
+                        "type": "metric",
+                        "source": "prometheus",
+                        "summary": "error_rate=0.005",
+                    }
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = StaticTool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.tool_call_recorder = lambda **kw: calls.append(kw)
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id="inc_verify",
+                agent_run_id="run_verify",
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[{"risk_level": "L2", "type": "restart_pod"}],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        assert result["verify_result"] == "resolved"
+        assert calls
+        assert {call["agent_run_id"] for call in calls} == {"run_verify"}
+
+    def test_take_snapshot_uses_executor_namespace_for_k8s_snapshot(
+        self, db_session: Session
+    ) -> None:
+        from packages.agent.nodes.take_snapshot import take_snapshot
+        from packages.tools.base import ToolResult
+
+        class K8sTool:
+            name = "k8s"
+            timeout_seconds = 1.0
+
+            def __init__(self) -> None:
+                self.query = None
+
+            def run(self, query):
+                self.query = query
+                return ToolResult(
+                    status="succeeded",
+                    data={
+                        "payload": {
+                            "revision": "7",
+                            "replicas": 3,
+                            "namespace": query.namespace,
+                        }
+                    },
+                    summary="deployment snapshot",
+                    duration_ms=1,
+                )
+
+        deps = _make_deps(db_session)
+        deps.settings.executor_k8s_namespace = "payments"
+        tool = K8sTool()
+        deps.k8s_tool = tool
+
+        result = take_snapshot(
+            _base_state(
+                service_name="checkout",
+                recommended_actions=[{"type": "scale_deployment", "target": "checkout"}],
+            ),
+            deps,
+        )
+
+        assert tool.query is not None
+        assert tool.query.namespace == "payments"
+        assert result["pre_action_snapshot"]["k8s"]["revision"] == "7"
+
+    def test_take_snapshot_preserves_original_snapshot_for_degraded_rollback(
+        self, db_session: Session
+    ) -> None:
+        from packages.agent.nodes.take_snapshot import take_snapshot
+
+        deps = _make_deps(db_session)
+        deps.k8s_tool = MagicMock(side_effect=AssertionError("should not re-snapshot"))
+        original_snapshot = {"taken_at": "before", "k8s": {"revision": "5", "replicas": 2}}
+
+        result = take_snapshot(
+            _base_state(
+                verify_result="degraded",
+                pre_action_snapshot=original_snapshot,
+                recommended_actions=[{"type": "scale_back", "target": "checkout"}],
+            ),
+            deps,
+        )
+
+        assert result["phase"] == "snapshot_preserved"
+        assert result["pre_action_snapshot"] is original_snapshot
+        deps.k8s_tool.run.assert_not_called()
+
+    def test_execute_action_passes_namespace_to_backend(self, db_session: Session) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class RecordingBackend:
+            name = "recording"
+
+            def __init__(self) -> None:
+                self.contexts = []
+
+            def execute(self, action, context):
+                self.contexts.append(context)
+                return ExecutionResult(status="succeeded", message="ok")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        deps.settings.executor_k8s_namespace = "payments"
+        backend = RecordingBackend()
+        deps.executor_backend = backend
+
+        execute_action(
+            _base_state(
+                service_name="checkout",
+                recommended_actions=[
+                    {"type": "create_ticket", "allowed": True, "requires_approval": False}
+                ],
+            ),
+            deps,
+        )
+
+        assert backend.contexts[0].namespace == "payments"
+
+    def test_degraded_rollback_action_uses_backend_rollback_with_snapshot(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class RecordingBackend:
+            name = "recording"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+                self.rollback_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                return ExecutionResult(status="succeeded", message="execute")
+
+            def rollback(self, action, snapshot, context):
+                self.rollback_calls.append((action, snapshot, context))
+                return ExecutionResult(status="succeeded", message="rollback")
+
+        deps = _make_deps(db_session)
+        backend = RecordingBackend()
+        deps.executor_backend = backend
+        snapshot = {"k8s": {"revision": "5", "replicas": 2}}
+
+        result = execute_action(
+            _base_state(
+                verify_result="degraded",
+                pre_action_snapshot=snapshot,
+                recommended_actions=[
+                    {
+                        "type": "scale_back",
+                        "target": "checkout",
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert not backend.execute_calls
+        assert backend.rollback_calls[0][1] == snapshot
+        assert result["execution_results"][0]["execution_result"]["message"] == "rollback"
+
+    def test_plan_actions_includes_degraded_snapshot_context(self, db_session: Session) -> None:
+        from packages.agent.nodes.plan_actions import plan_actions
+        from packages.agent.schemas import PlannedAction
+
+        class CapturingLLM:
+            def __init__(self) -> None:
+                self.prompt = ""
+
+            def generate_json(self, prompt, output_schema, *, thinking=False):
+                self.prompt = prompt
+                return [
+                    PlannedAction(
+                        type="scale_back",
+                        target="checkout",
+                        params={"replicas": 2},
+                        reason="restore previous replica count",
+                        risk_hint="L2",
+                        rollback_plan="scale up again if needed",
+                    )
+                ]
+
+        deps = _make_deps(db_session)
+        llm = CapturingLLM()
+        deps.llm = llm
+
+        plan_actions(
+            _base_state(
+                alert_name="High5xxAfterDeploy",
+                root_cause={"summary": "bad scale", "confidence": 0.8},
+                verify_result="degraded",
+                verify_evidence=[{"summary": "error_rate=0.20"}],
+                pre_action_snapshot={
+                    "taken_at": "2026-06-01T00:00:00Z",
+                    "action_types": ["scale_deployment"],
+                    "k8s": {"revision": "5", "replicas": 2, "image": "checkout:v1"},
+                    "metrics_evidence": [{"summary": "error_rate=0.05"}],
+                    "logs_evidence": [],
+                    "traces_evidence": [],
+                },
+            ),
+            deps,
+        )
+
+        assert "Pre-action snapshot for rollback planning" in llm.prompt
+        assert "revision=5" in llm.prompt
+        assert "replicas=2" in llm.prompt
+        assert "scale_back" in llm.prompt
+
+
 class TestGenerateReportReviewFlag:
     """The dangling cross-validation flag must surface in the report (M4)."""
 

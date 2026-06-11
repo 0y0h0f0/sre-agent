@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     k8s_backend: str = "fixture"
     k8s_fixture_path: str = "demo/faults/k8s.json"
     k8s_namespace: str = "default"
+    # Executor backend: fixture | live (Phase 2.5). "live" performs real K8s
+    # mutations (restart, scale, rollback) and requires EXECUTOR_BACKEND=live
+    # plus the full guardrail -> approval -> second-confirmation chain.
+    executor_backend: str = "fixture"
+    executor_timeout_seconds: float = Field(default=30.0, gt=0)
+    executor_k8s_namespace: str = "default"
     # Database read-only diagnosis: fixture | live (Phase 2.3). "live" must use a
     # read-only account; the tool also forces SET TRANSACTION READ ONLY and a
     # statement timeout, and rejects any non-SELECT statement.

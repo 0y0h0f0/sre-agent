@@ -103,7 +103,9 @@ class FalsePositivePatternRepository:
             return True
         return False
 
-    def restore_pattern(self, pattern_id: str, restored_by: str = "sre") -> FalsePositivePattern | None:
+    def restore_pattern(
+        self, pattern_id: str, restored_by: str = "sre"
+    ) -> FalsePositivePattern | None:
         """Manually restore a suppressed pattern to active."""
         pattern = self.get_by_pattern_id(pattern_id)
         if pattern is None or pattern.status != "suppressed":

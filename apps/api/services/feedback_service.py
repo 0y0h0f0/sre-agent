@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -15,8 +16,6 @@ from apps.api.schemas.feedback import (
     NfaMarkResponse,
     RootCauseCorrectionRequest,
 )
-import json
-
 from packages.common.errors import NotFoundError, ValidationAppError
 from packages.common.settings import Settings
 from packages.db.models import Incident

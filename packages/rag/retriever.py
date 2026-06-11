@@ -150,7 +150,10 @@ class RunbookRetriever:
         reranked = self._reranker.rerank(normalized_query.query, docs, top_k=len(docs))
         score_by_idx = dict(reranked)
         ranked = sorted(
-            ((recalled[idx][0], score_by_idx.get(idx, recalled[idx][1])) for idx, _ in enumerate(recalled)),
+            (
+                (recalled[idx][0], score_by_idx.get(idx, recalled[idx][1]))
+                for idx, _ in enumerate(recalled)
+            ),
             key=lambda item: (-item[1], item[0].chunk_id),
         )
         results = [

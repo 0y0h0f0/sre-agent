@@ -298,7 +298,9 @@ class ApprovalService:
             raise NotFoundError("approval", f"token:{token[:8]}...")
         return self.get_approval(approval.approval_id)
 
-    def approve_by_token(self, token: str, request: TokenApprovalRequest) -> ApprovalDecisionResponse:
+    def approve_by_token(
+        self, token: str, request: TokenApprovalRequest
+    ) -> ApprovalDecisionResponse:
         """Approve via email token. L3 actions require web UI — rejected here."""
         approval = self._get_approval_by_token(token)
         action = self._require_action(approval.action_id)
@@ -322,7 +324,9 @@ class ApprovalService:
         self.db.commit()
         return result
 
-    def reject_by_token(self, token: str, request: TokenApprovalRequest) -> ApprovalDecisionResponse:
+    def reject_by_token(
+        self, token: str, request: TokenApprovalRequest
+    ) -> ApprovalDecisionResponse:
         """Reject via email token."""
         approval = self._get_approval_by_token(token)
         reject_req = RejectRequest(
@@ -376,7 +380,10 @@ class ApprovalService:
 
     def _require_approval(self, approval_id: str) -> Approval:
         # Use FOR UPDATE to prevent TOCTOU race between status check and update
-        approval = self.approvals.get_for_update(approval_id) or self.approvals.get_by_public_id(approval_id)
+        approval = (
+            self.approvals.get_for_update(approval_id)
+            or self.approvals.get_by_public_id(approval_id)
+        )
         if approval is None:
             raise NotFoundError("approval", approval_id)
         return approval

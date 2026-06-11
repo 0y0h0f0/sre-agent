@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -36,7 +36,7 @@ def _create_incident(
         severity="P2",
         alert_name=alert_name,
         status="resolved",
-        starts_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        starts_at=datetime(2026, 6, 1, tzinfo=UTC),
         root_cause_summary=root_cause,
         labels={},
         annotations={},

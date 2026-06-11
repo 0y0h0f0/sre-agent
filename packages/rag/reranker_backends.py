@@ -213,7 +213,10 @@ def build_reranker_backend(settings: Settings) -> RerankerBackend:
         return FakeRerankerBackend()
 
     if provider == "cohere":
-        api_key = settings.reranker_cohere_api_key.get_secret_value() if settings.reranker_cohere_api_key else None
+        api_key = (
+            settings.reranker_cohere_api_key.get_secret_value()
+            if settings.reranker_cohere_api_key else None
+        )
         if not api_key:
             raise ValidationAppError(
                 "reranker_cohere_api_key is required when reranker_provider=cohere"

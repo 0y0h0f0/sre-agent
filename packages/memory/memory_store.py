@@ -104,8 +104,8 @@ class MemoryStore:
 
     @staticmethod
     def _embed_query(query: str) -> list[float]:
-        from packages.rag.embedding_factory import build_embedding_provider
         from packages.common.settings import get_settings
+        from packages.rag.embedding_factory import build_embedding_provider
 
         provider = build_embedding_provider(get_settings())
         embedding = provider.embed_text(query)

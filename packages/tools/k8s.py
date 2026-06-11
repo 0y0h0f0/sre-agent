@@ -124,7 +124,9 @@ class LiveK8sBackend:
                     ) if deploy.metadata and deploy.metadata.annotations else None,
                     "image": (
                         spec.template.spec.containers[0].image
-                        if spec and spec.template and spec.template.spec and spec.template.spec.containers
+                        if spec and spec.template
+                        and spec.template.spec
+                        and spec.template.spec.containers
                         else None
                     ),
                     "ready_replicas": status.ready_replicas if status else None,

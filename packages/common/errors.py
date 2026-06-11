@@ -64,5 +64,10 @@ class ApprovalRequiredError(AppError):
 
 
 class TooManyRequestsError(AppError):
-    def __init__(self, message: str = "Rate limit exceeded", *, details: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__("TOO_MANY_REQUESTS", message, status_code=429, details=details)

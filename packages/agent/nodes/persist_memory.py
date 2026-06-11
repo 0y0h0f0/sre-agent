@@ -10,7 +10,6 @@ are persisted to memory so they survive context eviction.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState

@@ -294,7 +294,9 @@ class Approval(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resume_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
-    email_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class IncidentReport(Base):
@@ -370,7 +372,9 @@ class RunbookChunk(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(VectorEmbeddingType, nullable=False, default=list)
+    embedding: Mapped[list[float]] = mapped_column(
+        VectorEmbeddingType, nullable=False, default=list
+    )
     embedding_model: Mapped[str] = mapped_column(String(128), nullable=False, default="fake-512")
     tsv_content: Mapped[str | None] = mapped_column("tsv_content", TSVectorType, nullable=True)
     language: Mapped[str] = mapped_column(String(8), nullable=False, default="en")

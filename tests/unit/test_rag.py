@@ -645,14 +645,22 @@ def test_fake_reranker_backend_returns_scores() -> None:
     backend = FakeRerankerBackend()
     docs = [
         {
-            "metadata": {"service": "checkout", "incident_type": "high_5xx", "updated_at": "2026-05-15"},
+            "metadata": {
+                "service": "checkout",
+                "incident_type": "high_5xx",
+                "updated_at": "2026-05-15",
+            },
             "title": "Rollback Triage",
             "score": 0.85,
             "service": "checkout",
             "incident_type": "high_5xx",
         },
         {
-            "metadata": {"service": "inventory", "incident_type": "cache_avalanche", "updated_at": "2020-01-01"},
+            "metadata": {
+                "service": "inventory",
+                "incident_type": "cache_avalanche",
+                "updated_at": "2020-01-01",
+            },
             "title": "Cache Triage",
             "score": 0.5,
             "service": "inventory",

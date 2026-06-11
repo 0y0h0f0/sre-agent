@@ -41,7 +41,10 @@ def publish_event(incident_id: str, event_type: str, payload: dict[str, Any]) ->
         client.publish(f"incident:{incident_id}", json.dumps(event, default=str))
     except Exception:
         # Never let pub/sub failures crash the worker
-        logger.warning("failed to publish %s event for incident %s", event_type, incident_id, exc_info=True)
+        logger.warning(
+            "failed to publish %s event for incident %s",
+            event_type, incident_id, exc_info=True
+        )
 
 
 def publish_node_event(

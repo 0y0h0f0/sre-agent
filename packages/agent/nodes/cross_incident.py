@@ -43,7 +43,7 @@ def cross_incident(state: IncidentState, deps: AgentDeps) -> IncidentState:
         return {**state, "cross_incident_context": []}
 
     try:
-        incidents_repo = IncidentRepository(deps.db)
+        IncidentRepository(deps.db)
         correlations_repo = IncidentCorrelationRepository(deps.db)
         settings = deps.settings
         max_results = settings.cross_incident_max_results
@@ -96,7 +96,10 @@ def cross_incident(state: IncidentState, deps: AgentDeps) -> IncidentState:
                         "root_cause_summary": related.root_cause_summary,
                         "status": related.status,
                         "correlation_type": "similar_service",
-                        "created_at": related.created_at.isoformat() if related.created_at else None,
+                        "created_at": (
+                            related.created_at.isoformat()
+                            if related.created_at else None
+                        ),
                     }
                 )
                 seen.add(related.incident_id)

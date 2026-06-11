@@ -74,7 +74,10 @@ class AgentRunner:
             # Fetch checkpoint state so the caller gets the actual diagnosis
             # context (hypotheses, root cause, evidence) rather than the
             # empty initial state.
-            return {"status": "waiting_approval", "state": _checkpoint_state(graph, config, initial_state)}
+            return {
+                "status": "waiting_approval",
+                "state": _checkpoint_state(graph, config, initial_state),
+            }
         except Exception as exc:
             return {"status": "failed", "error": str(exc), "state": initial_state}
 

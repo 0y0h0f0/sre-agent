@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.orm import Session
@@ -13,6 +13,7 @@ from apps.api.schemas.feedback import (
     RootCauseCorrectionRequest,
 )
 from apps.api.services.feedback_service import FeedbackService
+from packages.common.errors import ValidationAppError
 from packages.common.settings import Settings
 from packages.db.models import Incident
 from packages.db.repositories.false_positive_patterns import FalsePositivePatternRepository
@@ -39,7 +40,7 @@ def _create_incident(
         severity=severity,
         alert_name=alert_name,
         status=status,
-        starts_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        starts_at=datetime(2026, 6, 1, tzinfo=UTC),
         root_cause_summary=root_cause,
         labels={},
         annotations={},
@@ -145,7 +146,7 @@ class TestFalsePositivePatternRepository:
         db_session.commit()
         repo = FalsePositivePatternRepository(db_session)
         pattern = repo.increment_nfa("fp-stale", "checkout", "OldAlert")
-        pattern.last_nfa_at = datetime.now(timezone.utc) - timedelta(days=60)
+        pattern.last_nfa_at = datetime.now(UTC) - timedelta(days=60)
         db_session.commit()
 
         count = repo.expire_stale_patterns(reset_days=30)
@@ -263,9 +264,18 @@ class TestIncidentCorrelationRepository:
 
     def test_find_by_fingerprint(self, db_session: Session) -> None:
         db_session.commit()
-        _create_incident(db_session, "inc_a", fingerprint="fp-x", alert_name="AlertX", severity="P1", status="resolved")
-        _create_incident(db_session, "inc_b", fingerprint="fp-x", alert_name="AlertX", severity="P2", status="resolved")
-        _create_incident(db_session, "inc_c", fingerprint="fp-y", alert_name="AlertY", severity="P3")
+        _create_incident(
+            db_session, "inc_a", fingerprint="fp-x",
+            alert_name="AlertX", severity="P1", status="resolved",
+        )
+        _create_incident(
+            db_session, "inc_b", fingerprint="fp-x",
+            alert_name="AlertX", severity="P2", status="resolved",
+        )
+        _create_incident(
+            db_session, "inc_c", fingerprint="fp-y",
+            alert_name="AlertY", severity="P3",
+        )
         db_session.commit()
 
         repo = IncidentCorrelationRepository(db_session)
@@ -294,7 +304,7 @@ class TestIncidentCorrelationRepository:
 class TestFeedbackService:
     def test_mark_nfa(self, db_session: Session) -> None:
         db_session.commit()
-        incident = _create_incident(db_session, "inc_test")
+        _create_incident(db_session, "inc_test")
         db_session.commit()
 
         service = FeedbackService(db_session, _settings())
@@ -387,7 +397,7 @@ class TestFeedbackService:
         db_session.commit()
 
         service = FeedbackService(db_session, _settings())
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationAppError):
             service.correct_action(
                 "inc_test",
                 None,

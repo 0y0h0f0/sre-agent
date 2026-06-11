@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
-
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from packages.common.ids import new_id
 from packages.db.models import (
@@ -243,7 +242,9 @@ class TestAuditLogAPI:
         actions = [i["action"] for i in resp.json()["items"]]
         assert "nfa_mark" in actions
 
-    def test_audit_logged_on_root_cause_correction(self, client: TestClient, db_session: Session) -> None:
+    def test_audit_logged_on_root_cause_correction(
+        self, client: TestClient, db_session: Session
+    ) -> None:
         inc = _create_incident(db_session)
         db_session.commit()
 
@@ -286,7 +287,10 @@ class TestBatchApprovalAPI:
     def test_batch_approve(self, client: TestClient, db_session: Session) -> None:
         inc = _create_incident(db_session, status="waiting_approval")
         run_id = new_id("run_")
-        a1 = _create_action(db_session, inc.incident_id, run_id, type="restart_pod", risk_level="L2")
+        a1 = _create_action(
+            db_session, inc.incident_id, run_id,
+            type="restart_pod", risk_level="L2",
+        )
         a2 = _create_action(db_session, inc.incident_id, run_id, type="scale_up", risk_level="L2")
         p1 = _create_approval(db_session, a1.action_id, inc.incident_id, run_id)
         p2 = _create_approval(db_session, a2.action_id, inc.incident_id, run_id)
@@ -490,7 +494,11 @@ class TestEmailTokenApprovalAPI:
         assert resp.status_code == 200
         html = resp.text
         # The form should POST to the approve URL with redirect to the incident
-        assert f'action="/api/approvals/by-token/{token}/approve?redirect=/incidents/{inc.incident_id}"' in html
+        expected = (
+            f'action="/api/approvals/by-token/{token}/approve'
+            f'?redirect=/incidents/{inc.incident_id}"'
+        )
+        assert expected in html
 
     def test_token_consumed_after_use(
         self, client: TestClient, db_session: Session

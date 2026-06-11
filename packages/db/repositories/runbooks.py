@@ -5,11 +5,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import bindparam, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from packages.db.models import RunbookChunk
-from packages.rag.bm25 import build_tsquery
 
 
 class RunbookChunkRepository:

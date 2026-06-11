@@ -345,8 +345,14 @@ class EmailNotificationService:
             "approval_url": self._url(f"/approvals/{approval.approval_id}"),
             "incident_url": self._url(f"/incidents/{incident.incident_id}"),
             "email_token": email_token,
-            "approve_email_url": self._url(f"/api/approvals/by-token/{email_token}/approve") if email_token else "",
-            "reject_email_url": self._url(f"/api/approvals/by-token/{email_token}/reject") if email_token else "",
+            "approve_email_url": (
+                self._url(f"/api/approvals/by-token/{email_token}/approve")
+                if email_token else ""
+            ),
+            "reject_email_url": (
+                self._url(f"/api/approvals/by-token/{email_token}/reject")
+                if email_token else ""
+            ),
         }
         html = self.email.render_html("approval_request.html", context)
         text_prefix = (

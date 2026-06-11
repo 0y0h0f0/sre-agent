@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from apps.api.dependencies import get_db, get_app_settings
+from apps.api.dependencies import get_app_settings, get_db
 from apps.api.schemas.runbooks import (
     RunbookDraftGenerateRequest,
     RunbookDraftGenerateResponse,

@@ -33,7 +33,8 @@ Generate a runbook with these sections:
 - ## Evidence To Collect (H2): what evidence to gather
 - ## Initial Decision (H2): how to decide on the response
 
-The front matter must include: service, incident_type, severity, owner, updated_at (today's date in YYYY-MM-DD).
+The front matter must include: service, incident_type, severity, owner,
+updated_at (today's date in YYYY-MM-DD).
 
 Return ONLY the Markdown, with no surrounding explanation."""
 

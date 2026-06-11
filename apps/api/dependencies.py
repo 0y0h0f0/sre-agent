@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator
 from typing import Any
 
-from fastapi import Depends, Request
+from fastapi import Request
 from sqlalchemy.orm import Session
 
 from packages.common.settings import Settings, get_settings

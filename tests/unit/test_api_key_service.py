@@ -81,6 +81,7 @@ def test_list_keys(db_session) -> None:
 
 def test_revoke_nonexistent_raises(db_session) -> None:
     import pytest
+
     from packages.common.errors import NotFoundError
 
     service = ApiKeyService(db_session)

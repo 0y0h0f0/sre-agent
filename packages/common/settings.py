@@ -132,7 +132,9 @@ class Settings(BaseSettings):
     # --- Phase 7: Ops & Engineering ---
     # 7.1 Auth
     api_key_auth_enabled: bool = True
-    api_key_open_paths: str = "/healthz,/readyz,/metrics,/docs,/openapi.json,/api/approvals/by-token"
+    api_key_open_paths: str = (
+        "/healthz,/readyz,/metrics,/docs,/openapi.json,/api/approvals/by-token"
+    )
     api_key_default_expiry_days: int = Field(default=90, gt=0)
     api_key_initial_seed: SecretStr | None = None
     # 7.2 Observability

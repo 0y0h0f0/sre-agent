@@ -21,7 +21,9 @@ from packages.common.settings import Settings
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
 
-def _rate_limit_key(request: Request, api_key: dict[str, str] = Depends(get_current_api_key)) -> str:
+def _rate_limit_key(
+    request: Request, api_key: dict[str, str] = Depends(get_current_api_key)
+) -> str:
     """Resolve a rate-limit identifier: api_key_id or client IP."""
     return api_key.get("key_id") or (request.client.host if request.client else "unknown")
 

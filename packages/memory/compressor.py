@@ -203,7 +203,10 @@ class Compressor:
             "type": etype,
             "source": item.get("source") or payload.get("source", "unknown"),
         }
-        for key in ("evidence_id", "source_id", "title", "summary", "status", "service", "timestamp"):
+        for key in (
+            "evidence_id", "source_id", "title",
+            "summary", "status", "service", "timestamp",
+        ):
             value = item.get(key, payload.get(key))
             if value not in (None, ""):
                 out[key] = value

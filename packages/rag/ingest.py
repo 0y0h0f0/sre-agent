@@ -10,7 +10,10 @@ from pydantic import BaseModel, Field
 from packages.common.ids import new_id
 from packages.db.repositories.runbooks import RunbookChunkRepository
 from packages.db.session import SessionLocal
-from packages.rag.embedding_factory import EmbeddingProvider, FakeEmbeddingProvider, build_embedding_provider
+from packages.rag.embedding_factory import (
+    EmbeddingProvider,
+    build_embedding_provider,
+)
 from packages.rag.metadata import RunbookMetadataError, parse_runbook_markdown
 from packages.rag.splitter import split_markdown_document
 

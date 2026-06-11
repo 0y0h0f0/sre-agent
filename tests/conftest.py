@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Generator
 from datetime import UTC, datetime
 
@@ -28,8 +27,8 @@ def _disable_auth_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "fake")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
     get_settings.cache_clear()
-from packages.db import models  # noqa: F401
-from packages.db.base import Base
+from packages.db import models  # noqa: E402, F401
+from packages.db.base import Base  # noqa: E402
 
 
 class FakeEnqueue:

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
-
-from packages.common.errors import AppError, ValidationAppError
 
 from apps.api.dependencies import (
     ResumeTaskEnqueue,
@@ -25,6 +23,7 @@ from apps.api.schemas.approvals import (
 )
 from apps.api.schemas.common import PaginatedResponse
 from apps.api.services.approval_service import ApprovalService
+from packages.common.errors import AppError, ValidationAppError
 
 router = APIRouter(prefix="/api", tags=["approvals"])
 Page = Annotated[int, Query(ge=1)]
@@ -161,25 +160,43 @@ _CONFIRMATION_PAGE = """\
 <html><head><meta charset="utf-8"><title>{title}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  body{{font:16px/1.5 system-ui,sans-serif;max-width:480px;margin:60px auto;padding:20px;color:#1e293b}}
+  body{{
+    font:16px/1.5 system-ui,sans-serif;
+    max-width:480px;margin:60px auto;padding:20px;color:#1e293b
+  }}
   h2{{margin:0 0 8px}}
-  button{{padding:10px 24px;font-size:16px;border-radius:6px;border:none;cursor:pointer;color:#fff}}
+  button{{
+    padding:10px 24px;font-size:16px;border-radius:6px;
+    border:none;cursor:pointer;color:#fff
+  }}
   .approve{{background:#16a34a}} .reject{{background:#dc2626}}
-  .detail{{background:#f8fafc;padding:12px;border-radius:6px;margin:12px 0;border:1px solid #e2e8f0}}
+  .detail{{
+    background:#f8fafc;padding:12px;border-radius:6px;
+    margin:12px 0;border:1px solid #e2e8f0
+  }}
   .detail p{{margin:4px 0}}
   label{{display:block;margin:8px 0}}
-  input{{padding:6px 10px;font-size:15px;border:1px solid #cbd5e1;border-radius:4px;width:100%;box-sizing:border-box}}
+  input{{
+    padding:6px 10px;font-size:15px;border:1px solid #cbd5e1;
+    border-radius:4px;width:100%;box-sizing:border-box
+  }}
   .links{{margin-top:16px;font-size:14px}}
   #msg{{margin-top:12px;padding:8px 12px;border-radius:6px;display:none}}
-  .msg-error{{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;display:block!important}}
-  .msg-success{{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534;display:block!important}}
+  .msg-error{{
+    background:#fef2f2;border:1px solid #fecaca;
+    color:#991b1b;display:block!important
+  }}
+  .msg-success{{
+    background:#f0fdf4;border:1px solid #bbf7d0;
+    color:#166534;display:block!important
+  }}
 </style></head><body>
 <h2>{title}</h2>
 <div class="detail">
 <p><strong>Action:</strong> {action_type}</p>
 <p><strong>Risk:</strong> {risk_level}</p>
 </div>
-<form id="af" method="post" action="/api/approvals/by-token/{token}/{action}?redirect=/incidents/{incident_id}">
+<form id="af" method="post" action="{action_url}">
 <label>Approver: <input name="approver" placeholder="your name" required></label>
 <button type="submit" class="{btn_class}">{btn_text}</button>
 </form>
@@ -191,13 +208,31 @@ _CONFIRMATION_PAGE = """\
 document.getElementById('af').addEventListener('submit',async function(e){{
   e.preventDefault();
   var m=document.getElementById('msg'),b=e.target.querySelector('button');
-  m.className='';m.textContent='Submitting...';m.style.display='block';b.disabled=true;
+  m.className='';m.textContent='Submitting...';
+  m.style.display='block';b.disabled=true;
   try{{
-    var r=await fetch(this.action,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{approver:this.approver.value}})}});
+    var r=await fetch(this.action,{{
+      method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify({{approver:this.approver.value}})
+    }});
     if(r.redirected){{window.location=r.url;return}}
-    if(r.ok){{m.className='msg-success';m.textContent='Done! Redirecting...';setTimeout(function(){{window.location='/approvals'}},1500)}}
-    else{{var d=await r.json().catch(function(){{return{{error:{{message:'Request failed'}}}}}});m.className='msg-error';m.textContent=(d.error||d).message||'Request failed';b.disabled=false}}
-  }}catch(err){{m.className='msg-error';m.textContent='Network error: '+err.message;b.disabled=false}}
+    if(r.ok){{
+      m.className='msg-success';
+      m.textContent='Done! Redirecting...';
+      setTimeout(function(){{window.location='/approvals'}},1500)
+    }}else{{
+      var d=await r.json().catch(
+        function(){{return{{error:{{message:'Request failed'}}}}}});
+      m.className='msg-error';
+      m.textContent=(d.error||d).message||'Request failed';
+      b.disabled=false
+    }}
+  }}catch(err){{
+    m.className='msg-error';
+    m.textContent='Network error: '+err.message;
+    b.disabled=false
+  }}
 }});
 </script>
 </body></html>"""
@@ -231,7 +266,8 @@ def approve_by_token_page(
         )
     return HTMLResponse(_CONFIRMATION_PAGE.format(
         title="Approve Action",
-        action="approve",
+        action_url=f"/api/approvals/by-token/{token}/approve"
+                   f"?redirect=/incidents/{approval.incident_id}",
         token=token,
         incident_id=approval.incident_id,
         approval_id=approval.approval_id,
@@ -258,7 +294,8 @@ def reject_by_token_page(
         )
     return HTMLResponse(_CONFIRMATION_PAGE.format(
         title="Reject Action",
-        action="reject",
+        action_url=f"/api/approvals/by-token/{token}/reject"
+                   f"?redirect=/incidents/{approval.incident_id}",
         token=token,
         incident_id=approval.incident_id,
         approval_id=approval.approval_id,
@@ -276,7 +313,7 @@ def reject_by_token_page(
 def approve_by_token(
     token: str,
     request: TokenApprovalRequest,
-    redirect: Optional[str] = None,
+    redirect: str | None = None,
     db: Session = Depends(get_db),
     enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
 ) -> ApprovalDecisionResponse | RedirectResponse:
@@ -294,7 +331,7 @@ def approve_by_token(
 def reject_by_token(
     token: str,
     request: TokenApprovalRequest,
-    redirect: Optional[str] = None,
+    redirect: str | None = None,
     db: Session = Depends(get_db),
     enqueue_resume: ResumeTaskEnqueue = Depends(get_resume_task_enqueue),
 ) -> ApprovalDecisionResponse | RedirectResponse:

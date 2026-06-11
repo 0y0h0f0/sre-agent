@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -28,7 +28,7 @@ def _create_incident(
         severity=severity,
         alert_name=alert_name,
         status=status,
-        starts_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        starts_at=datetime(2026, 6, 1, tzinfo=UTC),
         root_cause_summary=root_cause,
         labels={},
         annotations={},
@@ -65,14 +65,18 @@ class TestNFAMarkAPI:
         data = resp.json()
         assert data["status"] == "suppressed"
 
-    def test_mark_nfa_requires_existing_incident(self, client: TestClient, db_session: Session) -> None:
+    def test_mark_nfa_requires_existing_incident(
+        self, client: TestClient, db_session: Session
+    ) -> None:
         db_session.commit()
         response = client.post("/api/incidents/nonexistent/nfa", json={})
         assert response.status_code == 404
 
 
 class TestRootCauseCorrectionAPI:
-    def test_correct_root_cause_returns_feedback(self, client: TestClient, db_session: Session) -> None:
+    def test_correct_root_cause_returns_feedback(
+        self, client: TestClient, db_session: Session
+    ) -> None:
         db_session.commit()
         _create_incident(db_session, "inc_fbtest", root_cause="CPU saturation")
         db_session.commit()
@@ -86,12 +90,17 @@ class TestRootCauseCorrectionAPI:
         assert data["feedback_type"] == "root_cause_correction"
         assert data["delta"]["corrected"] == "Memory leak in checkout"
 
-    def test_correct_root_cause_requires_summary(self, client: TestClient, db_session: Session) -> None:
+    def test_correct_root_cause_requires_summary(
+        self, client: TestClient, db_session: Session
+    ) -> None:
         db_session.commit()
         _create_incident(db_session, "inc_fbtest")
         db_session.commit()
 
-        response = client.patch("/api/incidents/inc_fbtest/root-cause", json={"corrected_summary": ""})
+        response = client.patch(
+            "/api/incidents/inc_fbtest/root-cause",
+            json={"corrected_summary": ""},
+        )
         assert response.status_code == 422
 
 
@@ -136,7 +145,8 @@ class TestCorrelatedIncidentsAPI:
         db_session.commit()
         _create_incident(db_session, "inc_fbtest", fingerprint="fp-x", service="checkout")
         _create_incident(db_session, "inc_related", fingerprint="fp-x", service="checkout",
-                         alert_name="RelatedAlert", root_cause="Same fingerprint", status="resolved")
+                         alert_name="RelatedAlert",
+                         root_cause="Same fingerprint", status="resolved")
         db_session.commit()
 
         response = client.get("/api/incidents/inc_fbtest/correlated")

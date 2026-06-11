@@ -28,3 +28,19 @@ reports/
 celerybeat-schedule
 celerybeat-schedule-shm
 celerybeat-schedule-wal
+
+# Model files (downloaded on first run)
+models/
+
+# Build artifacts
+*.egg-info/
+
+# Editor backup files
+*.orig
+
+# Test cache
+.hypothesis/
+
+# Internal planning/research docs
+realplan.md
+study.md

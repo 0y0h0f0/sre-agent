@@ -34,9 +34,14 @@ class Settings(BaseSettings):
     metrics_step_seconds: int = Field(default=30, gt=0)
     metrics_max_window_seconds: int = Field(default=3600, gt=0)
     metrics_max_shards: int = Field(default=6, ge=1)
-    # Trace backend: fixture | jaeger | tempo (Phase 2.1). Default keeps tests
+    # Trace backend: disabled | fixture | jaeger | tempo. Default keeps tests
     # deterministic and local dev offline.
+    # M9 adds "disabled" and "tempo"; M8 supported "fixture" and "jaeger".
     trace_backend: str = "fixture"
+    # M9: TRACE_ENABLED gates the entire trace tool. When false, TraceTool is
+    # degraded regardless of trace_backend value.
+    # Default True preserves backward-compatible local/dev behavior.
+    trace_enabled: bool = True
     jaeger_url: str = "http://localhost:16686"
     tempo_url: str = "http://localhost:3200"
     # Deployment backend: fixture | github | argocd (Phase 2.1).
@@ -173,6 +178,34 @@ class Settings(BaseSettings):
     # (e.g. '*.svc,*.svc.cluster.local,prometheus.monitoring.svc').
     backend_url_allowlist: str = ""
 
+    # --- M9: Controlled Enhancements (all default-off in production) ---
+    # Global feature gate. When false, forces all M9 sub-capabilities off
+    # regardless of their individual settings.
+    m9_extensions_enabled: bool = False
+
+    # M9 sub-feature gates — each default-off.
+    # LLM-based runbook draft generation (PR 9.2).
+    # (runbook_llm_generation_enabled already declared above, preserved for M8 compat)
+    # LLM incident vs runbook diff analysis (PR 9.3).
+    llm_incident_diff_enabled: bool = False
+    # M9 Tempo endpoint auto-discovery (PR 9.6). Production never auto-publishes.
+    tempo_discovery_enabled: bool = False
+    # M9 Grafana unified alerting webhook ingest (PR 9.7).
+    grafana_alert_ingest_enabled: bool = False
+    # M9 Semantic (vector) runbook search (PR 9.8).
+    semantic_runbook_search_enabled: bool = False
+    # M9 External embedding provider (PR 9.9). Requires SEMANTIC_RUNBOOK_SEARCH_ENABLED
+    # and EMBEDDING_PROVIDER=external.
+    external_embedding_provider_enabled: bool = False
+    # Double opt-in for external cloud LLM (PR 9.2, 9.3). When false, only
+    # locally-hosted LLM providers may be used even if M9 + LLM features are on.
+    llm_external_provider_allowed: bool = False
+
+    # Rollback state for total M9 revert. Pre-populate before enabling M9 so the
+    # environment can be restored to its pre-M9 trace configuration.
+    pre_m9_trace_backend: str = ""
+    pre_m9_trace_enabled: str = ""
+
     @model_validator(mode='before')
     @classmethod
     def _apply_production_safety_defaults(cls, data: object) -> object:
@@ -191,6 +224,22 @@ class Settings(BaseSettings):
         if 'discovery_enabled' not in data:
             data['discovery_enabled'] = False
         return data
+
+    @model_validator(mode='after')
+    def _validate_m9_trace_backend(self) -> Settings:
+        """Validate M9 TRACE_BACKEND enum values.
+
+        TRACE_BACKEND must be one of: disabled, fixture, jaeger, tempo.
+        Conflict detection (M9 disabled + tempo, fixture in production)
+        is handled by feature_flags.resolve_m9_feature_flags().
+        """
+        valid_backends = frozenset({'disabled', 'fixture', 'jaeger', 'tempo'})
+        if self.trace_backend not in valid_backends:
+            raise ValueError(
+                f"TRACE_BACKEND must be one of {sorted(valid_backends)}, "
+                f"got '{self.trace_backend}'"
+            )
+        return self
 
     # --- Email notifications (roadmap Phase 3) ---
     smtp_host: str = ""

@@ -2,38 +2,43 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current Phase: Phase 0–8 Complete — Staging Verification
+## Current Phase: M0–M8 Complete — M9 Controlled Enhancement In Progress
 
-The real backend integration (M0–M8) is **complete**. All 41 PRs (0.1 through 8.6) have been implemented with tests. The project is now in the **staging verification** phase — executing the production release gate checklist before enabling scheduled discovery and Alertmanager poll in production.
+The real backend integration (M0–M8) is **complete**. All 41 PRs (0.1 through 8.6) have been implemented with tests. The project is now entering **M9** — a controlled enhancement phase that adds AI, Web context, Tempo, Grafana, and semantic search capabilities behind explicit feature gates.
 
-**Overall status:** M0 ✅ | M1 ✅ | M2 ✅ | M3 ✅ | M4 ✅ | M5 ✅ | M6 ✅ | M7 ✅ | M8 ✅
+M9 does **not** replace M0–M8 deterministic diagnosis, safe publishing, config merge, audit, rollback, or runbook review. It only adds new capabilities within existing safety boundaries.
 
-**Next step:** Execute `docs/final-pre-execution-checklist.md` P0 gates in staging environment.
+**Overall status:** M0 ✅ | M1 ✅ | M2 ✅ | M3 ✅ | M4 ✅ | M5 ✅ | M6 ✅ | M7 ✅ | M8 ✅ | M9 🔄
+
+**Next step:** Implement M9 PRs (9.1 through 9.10) in execution order. Start with PR 9.1 (M9 Feature Gate).
 
 **Key metrics:**
 - 1,092 tests pass (823 unit + ~217 integration + 14 E2E)
 - 29 files changed in M5–M8 completion (models, services, routers, tests, docs)
+- M9 adds 10 PRs across 4 batches (M9A–M9D)
 
 **Authoritative implementation documents:**
-- `docs/superpowers/specs/2026-06-10-real-backend-integration-design.md` — design decisions
-- `docs/superpowers/specs/2026-06-11-real-backend-integration-implementation-plan.md` — milestone/PR breakdown
+- `docs/superpowers/specs/2026-06-10-real-backend-integration-design.md` — M0–M8 design decisions
+- `docs/superpowers/specs/2026-06-11-real-backend-integration-implementation-plan.md` — M0–M8 milestone/PR breakdown
 - `sre-agent-agent-execution-plan.md` — **agent-executable task cards with hard constraints** (read this before implementing any PR)
+- `docs/superpowers/specs/m9-foragent.md` — **M9 agent execution plan** (PR cards, invariants, stop conditions, E2E smoke sequence)
 
 ## Agent Execution Discipline
 
-When implementing a `PR x.y` from the execution plan:
+When implementing a `PR x.y` from the execution plan (M0–M8 or M9):
 
 1. **Read the PR card first**: Scope / Non-Scope / Suggested Files / Test Checklist / Acceptance Criteria / Risks / Rollback.
 2. **One PR at a time** — never implement ahead of the assigned PR or across milestone boundaries.
 3. **Production safety > convenience**. Default: `APP_ENV=local`, `LLM_PROVIDER=disabled` in production, `EXECUTOR_BACKEND=fixture`.
-4. **Phase 0–8 does not use real LLM or web_search**. All diagnosis and runbook capabilities must work deterministically.
+4. **M0–M8 does not use real LLM or web_search**. All diagnosis and runbook capabilities must work deterministically. **M9** may use LLM, web_search, Tempo, Grafana, and semantic search, but only behind explicit feature gates (all default-off in production).
 5. **Raw secrets never enter** DB, audit log, debug log, AgentDeps, LLM prompt, or LangGraph state.
 6. **Worker only reads published EffectiveConfigVersion** — never proposals or detected_only.
 7. **Backend URLs must pass safety validation** before entering EffectiveConfig or worker construction.
 8. **Every PR must include tests**. Output a completion report: changes, test results, security self-check, risks, rollback, next step.
 9. **If blocked**, report: what was explored, why blocked, minimal repro, suggested decision, alternative task.
 
-Full execution rules, state machine, stop conditions, and report format are in `sre-agent-agent-execution-plan.md` §A–B.
+Full M0–M8 execution rules, state machine, stop conditions, and report format are in `sre-agent-agent-execution-plan.md` §A–B.
+M9 execution loop, stop conditions, and per-PR test checklists are in `docs/superpowers/specs/m9-foragent.md` §4, §17–18.
 
 ## Commands
 
@@ -140,12 +145,25 @@ Routers are thin (validation + service call). Services contain business logic. R
 - `TOOL_TIMEOUT_SECONDS` — default 2.0s
 - `CELERY_TASK_ALWAYS_EAGER` — set to `True` for synchronous tests
 
-**Real backend integration (new):**
+**Real backend integration (M0–M8):**
 - `ALERT_SOURCE` — `webhook` (default) | `poll` | `both` | `none`
 - `ALERT_POLL_*` — poll interval, filters, allowlist, lock TTL
 - `BACKEND_URL_ALLOWLIST` — host patterns for allowed internal service DNS
 - `RUNBOOK_TEMPLATE_GENERATION_ENABLED` / `RUNBOOK_LLM_GENERATION_ENABLED` / `RUNBOOK_WEB_SEARCH_ENABLED`
 - `BackendAuthConfig` — per-backend auth (bearer token, basic, mTLS) with secret references
+
+**M9 controlled enhancements (all default-off in production):**
+- `M9_EXTENSIONS_ENABLED` — global M9 feature gate; when `false`, forces all M9 sub-capabilities off
+- `TRACE_ENABLED` / `TRACE_BACKEND` — trace backend selection: `disabled` | `fixture` | `jaeger` | `tempo`
+- `TEMPO_DISCOVERY_ENABLED` — Tempo endpoint auto-discovery (production never auto-publishes)
+- `GRAFANA_ALERT_INGEST_ENABLED` — Grafana unified alerting webhook ingest (HMAC auth required)
+- `LLM_INCIDENT_DIFF_ENABLED` — LLM incident vs runbook diff analysis (creates `AmendmentDraft` only)
+- `SEMANTIC_RUNBOOK_SEARCH_ENABLED` — keyword/semantic/hybrid runbook search
+- `EMBEDDING_PROVIDER` — embedding backend: `disabled` | `bge_zh` | `external`
+- `EXTERNAL_EMBEDDING_PROVIDER_ENABLED` — external embedding provider (requires `config:write` + `embedding:external`)
+- `RUNBOOK_WEB_SEARCH_*` — web search safety: timeout, max results, HTTPS requirement, domain allow/block lists, cache TTL
+- `LLM_EXTERNAL_PROVIDER_ALLOWED` — double opt-in for external cloud LLM
+- `PRE_M9_TRACE_BACKEND` / `PRE_M9_TRACE_ENABLED` — rollback state for total M9 revert
 
 ### Database
 
@@ -167,6 +185,8 @@ Key model relationships:
 - **Local by default**: `APP_ENV=local` keeps FakeLLM, fixture backends, localhost defaults for demo/CI.
 - **Production safe**: `APP_ENV=production` defaults `LLM_PROVIDER=disabled`, `EXECUTOR_BACKEND=fixture`. No hidden localhost fallback.
 - **Phase 0–8 deterministic**: All diagnosis, runbook template, and feedback use deterministic methods. Real LLM and web_search are gated behind explicit flags.
+- **M9 enhancements default-off**: All M9 capabilities (LLM generation/diff, web_search, Tempo, Grafana ingest, semantic search, external embedding) are controlled by `M9_EXTENSIONS_ENABLED` and individual sub-feature flags. All default to `false` in production. M9 only augments — it never replaces M0–M8 deterministic paths.
+- **M9 invariants**: LLM only generates drafts (`RunbookDraft`/`AmendmentDraft`, both `pending_review`). Never auto-approves, auto-publishes, or auto-applies. Production Tempo discovery never auto-publishes. Embedding failure never blocks runbook ingest. All external calls have timeout, redaction, audit/metric, and degraded fallback.
 - **Executor backends**: Fixture executor is the default. `LiveK8sExecutorBackend` is opt-in via `EXECUTOR_BACKEND=live`, limited to restart/scale/rollback K8s mutations after guardrails and approval.
 - **Risk levels**: L0 read-only (auto), L1 low-risk write (auto), L2 restart/scale (approval), L3 rollback/rate-limit (approval + second confirmation), L4 destructive (hard reject).
 - **L3 approval requires** `risk_ack=true`, `confirm_action_type`, `confirm_target`.
@@ -196,11 +216,12 @@ Key model relationships:
 
 ## Implementation Phase Documents
 
-When implementing real backend integration PRs:
+When implementing PRs:
 
 | Document | Purpose |
 |----------|---------|
-| `sre-agent-agent-execution-plan.md` | Agent-executable PR task cards, global hard constraints, state machine, report format |
-| `docs/superpowers/specs/2026-06-11-real-backend-integration-implementation-plan.md` | Milestone overview, dependency graph, risk register, parallelization plan |
-| `docs/superpowers/specs/2026-06-10-real-backend-integration-design.md` | Design rationale, data models, protocol contracts, algorithm details |
+| `sre-agent-agent-execution-plan.md` | M0–M8 agent-executable PR task cards, global hard constraints, state machine, report format |
+| `docs/superpowers/specs/2026-06-11-real-backend-integration-implementation-plan.md` | M0–M8 milestone overview, dependency graph, risk register, parallelization plan |
+| `docs/superpowers/specs/2026-06-10-real-backend-integration-design.md` | M0–M8 design rationale, data models, protocol contracts, algorithm details |
+| `docs/superpowers/specs/m9-foragent.md` | **M9 agent execution plan** — 10 PR cards (9.1–9.10), invariants, stop conditions, per-PR test checklists, E2E smoke sequence, rollback plan |
 | `AGENTS.md` | Detailed coding standards, stack constraints, per-module rules |

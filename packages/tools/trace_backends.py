@@ -46,6 +46,19 @@ class FixtureTraceBackend:
         return [span for span in spans if isinstance(span, dict)]
 
 
+class DegradedTraceBackend:
+    """No-op trace backend returned when TRACE_BACKEND=disabled or TRACE_ENABLED=false.
+
+    All fetch_spans calls return an empty list — the TraceTool will report
+    degraded status upstream.
+    """
+
+    name = "degraded"
+
+    def fetch_spans(self, service: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        return []
+
+
 class JaegerTraceBackend:
     """Queries a Jaeger-compatible trace API (Jaeger or Tempo).
 
@@ -136,8 +149,22 @@ def _is_error(tags: dict[str, Any]) -> bool:
 
 
 def build_trace_backend(settings: Settings) -> TraceBackend:
-    """Select the trace backend from settings (default: fixture)."""
+    """Select the trace backend from settings.
+
+    - ``disabled`` → DegradedTraceBackend (no-op, TraceTool reports degraded).
+    - ``fixture`` → FixtureTraceBackend (local/CI default).
+    - ``jaeger`` → JaegerTraceBackend (M8 verified path).
+    - ``tempo`` → JaegerTraceBackend via tempo_url (Tempo exposes Jaeger-compat
+      API; PR 9.5 will add a native TempoTraceBackend).
+
+    TRACE_ENABLED=false also returns DegradedTraceBackend regardless of
+    trace_backend value.
+    """
+    if not settings.trace_enabled:
+        return DegradedTraceBackend()
     backend = settings.trace_backend.strip().lower()
+    if backend == "disabled":
+        return DegradedTraceBackend()
     if backend == "fixture":
         return FixtureTraceBackend(fixture_path=settings.trace_fixture_path)
     if backend == "jaeger":
@@ -148,5 +175,6 @@ def build_trace_backend(settings: Settings) -> TraceBackend:
         return JaegerTraceBackend(
             base_url=settings.tempo_url, timeout_seconds=settings.tool_timeout_seconds
         )
+    # Unreachable — Settings validator rejects unknown values.
     msg = f"unknown trace_backend '{settings.trace_backend}'"
     raise ValueError(msg)

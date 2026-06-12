@@ -206,8 +206,15 @@ def test_build_trace_backend_selects_by_setting() -> None:
     assert build_trace_backend(Settings()).name == "fixture"
     assert build_trace_backend(Settings(trace_backend="jaeger")).name == "jaeger"
     assert build_trace_backend(Settings(trace_backend="tempo")).name == "jaeger"
-    with pytest.raises(ValueError, match="unknown trace_backend"):
-        build_trace_backend(Settings(trace_backend="nope"))
+    # invalid trace_backend values are now caught at Settings construction time
+    # (pydantic model_validator) — not at build_trace_backend time.
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match="TRACE_BACKEND"):
+        Settings(trace_backend="nope")
+    # TRACE_BACKEND=disabled returns degraded backend.
+    assert build_trace_backend(Settings(trace_backend="disabled")).name == "degraded"
+    # TRACE_ENABLED=false also returns degraded backend.
+    assert build_trace_backend(Settings(trace_enabled=False)).name == "degraded"
 
 
 # --- 2.1 Deployment backend ---

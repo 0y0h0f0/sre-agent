@@ -78,6 +78,21 @@ Do not replace these with OpenAI Agents SDK, Dramatiq, Elasticsearch, Next.js, S
 - Unit tests and CI smoke flows must use FakeLLM.
 - Real LLM usage is allowed only for manual full eval or manual demo, never as a stable CI gate.
 
+## M9 Controlled Enhancement Boundaries
+
+M9 adds AI, Web context, Tempo, Grafana, and semantic search behind explicit feature gates. All M9 capabilities are **default-off in production**.
+
+Core M9 invariants (from `docs/superpowers/specs/m9-foragent.md` §3):
+
+- **Default-off**: `M9_EXTENSIONS_ENABLED=false` forces all M9 sub-capabilities off. Does not disable M8-verified Jaeger.
+- **Augment, not replace**: M9 never changes M0–M8 invariants. Worker still only reads published EffectiveConfigVersion. Discovery failure does not block agent start. Raw secrets never enter DB/audit/log/prompt/state.
+- **LLM drafts only**: LLM can only produce `RunbookDraft(status=pending_review)` or `AmendmentDraft(status=pending_review)`. LLM never auto-approves, auto-publishes, auto-applies amendments, or auto-executes remediation.
+- **Controlled external calls**: Every external call (LLM, web_search, external embedding) requires feature flag, timeout, redaction, audit/metric, error degradation, and secret leakage test.
+- **Independent rollback**: Every M9 sub-capability has an independent rollback switch. Total rollback restores `PRE_M9_TRACE_BACKEND` / `PRE_M9_TRACE_ENABLED` without hardcoding jaeger or fixture.
+- **Production discovery never auto-publishes**: Tempo endpoint discovery produces `requires_review` at most in production. Only published config enters the worker.
+
+M9 execution loop: read → plan → test-first → implement → verify → document → stop (see `docs/superpowers/specs/m9-foragent.md` §17). Agent must stop and report if M8 release gate is not passed, if invariants conflict, or if secret leakage is detected.
+
 ## Read Before Coding
 
 Before implementing or changing a module, read the matching document:
@@ -97,6 +112,7 @@ Before implementing or changing a module, read the matching document:
 - Module checklist: `plans/10-codegen/module-checklists.md`
 - Documentation quality gate: `plans/10-codegen/documentation-quality-gate.md`
 - Post-MVP roadmap and completion notes: `plans/11-roadmap/README.md`
+- **M9 agent execution plan**: `docs/superpowers/specs/m9-foragent.md` — PR cards, invariants, test checklists, E2E smoke sequence, rollback plan
 
 If implementation guidance conflicts, prefer the more specific document and current code. If still ambiguous, prefer the safer option: fixture executor, FakeLLM, no new real external writes, explicit schema, and stronger tests.
 

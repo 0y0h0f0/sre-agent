@@ -123,6 +123,14 @@ email_send_duration_seconds = Histogram(
     buckets=[1, 5, 10, 30, 60],
 )
 
+# --- M9 feature flag conflict counter ---
+
+m9_feature_flag_conflict_total = Counter(
+    "agentp_m9_feature_flag_conflict_total",
+    "M9 feature flag conflicts (sub-feature enabled but M9 global gate disabled)",
+    ["feature"],
+)
+
 # --- Gauges ---
 
 active_diagnoses = Gauge(

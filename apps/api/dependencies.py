@@ -98,3 +98,29 @@ def require_scope(*scopes: str) -> ScopeRequirement:
 def require_any_scope(*scopes: str) -> ScopeRequirement:
     """Alias for require_scope."""
     return ScopeRequirement(*scopes)
+
+
+# ---------------------------------------------------------------------------
+# M9 Permission Scopes (PR 9.1)
+# ---------------------------------------------------------------------------
+# These scope constants extend the existing ApiKey scopes system with M9-specific
+# permissions. They are used with require_scope() in M9 router endpoints.
+#
+# Usage::
+#     require_runbook_llm = require_scope("runbook:llm_generate")
+#     require_embedding_external = require_scope("config:write", "embedding:external")
+
+# Runbook read access (also usable outside M9).
+SCOPE_RUNBOOK_READ = "runbook:read"
+# Web search for runbook enrichment (PR 9.4).
+SCOPE_RUNBOOK_WEB_SEARCH = "runbook:web_search"
+# LLM-based runbook draft generation (PR 9.2).
+SCOPE_RUNBOOK_LLM_GENERATE = "runbook:llm_generate"
+# LLM incident vs runbook diff analysis (PR 9.3).
+SCOPE_INCIDENT_LLM_DIFF = "incident:llm_diff"
+# Generic LLM invocation (for external cloud LLM).
+SCOPE_LLM_INVOKE = "llm:invoke"
+# External AI provider access (broader than llm:invoke).
+SCOPE_AI_EXTERNAL = "ai:external"
+# External embedding provider configuration (PR 9.9).
+SCOPE_EMBEDDING_EXTERNAL = "embedding:external"

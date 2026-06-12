@@ -108,3 +108,36 @@ class RunbookVersionItem(BaseModel):
     diff_from_previous: str | None = None
     created_by: str
     created_at: str
+
+
+# ---------------------------------------------------------------------------
+# M9 LLM Runbook Generation schemas (PR 9.2)
+# ---------------------------------------------------------------------------
+
+
+class LLMRunbookGenerateRequest(BaseModel):
+    """Request to generate a runbook draft via LLM.
+
+    All context fields are optional — the LLM can work with just service
+    and incident_type, but more context produces better results.
+    """
+
+    service: str = Field(min_length=1, max_length=128)
+    incident_type: str = Field(min_length=1, max_length=64)
+    runbook_context: list[str] | None = None
+    evidence_summary: str | None = None
+    template_draft: str | None = None
+    capability_gaps: list[str] | None = None
+    effective_config: dict[str, object] | None = None
+    evidence_ids: list[str] | None = None
+
+
+class LLMRunbookGenerateResponse(BaseModel):
+    """Response from an LLM runbook draft generation attempt."""
+
+    status: str  # "generated" | "disabled" | "blocked" | "degraded"
+    draft_id: str | None = None
+    draft_status: str | None = None
+    draft_type: str | None = None
+    action_classification_summary: dict[str, object] | None = None
+    error_message: str | None = None

@@ -6,6 +6,8 @@ import logging
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.runbooks import (
+    LLMRunbookGenerateRequest,
+    LLMRunbookGenerateResponse,
     RunbookDraftGenerateRequest,
     RunbookDraftGenerateResponse,
     RunbookDraftItem,
@@ -21,6 +23,7 @@ from apps.api.schemas.runbooks import (
 from packages.agent.llm.base import LLMProvider
 from packages.common.errors import NotFoundError, ValidationAppError
 from packages.common.ids import new_id
+from packages.common.settings import Settings
 from packages.db.models import RunbookDraft
 from packages.db.repositories.incidents import IncidentRepository
 from packages.db.repositories.runbook_drafts import RunbookDraftRepository
@@ -28,9 +31,12 @@ from packages.db.repositories.runbook_versions import RunbookVersionRepository
 from packages.db.repositories.runbooks import RunbookChunkRepository
 from packages.rag.embedding_factory import build_embedding_provider
 from packages.rag.ingest import RunbookIngestor
+from packages.rag.llm_runbook_generator import LLMRunbookGenerator
 from packages.rag.metadata import RunbookMetadataError, parse_runbook_markdown
 from packages.rag.retriever import RunbookRetriever, RunbookSearchQuery
+from packages.rag.runbook_action_classifier import RunbookActionClassifier
 from packages.rag.runbook_generator import RunbookGenerator
+from packages.rag.runbook_prompt_builder import RunbookPromptBuilder
 from packages.rag.splitter import split_markdown_document
 from packages.rag.template_extractor import TemplateExtractor
 
@@ -222,6 +228,84 @@ class RunbookService:
             title=draft.title,
             incident_type=draft.incident_type,
             service_name=draft.service,
+        )
+
+    # ------------------------------------------------------------------
+    # M9: LLM Runbook Draft Generation (PR 9.2)
+    # ------------------------------------------------------------------
+
+    def llm_generate_draft(
+        self,
+        request: LLMRunbookGenerateRequest,
+        llm: LLMProvider,
+        settings: Settings,
+    ) -> LLMRunbookGenerateResponse:
+        """Generate a runbook draft via LLM with full safety controls.
+
+        The LLM can only produce a RunbookDraft(status=pending_review).
+        It never auto-approves, auto-publishes, or modifies approved runbooks.
+        """
+        generator = LLMRunbookGenerator(
+            settings=settings,
+            llm=llm,
+            classifier=RunbookActionClassifier(),
+            prompt_builder=RunbookPromptBuilder(),
+        )
+
+        result = generator.generate(
+            service=request.service,
+            incident_type=request.incident_type,
+            runbook_context=request.runbook_context,
+            evidence_summary=request.evidence_summary,
+            template_draft=request.template_draft,
+            capability_gaps=request.capability_gaps,
+            effective_config=request.effective_config if request.effective_config else None,
+            evidence_ids=request.evidence_ids,
+        )
+
+        if result.status != "generated":
+            return LLMRunbookGenerateResponse(
+                status=result.status,
+                error_message=result.error_message,
+            )
+
+        # Persist the draft as pending_review.
+        fingerprint = hashlib.sha256(
+            f"llm:{request.service}:{request.incident_type}".encode()
+        ).hexdigest()[:16]
+
+        draft = self._draft_repo.create(
+            fingerprint=fingerprint,
+            incident_ids=[],
+            service=request.service,
+            incident_type=request.incident_type,
+            title=f"{request.incident_type.replace('_', ' ').title()} Runbook (LLM)",
+            content=result.content or "",
+            front_matter={
+                "service": request.service,
+                "incident_type": request.incident_type,
+                "severity": "P2",
+                "owner": "llm-generated",
+            },
+            draft_type="llm_generated",
+            source="llm",
+            llm_model=(
+                result.prompt_metadata.get("model_provider")
+                if result.prompt_metadata
+                else None
+            ),
+        )
+
+        # Override status to pending_review (the repo's create() defaults to "draft").
+        draft.status = "pending_review"
+        self.db.commit()
+
+        return LLMRunbookGenerateResponse(
+            status="generated",
+            draft_id=draft.draft_id,
+            draft_status="pending_review",
+            draft_type="llm_generated",
+            action_classification_summary=result.action_classification_summary or {},
         )
 
     def _ingest_draft_chunks(self, draft: RunbookDraft) -> None:

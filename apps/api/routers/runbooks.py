@@ -5,8 +5,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from apps.api.dependencies import get_app_settings, get_db
+from apps.api.dependencies import get_app_settings, get_db, require_scope
 from apps.api.schemas.runbooks import (
+    LLMRunbookGenerateRequest,
+    LLMRunbookGenerateResponse,
     RunbookDraftGenerateRequest,
     RunbookDraftGenerateResponse,
     RunbookDraftItem,
@@ -105,6 +107,24 @@ def generate_template(
     db: Session = Depends(get_db),
 ) -> RunbookTemplateGenerateResponse:
     return RunbookService(db).generate_template_draft(payload)
+
+
+# ---------------------------------------------------------------------------
+# M9: LLM Runbook Draft Generation (PR 9.2)
+# ---------------------------------------------------------------------------
+
+_require_runbook_llm = require_scope("runbook:review", "runbook:llm_generate")
+
+
+@router.post("/llm-generate", response_model=LLMRunbookGenerateResponse)
+def llm_generate_runbook(
+    payload: LLMRunbookGenerateRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_app_settings),
+    _scope: None = Depends(_require_runbook_llm),
+) -> LLMRunbookGenerateResponse:
+    llm = build_llm(settings)
+    return RunbookService(db).llm_generate_draft(payload, llm, settings)
 
 
 # ---------------------------------------------------------------------------

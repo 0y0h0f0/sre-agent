@@ -49,3 +49,45 @@ def get_current_api_key(request: Request) -> dict[str, str]:
     when auth is disabled to allow dependency injection to work in tests.
     """
     return getattr(request.state, "api_key", {})
+
+
+class ScopeRequirement:
+    """FastAPI dependency factory requiring at least one of the given scopes.
+
+    Usage::
+
+        require_config_write = require_scope("config:write")
+
+        @router.post("/config/publish", dependencies=[require_config_write])
+    """
+
+    def __init__(self, *required_scopes: str) -> None:
+        self._required = set(required_scopes)
+
+    def __call__(self, request: Request) -> None:
+        from fastapi import HTTPException
+
+        api_key: dict[str, object] = getattr(request.state, "api_key", {})
+        if not api_key:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        raw_scopes: Any = api_key.get("scopes", [])
+        scopes: list[str] = list(raw_scopes) if isinstance(raw_scopes, list) else []
+        if not self._required.intersection(scopes):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Missing required scope(s): "
+                    f"{', '.join(sorted(self._required))}"
+                ),
+            )
+
+
+def require_scope(*scopes: str) -> ScopeRequirement:
+    """FastAPI dependency — requires at least one of *scopes."""
+    return ScopeRequirement(*scopes)
+
+
+def require_any_scope(*scopes: str) -> ScopeRequirement:
+    """Alias for require_scope."""
+    return ScopeRequirement(*scopes)

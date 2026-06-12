@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -105,6 +105,85 @@ class Settings(BaseSettings):
     # monolithic LLM call.  Default off preserves existing behaviour.
     llm_multi_perspective_enabled: bool = False
     token_budget_total: int = Field(default=32_000, gt=0)
+
+    # --- M0: Production Safety Foundation ---
+    # Environment profile: local (default) keeps demo/CI compatible;
+    # production enables safety defaults (LLM disabled, executor fixture).
+    app_env: str = "local"
+
+    # Automation level controls whether proposals are auto-applied.
+    # off=record only, propose=record+propose, supervised=auto-apply
+    # high-confidence proposals, autopilot=lower threshold.
+    automation_level: str = "supervised"
+
+    # Discovery enables automatic backend (Prometheus/Loki/Jaeger) detection.
+    # local default true; production default false (set by model_validator).
+    discovery_enabled: bool = True
+    # Allow operator-initiated manual discovery rerun via API.
+    discovery_manual_rerun_enabled: bool = True
+    # How aggressively discovery proposals are applied.
+    # inherit=use automation_level, propose=always propose, supervised=review required.
+    discovery_apply_mode: str = "inherit"
+
+    # Runbook template generation engine.
+    runbook_template_generation_enabled: bool = True
+    # LLM-based runbook draft generation (Phase 0-8 default off).
+    runbook_llm_generation_enabled: bool = False
+    # Web search for runbook enrichment (Phase 0-8 default off).
+    runbook_web_search_enabled: bool = False
+
+    # Alert ingestion source.
+    # webhook=POST /api/alerts only, poll=Alertmanager poll only,
+    # both=webhook + poll, none=no ingestion.
+    alert_source: str = "webhook"
+
+    # --- Alertmanager Poll Configuration ---
+    alertmanager_url: str = "http://localhost:9093"
+    alertmanager_read_token: SecretStr | None = None
+    alert_poll_interval_seconds: int = Field(default=30, gt=0)
+    # Redis lock TTL must be >= poll_timeout + processing_budget + safety_margin.
+    alert_poll_lock_ttl_seconds: int = Field(default=60, gt=0)
+    alert_poll_timeout_seconds: int = Field(default=20, gt=0)
+    # Active fingerprint must be missing longer than this to infer resolved.
+    alert_poll_resolved_grace_period_seconds: int = Field(default=120, gt=0)
+    # Number of consecutive missing rounds before resolved inference.
+    alert_poll_resolved_missing_rounds: int = Field(default=3, gt=0)
+    # Receiver filter (pipe-separated receiver names).
+    alert_poll_receiver_filter: str = ""
+    # Comma-separated Alertmanager matcher expressions
+    # (e.g. 'severity=~"critical|warning",namespace=~"prod"').
+    alert_poll_filter_matchers: str = ""
+    # Comma-separated namespace allowlist for poll scope.
+    alert_poll_namespace_allowlist: str = ""
+    # Comma-separated service allowlist for poll scope.
+    alert_poll_service_allowlist: str = ""
+    alert_poll_max_alerts_per_round: int = Field(default=200, gt=0)
+    alert_poll_max_new_incidents_per_round: int = Field(default=20, gt=0)
+    alert_poll_max_incidents_per_service_per_minute: int = Field(default=5, gt=0)
+
+    # --- Backend URL Safety ---
+    # Comma-separated host patterns allowed for internal cluster DNS
+    # (e.g. '*.svc,*.svc.cluster.local,prometheus.monitoring.svc').
+    backend_url_allowlist: str = ""
+
+    @model_validator(mode='before')
+    @classmethod
+    def _apply_production_safety_defaults(cls, data: object) -> object:
+        """Apply production-safe defaults when APP_ENV=production.
+
+        Only overrides fields that were NOT explicitly set by the user,
+        so explicit env vars / .env entries always take precedence.
+        """
+        if not isinstance(data, dict):
+            return data
+        app_env = data.get('app_env', 'local')
+        if app_env != 'production':
+            return data
+        if 'llm_provider' not in data:
+            data['llm_provider'] = 'disabled'
+        if 'discovery_enabled' not in data:
+            data['discovery_enabled'] = False
+        return data
 
     # --- Email notifications (roadmap Phase 3) ---
     smtp_host: str = ""

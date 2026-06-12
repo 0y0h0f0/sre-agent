@@ -686,10 +686,13 @@ class AuditLog(Base):
     """Write-ahead audit log recording who did what and when.
 
     Tracks approval decisions, root cause corrections, NFA marks,
-    action feedback, and comment/annotation creation.
+    action feedback, comment/annotation creation, discovery/config operations.
     """
 
     __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_source_created", "source", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     audit_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -700,9 +703,13 @@ class AuditLog(Base):
         index=True,
     )
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
-    action: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
     resource_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Operation origin: api | worker | beat | system
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    # Correlates operations across services (matches X-Request-Id header).
+    request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False, index=True
@@ -740,6 +747,7 @@ class ApiKey(Base):
     """API key for service-to-service and management authentication.
 
     Raw key is returned once on creation and stored as a SHA-256 hash.
+    Roles and scopes control access to config/discovery write APIs.
     """
 
     __tablename__ = "api_keys"
@@ -749,11 +757,213 @@ class ApiKey(Base):
     description: Mapped[str] = mapped_column(String(255), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="admin")
+    # Role/scope access control (M0 PR 0.7).
+    # roles: list of role names (e.g., ["api_key:admin"]).
+    roles: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
+    # scopes: granular permission tokens
+    # (discovery:read, discovery:write, config:read, config:write,
+    #  runbook:review, api_key:admin).
+    scopes: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
+    # Marks keys created during bootstrap seeding.
+    is_bootstrap: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class DiscoveryRun(Base):
+    """Record of a single discovery scan execution.
+
+    May be triggered by Celery Beat schedule, manual operator rerun,
+    or application startup (local only).
+    """
+
+    __tablename__ = "discovery_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    discovery_run_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False
+    )  # scheduled | manual_rerun | startup
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="running", index=True
+    )  # running | succeeded | degraded | failed
+    trigger_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="automatic"
+    )  # automatic | manual
+    triggered_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Summary of discovery findings (service count, backend count, warnings).
+    summary: Mapped[dict[str, Any]] = mapped_column(
+        JSONType, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class DiscoveryProposal(Base):
+    """A config change proposal produced by a discovery run.
+
+    Each proposal contains a config_diff (what changed vs current effective config)
+    and an AutomationDecision for each changed item.
+    """
+
+    __tablename__ = "discovery_proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    discovery_run_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("discovery_runs.discovery_run_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending_review", index=True
+    )  # pending_review | auto_applied | rejected | superseded
+    # The config diff as a JSONB document (add/update/delete actions).
+    config_diff: Mapped[dict[str, Any]] = mapped_column(
+        JSONType, nullable=False, default=dict
+    )
+    # Overall confidence across all diff items (0.0–1.0).
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rejected_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class EffectiveConfigVersion(Base):
+    """A published version of the effective runtime configuration.
+
+    Workers read the latest published version (status='published') when
+    constructing AgentDeps. Stale configs continue to be used but produce
+    a warning metric.
+    """
+
+    __tablename__ = "effective_config_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    proposal_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("discovery_proposals.proposal_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="published", index=True
+    )  # published | rolled_back | revoked | superseded
+    # The full effective config snapshot at publish time.
+    config_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSONType, nullable=False, default=dict
+    )
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    published_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rolled_back_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Number of days after published_at before config is considered stale.
+    # Default 30 days; stale config still used by workers but emits warning.
+    stale_after_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    stale_warning_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class DiscoveryOverride(Base):
+    """Operator-created override for a specific backend configuration.
+
+    Active override = revoked_at IS NULL AND expires_at > now().
+    Expired or revoked overrides do not participate in EffectiveConfig merge
+    but are retained for audit.
+    """
+
+    __tablename__ = "discovery_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    override_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # The backend type being overridden: prometheus | loki | jaeger | alertmanager
+    backend_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # Override values as JSONB (url, auth_type, extra_params, etc.).
+    override_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONType, nullable=False, default=dict
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_scopes: Mapped[list[str]] = mapped_column(
+        JSONType, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class AlertPollCursor(Base):
+    """Cursor state for Alertmanager poll dedup and resolved inference.
+
+    Records per-filter-hash fingerprint tracking. The fingerprint ->
+    incident_id mapping is globally unique (cross filter-hash + webhook dedup).
+
+    already_seen_active() MUST update last_seen_at and reset missing_rounds
+    even when returning True (intentional side effect).
+    """
+
+    __tablename__ = "alert_poll_cursors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    filter_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    incident_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    missing_rounds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("filter_hash", "fingerprint", name="uq_poll_cursor_filter_fp"),
     )
 
 

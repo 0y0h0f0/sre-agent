@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from packages.agent.llm.anthropic_adapter import AnthropicAdapter
 from packages.agent.llm.base import LLMProvider
+from packages.agent.llm.disabled_adapter import DisabledLLMAdapter
 from packages.agent.llm.fake_adapter import FakeLLMAdapter
 from packages.agent.llm.openai_adapter import OpenAICompatibleAdapter
 from packages.common.errors import ValidationAppError
@@ -24,6 +25,9 @@ def build_llm(settings: Settings) -> LLMProvider:
 
     if provider == "fake":
         return FakeLLMAdapter()
+
+    if provider == "disabled":
+        return DisabledLLMAdapter()
 
     if provider in _OPENAI_COMPATIBLE:
         return OpenAICompatibleAdapter(

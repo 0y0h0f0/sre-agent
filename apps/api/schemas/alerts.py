@@ -219,6 +219,50 @@ def _from_alertmanager(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _from_alertmanager_single_alert(alert: dict[str, Any]) -> dict[str, Any]:
+    """Parse a single Alertmanager alert from GET /api/v2/alerts into unified format.
+
+    Used by the poll path (PR 4.7). Produces the same fingerprint as the webhook
+    path for the same alert, ensuring deduplication across ingestion modes.
+
+    Internal ingestion metadata (``ingest_mode=poll``) is stored separately from
+    ``raw_labels`` so the original alert labels are never overwritten.
+    """
+    labels = _dict(alert.get("labels"))
+    annotations = _dict(alert.get("annotations"))
+
+    alert_name = _string(
+        labels.get("alertname") or annotations.get("summary"), "AlertmanagerAlert"
+    )
+    service = _string(
+        labels.get("service") or labels.get("job") or labels.get("app"), "unknown"
+    )
+
+    # Use the Alertmanager-generated fingerprint when available;
+    # fall back to a deterministic fingerprint derived from service + alert_name.
+    fingerprint = _string(
+        alert.get("fingerprint") or labels.get("fingerprint"),
+        f"alertmanager:{service}:{alert_name}",
+    )
+
+    return {
+        "fingerprint": fingerprint,
+        "service": service,
+        "severity": _normalize_severity(
+            labels.get("severity") or annotations.get("severity")
+        ),
+        "alert_name": alert_name,
+        "starts_at": _starts_at(alert.get("startsAt")),
+        "ends_at": _ends_at(alert.get("endsAt")),
+        "labels": labels,
+        "annotations": annotations,
+        # Internal ingestion metadata — never overwrites raw_labels.
+        "ingestion_metadata": {"ingest_mode": "poll"},
+        # Preserve raw labels exactly as received from Alertmanager API.
+        "raw_labels": dict(labels),
+    }
+
+
 def _from_pagerduty(payload: dict[str, Any]) -> dict[str, Any]:
     event = _dict(payload.get("event"))
     data = _dict(event.get("data"))

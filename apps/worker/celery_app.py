@@ -37,6 +37,10 @@ celery_app.conf.update(
             "task": "apps.worker.tasks.auto_approve_stale_approvals",
             "schedule": 60.0,
         },
+        "poll-alertmanager": {
+            "task": "apps.worker.tasks.poll_alertmanager",
+            "schedule": settings.alert_poll_interval_seconds,
+        },
     },
 )
 

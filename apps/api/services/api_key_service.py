@@ -73,6 +73,8 @@ class ApiKeyService:
             "key_id": key.key_id,
             "description": key.description,
             "created_by": key.created_by,
+            "scopes": list(key.scopes) if key.scopes else [],
+            "roles": list(key.roles) if key.roles else [],
         }
 
     def touch_used(self, key_id: str) -> None:

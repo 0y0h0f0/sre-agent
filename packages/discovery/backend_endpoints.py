@@ -11,16 +11,19 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from packages.common.backend_url_safety import BackendUrlSafetyValidator
+from packages.common.feature_flags import is_m9_subfeature_enabled
 from packages.common.settings import get_settings
 
 
 @dataclass
 class BackendEndpoints:
     """Discovered backend endpoint."""
-    backend_type: Literal["prometheus", "loki", "jaeger", "alertmanager"]
+    backend_type: Literal["prometheus", "loki", "jaeger", "alertmanager", "tempo"]
     url: str
     source: str  # "k8s_service", "manual", "override", "env"
-    status: Literal["detected_only", "requires_review", "ready", "degraded", "unavailable"]
+    status: Literal[
+        "detected_only", "requires_review", "ready", "degraded", "unavailable", "rejected"
+    ]
     confidence: float = 0.0
     evidence: dict[str, Any] = field(default_factory=dict)
     auth_required_unknown: bool = True
@@ -45,6 +48,12 @@ _BACKEND_PATTERNS: dict[str, list[tuple[str, int, str]]] = {
     "alertmanager": [
         ("alertmanager", 9093, "http"),
         ("alertmanager-operated", 9093, "http"),
+    ],
+    "tempo": [
+        ("tempo", 3200, "http"),
+        ("tempo-query", 3200, "http"),
+        ("tempo-distributed", 3200, "http"),
+        ("tempo-distributor", 3200, "http"),
     ],
 }
 
@@ -80,6 +89,12 @@ class BackendEndpointDetector:
             if backend_type in manual:
                 continue  # Manual config wins.
 
+            # M9 gate: tempo requires feature flag.
+            if backend_type == "tempo" and not is_m9_subfeature_enabled(
+                get_settings(), "tempo_discovery"
+            ):
+                continue
+
             best = self._find_backend(services, backend_type, patterns)
             if best is not None:
                 endpoints.append(best)
@@ -112,11 +127,15 @@ class BackendEndpointDetector:
                     # Validate URL safety.
                     result = self._url_validator.validate(url)
                     if not result.is_safe:
+                        # M9: Tempo unsafe URLs are rejected (not just degraded).
+                        final_status: Literal["degraded", "rejected"] = (
+                            "rejected" if backend_type == "tempo" else "degraded"
+                        )
                         return BackendEndpoints(
                             backend_type=backend_type,  # type: ignore[arg-type]
                             url=url,
                             source="k8s_service",
-                            status="degraded",
+                            status=final_status,
                             degraded_reason=f"URL safety check failed: {result.reason}",
                             evidence={"service_dns": service_dns},
                         )

@@ -392,6 +392,47 @@ class RunbookChunk(Base):
     )
 
 
+class RunbookChunkEmbedding(Base):
+    """Per-provider embedding vectors for runbook chunks (M9 PR 9.8).
+
+    A single chunk may have multiple embeddings from different providers.
+    Unique constraint on (runbook_chunk_id, provider, model, dimension, text_hash).
+    """
+
+    __tablename__ = "runbook_chunk_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "runbook_chunk_id", "provider", "model", "dimension", "text_hash",
+            name="uq_chunk_embedding_provider",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    runbook_chunk_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding_vector: Mapped[list[float]] = mapped_column(
+        VectorEmbeddingType, nullable=False
+    )
+    vector_backend: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pgvector"
+    )
+    text_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    redaction_version: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=""
+    )
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="available", index=True
+    )  # available | degraded | failed
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
 class RunbookDraft(Base):
     __tablename__ = "runbook_drafts"
 

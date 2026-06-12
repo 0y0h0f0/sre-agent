@@ -2,9 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current Phase: Real Backend Integration
+## Current Phase: Phase 0–8 Complete — Staging Verification
 
-The MVP (M1-M7) and post-MVP implementation slices are complete for the local-demo scope. The project is now in the **real backend integration** phase — extending the agent from fixture-only mode to safely connect to real Prometheus, Loki, Jaeger, Kubernetes, and Alertmanager backends for production diagnosis.
+The real backend integration (M0–M8) is **complete**. All 41 PRs (0.1 through 8.6) have been implemented with tests. The project is now in the **staging verification** phase — executing the production release gate checklist before enabling scheduled discovery and Alertmanager poll in production.
+
+**Overall status:** M0 ✅ | M1 ✅ | M2 ✅ | M3 ✅ | M4 ✅ | M5 ✅ | M6 ✅ | M7 ✅ | M8 ✅
+
+**Next step:** Execute `docs/final-pre-execution-checklist.md` P0 gates in staging environment.
+
+**Key metrics:**
+- 1,092 tests pass (823 unit + ~217 integration + 14 E2E)
+- 29 files changed in M5–M8 completion (models, services, routers, tests, docs)
 
 **Authoritative implementation documents:**
 - `docs/superpowers/specs/2026-06-10-real-backend-integration-design.md` — design decisions

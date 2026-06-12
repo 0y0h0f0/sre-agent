@@ -1,7 +1,7 @@
 # sre-agent Real Backend Integration — Agent Execution Document
 
 **Date:** 2026-06-12  
-**Status:** agent-executable version  
+**Status:** M0–M8 complete — staging verification phase  
 **Source:** `2026-06-12-sre-agent-real-backend-integration-implementation-plan-revised(2)(1).md`  
 **Target:** 将 `sre-agent` 从本地 demo/fixture 模式扩展为可安全接入 Prometheus、Loki、Jaeger、Kubernetes、Alertmanager 的生产诊断系统。  
 **Execution Unit:** 每个 `PR x.y` 是一个独立 agent 任务，必须可独立实现、独立测试、独立 review、独立回滚。  
@@ -208,11 +208,11 @@ flowchart TD
 | M1 | Prometheus Core Discovery | M0 | PR 1.1, PR 1.2, PR 1.3, PR 1.4, PR 1.5, PR 1.6 | 可与 M2、M4 core 并行 | ✅ 完成 |
 | M2 | K8s / Loki / Jaeger / Topology Discovery | M0 | PR 2.1, PR 2.2, PR 2.3, PR 2.4, PR 2.5, PR 2.6, PR 2.7 | 可与 M1、M4 core 并行 | ✅ 完成 |
 | M3 | DiscoveryRunner + EffectiveConfig 发布闭环 | M1 + M2 | PR 3.1, PR 3.2, PR 3.3, PR 3.4, PR 3.5, PR 3.6 | M1/M2 完成后执行 | ✅ 完成 |
-| M4 | Alertmanager Poll Production Hardening | PR 4.1–4.6 依赖 M0；PR 4.7 依赖 M5 worker config contract | PR 4.1, PR 4.2, PR 4.3, PR 4.4, PR 4.5, PR 4.6, PR 4.7 | 4.1–4.6 可并行提前；4.7 延后 | ⚠️ PR 4.1-4.6 完成；PR 4.7 部分（Redis Lock 就绪，Poll Task 待 M5） |
-| M5 | Discovery API / Operator API | M3 + M4 core + PR 0.7 | PR 5.1, PR 5.2, PR 5.3, PR 5.4, PR 5.5 | M3 完成后执行 | ⏳ 待执行 |
-| M6 | Runbook Template Generation | M3 | PR 6.1, PR 6.2, PR 6.3 | M3 完成后执行 | ⏳ 待执行 |
-| M7 | Deterministic Runbook Feedback | M6 | PR 7.1, PR 7.2, PR 7.3, PR 7.4 | M6 完成后执行 | ⏳ 待执行 |
-| M8 | Testing & Docs | M0–M7 | PR 8.1, PR 8.2, PR 8.3, PR 8.4, PR 8.5, PR 8.6 | 贯穿每个 PR；最终作为 release gate | ⏳ 待执行 |
+| M4 | Alertmanager Poll Production Hardening | PR 4.1–4.6 依赖 M0；PR 4.7 依赖 M5 worker config contract | PR 4.1, PR 4.2, PR 4.3, PR 4.4, PR 4.5, PR 4.6, PR 4.7 | 4.1–4.6 可并行提前；4.7 延后 | ✅ 完成 |
+| M5 | Discovery API / Operator API | M3 + M4 core + PR 0.7 | PR 5.1, PR 5.2, PR 5.3, PR 5.4, PR 5.5 | M3 完成后执行 | ✅ 完成 |
+| M6 | Runbook Template Generation | M3 | PR 6.1, PR 6.2, PR 6.3 | M3 完成后执行 | ✅ 完成 |
+| M7 | Deterministic Runbook Feedback | M6 | PR 7.1, PR 7.2, PR 7.3, PR 7.4 | M6 完成后执行 | ✅ 完成 |
+| M8 | Testing & Docs | M0–M7 | PR 8.1, PR 8.2, PR 8.3, PR 8.4, PR 8.5, PR 8.6 | 贯穿每个 PR；最终作为 release gate | ✅ 完成 |
 
 ---
 
@@ -254,25 +254,25 @@ flowchart TD
 | PR 4.4 | M4 | Allowlist Server-side Filter | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
 | PR 4.5 | M4 | Poll Cursor / Dedup | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
 | PR 4.6 | M4 | Resolved Inference | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
-| PR 4.7 | M4 | Poll Task + Redis Lock + Metrics + Audit | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⚠️ 部分（Redis Lock 就绪；Poll Task 待 M5） |
-| PR 5.1 | M5 | Discovery Read API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 5.2 | M5 | Discovery Rerun API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 5.3 | M5 | Config Publish / Rollback / Revoke API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 5.4 | M5 | Override API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 5.5 | M5 | Worker `_build_deps` 集成 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 6.1 | M6 | RunbookTemplateEngine | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 6.2 | M6 | RunbookDraft 扩展与 Ingest | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 6.3 | M6 | Runbook Review API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 7.1 | M7 | Incident Aggregation | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 7.2 | M7 | Action Statistics | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 7.3 | M7 | Gap Detection | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 7.4 | M7 | AmendmentDraft 与频率控制 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 8.1 | M8 | 单元测试补齐 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 8.2 | M8 | 集成测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 8.3 | M8 | 生产安全测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 8.4 | M8 | E2E 测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 8.5 | M8 | 文档 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
-| PR 8.6 | M8 | 最终执行前 Release Gate / Checklist | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 4.7 | M4 | Poll Task + Redis Lock + Metrics + Audit | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 5.1 | M5 | Discovery Read API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 5.2 | M5 | Discovery Rerun API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 5.3 | M5 | Config Publish / Rollback / Revoke API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 5.4 | M5 | Override API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 5.5 | M5 | Worker `_build_deps` 集成 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 6.1 | M6 | RunbookTemplateEngine | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 6.2 | M6 | RunbookDraft 扩展与 Ingest | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 6.3 | M6 | Runbook Review API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 7.1 | M7 | Incident Aggregation | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 7.2 | M7 | Action Statistics | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 7.3 | M7 | Gap Detection | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 7.4 | M7 | AmendmentDraft 与频率控制 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 8.1 | M8 | 单元测试补齐 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 8.2 | M8 | 集成测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 8.3 | M8 | 生产安全测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 8.4 | M8 | E2E 测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 8.5 | M8 | 文档 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 8.6 | M8 | 最终执行前 Release Gate / Checklist | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
 
 ---
 

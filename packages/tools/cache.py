@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,7 +15,11 @@ from packages.tools.base import ToolResult
 
 
 class RequestLocalToolCache:
-    """Small in-memory cache intended for a single agent run."""
+    """Small in-memory cache intended for a single agent run.
+
+    Thread-safe for use with :class:`ThreadPoolExecutor` when multiple
+    collectors query different tools concurrently.
+    """
 
     _MAX_ITEMS = 200
 
@@ -23,22 +28,25 @@ class RequestLocalToolCache:
         self._keys: list[str] = []
         self.hit_count: int = 0
         self.miss_count: int = 0
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> ToolResult | None:
-        cached = self._items.get(key)
-        if cached is None:
-            self.miss_count += 1
-            return None
-        self.hit_count += 1
-        return cached.model_copy(update={"cache_hit": True})
+        with self._lock:
+            cached = self._items.get(key)
+            if cached is None:
+                self.miss_count += 1
+                return None
+            self.hit_count += 1
+            return cached.model_copy(update={"cache_hit": True})
 
     def set(self, key: str, result: ToolResult) -> None:
-        if len(self._items) >= self._MAX_ITEMS and key not in self._items:
-            oldest = self._keys.pop(0)
-            self._items.pop(oldest, None)
-        if key not in self._items:
-            self._keys.append(key)
-        self._items[key] = result.model_copy(update={"cache_hit": False})
+        with self._lock:
+            if len(self._items) >= self._MAX_ITEMS and key not in self._items:
+                oldest = self._keys.pop(0)
+                self._items.pop(oldest, None)
+            if key not in self._items:
+                self._keys.append(key)
+            self._items[key] = result.model_copy(update={"cache_hit": False})
 
 
 def build_cache_key(

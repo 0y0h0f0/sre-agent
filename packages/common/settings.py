@@ -99,7 +99,11 @@ class Settings(BaseSettings):
     llm_reasoning_effort: str = "medium"
     # Per-node reasoning-depth layering (roadmap Phase 1.2). Comma-separated node
     # names that use deep reasoning when llm_reasoning_enabled is true.
-    llm_reasoning_nodes: str = "diagnose"
+    llm_reasoning_nodes: str = "diagnose,diagnose_synthesize"
+    # Phase 2: when True, the diagnose node runs 3 specialist sub-agents
+    # (metrics / logs / traces) plus a synthesizer instead of a single
+    # monolithic LLM call.  Default off preserves existing behaviour.
+    llm_multi_perspective_enabled: bool = False
     token_budget_total: int = Field(default=32_000, gt=0)
 
     # --- Email notifications (roadmap Phase 3) ---

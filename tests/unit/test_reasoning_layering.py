@@ -49,7 +49,7 @@ class TestDeepReasoningSelection:
 
     def test_empty_config_falls_back_to_default(self) -> None:
         settings = _settings(llm_reasoning_enabled=True, llm_reasoning_nodes="")
-        assert deep_reasoning_nodes(settings) == frozenset({"diagnose"})
+        assert deep_reasoning_nodes(settings) == frozenset({"diagnose", "diagnose_synthesize"})
 
 
 # --------------------------------------------------------------------------- #
@@ -252,3 +252,28 @@ class TestDiagnoseReasoning:
         assert result["diagnosis_rationale"]["evidence_ids"] == ["evi_metric"]
         assert result["root_cause"]["evidence_ids"] == ["evi_metric"]
         assert result["llm_calls"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: multi-perspective reasoning selection                              #
+# --------------------------------------------------------------------------- #
+
+
+class TestMultiPerspectiveReasoningSelection:
+    def test_synthesizer_is_deep_by_default(self) -> None:
+        settings = _settings(llm_reasoning_enabled=True)
+        assert should_use_deep_reasoning(settings, "diagnose_synthesize") is True
+
+    def test_specialist_uses_standard_reasoning(self) -> None:
+        settings = _settings(llm_reasoning_enabled=True)
+        assert should_use_deep_reasoning(settings, "diagnose_metrics") is False
+        assert should_use_deep_reasoning(settings, "diagnose_logs") is False
+        assert should_use_deep_reasoning(settings, "diagnose_traces") is False
+
+    def test_synthesizer_configurable(self) -> None:
+        settings = _settings(
+            llm_reasoning_enabled=True,
+            llm_reasoning_nodes="diagnose_synthesize,plan_actions",
+        )
+        assert should_use_deep_reasoning(settings, "diagnose_synthesize") is True
+        assert should_use_deep_reasoning(settings, "diagnose") is False

@@ -1,113 +1,331 @@
-# sre-agent Real Backend Integration Implementation Plan
+# sre-agent Real Backend Integration — Agent Execution Document
 
-**Date:** 2026-06-12
-**Status:** final pre-execution checklist integrated draft
-**Based on:** `2026-06-10-real-backend-integration-design(13).md`
-**Target:** 将 sre-agent 从本地 demo/fixture 模式扩展为可接入真实 Prometheus + Loki + Jaeger + Kubernetes + Alertmanager 的生产安全诊断系统
+**Date:** 2026-06-12  
+**Status:** agent-executable version  
+**Source:** `2026-06-12-sre-agent-real-backend-integration-implementation-plan-revised(2)(1).md`  
+**Target:** 将 `sre-agent` 从本地 demo/fixture 模式扩展为可安全接入 Prometheus、Loki、Jaeger、Kubernetes、Alertmanager 的生产诊断系统。  
+**Execution Unit:** 每个 `PR x.y` 是一个独立 agent 任务，必须可独立实现、独立测试、独立 review、独立回滚。  
+
+> 本版本不改变原技术决策，只把原施工文档整理为更适合 coding agent 执行的格式：明确执行顺序、硬性边界、任务状态机、提交格式、停止条件、测试门禁和最终 release gate。
+
+---
+
+## A. 给 Coding Agent 的总提示词
+
+将下面这段作为 agent 执行本计划时的系统/任务提示词使用：
+
+```text
+你是 sre-agent 项目的 coding agent。你必须严格按本文档执行，每次只实现一个明确指定的 PR x.y。
+
+执行规则：
+1. 先阅读“全局硬性约束”和当前 PR 的 Scope / 不做 / 建议文件 / 测试清单 / 验收标准 / 风险点 / 回滚方案。
+2. 只实现当前 PR 范围，不提前实现后续 PR，不扩大设计。
+3. 如果文档路径与仓库实际路径不一致，先搜索仓库，优先复用现有模块；找不到时再按建议路径新增。
+4. 所有生产安全约束优先级高于功能实现。遇到冲突时选择 safe/degraded，不选择隐式启用。
+5. Phase 0–8 不依赖真实 LLM 和 web_search。生产默认 LLM_PROVIDER=disabled，EXECUTOR_BACKEND=fixture。
+6. raw secret 不得进入 DB、audit、debug log、AgentDeps、prompt/state。
+7. worker 只读取 published EffectiveConfigVersion，不读取 proposal/detected_only。
+8. Backend URL 在 publish/override/profile/effective config 合并和 worker 构造前必须通过安全校验。
+9. Alertmanager poll 必须有非 severity/priority 的有效 scope；poll marker 不得覆盖 raw_labels，不得参与 fingerprint。
+10. 每个 PR 必须补测试。完成后输出：变更摘要、文件列表、测试命令与结果、未解决风险、回滚方式、下一步建议。
+```
 
 ---
 
-## 0. Executive Summary
+## B. Agent 执行状态机
 
-**Alertmanager Poll Notes (compatibility and fingerprinting)**
-- Poll ingestion uses `source=alertmanager` for compatibility, but the internal poll marker MUST be stored in `ingestion_metadata.ingest_mode=poll` or `internal_labels.ingest_mode=poll`, not by overwriting user-provided alert labels.
-- `raw_labels` MUST preserve the original Alertmanager labels exactly. If the original alert contains `ingest_mode`, keep it in `raw_labels` unchanged.
-- Fingerprint input MUST be based on normalized original alert labels plus existing ignore rules, and MUST exclude all internal ingestion metadata.
-- API display may expose a synthesized `labels.ingest_mode=poll` for backward-compatible UI display, but this synthesized value MUST NOT override `raw_labels` and MUST NOT participate in fingerprint calculation.
+每个 PR 必须按以下状态流转：
 
-**K8s Python Client Lazy Loading Notes**
-- LiveK8sBackend and K8sDiscovery must lazy-load the `kubernetes` package; no module-level import.
-- Initialization must be thread-safe; failures should be cached with a short TTL (30-60s).
+```mermaid
+stateDiagram-v2
+    [*] --> ReadSpec
+    ReadSpec --> InspectRepo
+    InspectRepo --> PlanMinimalChange
+    PlanMinimalChange --> AddOrUpdateTests
+    AddOrUpdateTests --> Implement
+    Implement --> RunTargetedTests
+    RunTargetedTests --> RunGlobalChecks
+    RunGlobalChecks --> UpdateDocsIfNeeded
+    UpdateDocsIfNeeded --> ProducePRReport
+    ProducePRReport --> [*]
 
-**Celery Beat Deployment Notes**
-- Production deployment MUST run Beat as a separate singleton process (`replicas=1`).
-- Redis lock is only a task-level safety net, not a replacement for singleton Beat deployment.
-- Local/CI can merge Beat and Worker for simplification.
+    RunTargetedTests --> Fix : failing tests
+    Fix --> RunTargetedTests
 
-**BackendAuthConfig Secret Handling Notes**
-- BackendAuthConfig must be split into runtime-only secret fields and prompt-safe redacted fields.
-- Phase 0–8 SHOULD NOT store raw backend secrets in DB. DB records may store secret references and redacted metadata only.
-- Agent state, audit log, debug log, and LLM prompt may only contain the redacted form.
-- Runtime tools may receive raw credentials only during backend client construction, and must never serialize them into AgentDeps, state, audit details, logs, or prompts.
+    InspectRepo --> Blocked : missing decision / impossible constraint
+    Blocked --> ProduceBlockedReport
+    ProduceBlockedReport --> [*]
+```
 
-**AuditLog Source Clarification**
-- AuditLog.source indicates operation origin: api / worker / beat / system, not alert.source.
-- Poll task audit example:
-{
-  "source": "beat",
-  "action": "alertmanager.poll",
-  "resource_type": "alert_poll",
-  "details": {
-      "alert_source": "alertmanager",
-      "ingest_mode": "poll",
-      "receiver": "sre",
-      "namespace_allowlist": ["prod"],
-      "service_allowlist": ["api"],
-      "fingerprints_seen": 12,
-      "incidents_created": 2
-  }
-}
+### B.1 每个 PR 的固定执行步骤
 
+1. **读取任务边界**：只读当前 PR 章节，不把后续 PR 范围混入当前实现。
+2. **仓库勘察**：确认建议文件是否存在；如果不存在，搜索相邻模块并记录实际路径。
+3. **最小实现计划**：列出要改的文件、要新增的测试、不会做的内容。
+4. **测试优先**：至少为当前 PR 的验收标准新增/修改单元测试；涉及 DB/API/worker 时增加集成测试。
+5. **代码实现**：优先复用现有模式，保持本地 demo/CI 兼容。
+6. **运行检查**：执行当前 PR 测试；能运行全局检查时运行全局检查。
+7. **审计与安全自检**：按本文档的 hard constraints 检查 secret、URL、LLM、proposal、scope、override、lock。
+8. **输出 PR 报告**：按“B.4 输出格式”返回。
 
-本施工文档将设计文档中 Phase 0–8 的任务拆分为约 **53 个独立 PR**，按 9 个 Milestone 组织。每个 PR 可独立实现、独立 review、独立测试、独立回滚。
+### B.2 Agent 停止条件
 
-**核心原则：**
-- 默认运行环境保持本地友好：未显式设置时 `APP_ENV=local`，本地 demo/CI 继续使用 FakeLLM、fixture、localhost 默认值
-- 生产 profile 安全优先：`APP_ENV=production` 时 `LLM_PROVIDER=disabled`、`EXECUTOR_BACKEND=fixture` 是生产安全默认值
-- 逐级降级：Discovery 失败不阻塞 agent 启动
-- 已发布配置唯一可信：worker 只使用 `published` 的 `EffectiveConfigVersion`
-- 确定性优先于 LLM：Phase 0–8 不依赖 LLM 和 web_search
-- 人工配置优先：operator 显式配置的 backend URL、auth、label、metric mapping 优先于自动 discovery 结果
-- 生产环境 backend URL 自动发现默认只进入 review/proposal，不自动发布；service label / metric mapping 可在高置信和交叉验证通过后按策略自动发布
-- Override 必须有过期时间：active override = `revoked_at IS NULL AND expires_at > now`，过期后不再参与 EffectiveConfig 合并
-- 审计一切：所有配置变更写入不可变审计日志
-- 配置写接口必须鉴权授权：API key 需要 role/scope，配置发布/回滚/override 不得只依赖普通 API key 身份
-- Backend URL 必须经过安全校验：生产环境禁止未授权 localhost、link-local、metadata endpoint、危险 scheme；集群内服务地址必须通过 allowlist 或 K8s discovery evidence 放行
-- Published config 默认不硬过期：30 天后进入 stale warning 状态并产生 metric/告警，但不自动停止被 worker 使用；只有 revoke/rollback/supersede 才会停止使用
-- 生产环境 Discovery 默认不在启动时自动扫描：`APP_ENV=production` 时默认 manual/scheduled only，必须由 operator 显式启用或配置 beat schedule
-- Redis lock 必须明确 TTL 策略：默认采用 task hard time limit < lock TTL；长任务才允许 renewal heartbeat
+只有出现以下情况才允许停止并报告 blocked：
 
-**预计总工期：** Phase 0–8 约 25 个工作日（单开发者约 5 周）；若计入 review 等待、回归修复和低并行度，建议按 6–8 周排期。
+- 当前 PR 依赖的前置 PR 没有实现，且无法用最小兼容 stub 推进。
+- 仓库中存在与文档冲突的安全边界，继续实现会破坏生产安全。
+- 需要外部真实凭据、真实集群、真实生产后端才能验证，且无法通过 mock/fixture/staging placeholder 替代。
+- migration 与现有 DB schema 存在不可自动解决的冲突。
+- 测试环境缺少必要基础设施，且无法用 mock、sqlite、testcontainer 或现有 fixture 替代。
 
-### 0.1 Confirmed Decisions
+停止时必须输出：已完成勘察、阻塞原因、最小复现、建议决策、可继续执行的替代任务。
 
-本轮审阅后已确认：
+### B.3 每个 PR 的最小测试命令策略
 
-- 目标范围推进到生产接入范围，但仍遵守现有安全边界：真实后端读取、fixture executor 默认、live executor 仅显式 opt-in 且限于既有 Kubernetes 窄范围动作。
-- 默认环境是 `local`。生产行为必须通过 `APP_ENV=production`、部署 profile 或等价 operator 配置显式启用。
-- 配置和 operator 写 API 必须引入 API key `role` / `scope`，至少区分只读、discovery rerun、config publish/rollback/revoke/override。
-- Discovery 自动发现 Prometheus、Loki、Jaeger、Alertmanager，但人工配置永远优先；自动发现只能补齐缺失配置，不能覆盖显式 `.env` / profile / active override。
-- Alertmanager poll 不新增 `alertmanager_poll` source 枚举值，统一使用 `source=alertmanager`，通过 `labels.ingest_mode=poll` 标记 poll 来源；webhook 路径无需添加该 label。保持 `AlertSource` 枚举、API schema 和前端显示兼容。
-- K8s Python client 依赖为可选，采用懒加载策略：`LiveK8sBackend` 仅在首次调用 `fetch()` 时 `import kubernetes`，`k8s_backend=fixture` 时完全不引入该依赖。
-- Celery Beat 调度器与 Celery worker 拆成独立进程部署：Phase 0–8 本地/CI 可同进程简化；生产环境文档明确要求分离，避免 worker 繁忙时调度延迟。
-- DiscoveryOverride 必须包含 `reason` 和 `expires_at`；active override 定义为 `revoked_at IS NULL AND expires_at > now`。过期 override 不参与 EffectiveConfig 合并，但保留审计记录。
-- `APP_ENV=production` 时，自动发现的 backend URL 默认不得 auto_publish，只能进入 `requires_review` 或 `detected_only`；service label、metric mapping 在高置信、dry-run 和交叉验证通过时可按 AutomationPolicy 自动发布。
-- Alertmanager poll 的有效 scope 必须至少包含一个非 severity 约束：`receiver`、`namespace_allowlist`、`service_allowlist` 或非 severity matcher；`severity` / `priority` only 均无效。
-- Runbook regenerate 不覆盖原 draft，必须创建新的 `pending_review` draft，并通过 `parent_draft_id` / `supersedes_draft_id` 保留审计链路。
-- 生产 Beat 除部署为独立 singleton process 外，还必须暴露 heartbeat / active instance / duplicate instance warning metrics；Redis lock 仍是 task-level safety net，不是 Beat 单例替代品。
-- Published `EffectiveConfigVersion` 默认不硬过期；30 天后标记 stale 并发出 warning/metric，worker 继续使用最后一个有效 published 版本，直到被 revoke/rollback/supersede。
-- Backend URL 安全校验是配置合并、override、publish 和 profile load 的共同前置条件；生产环境可通过 `BACKEND_URL_ALLOWLIST` 或 K8s service discovery evidence 放行集群内地址。
-- `APP_ENV=production` 时，Discovery 默认不在服务启动时自动扫描；推荐由 operator 手动 rerun 或配置独立 Beat schedule 控制。
-- API key scope migration 默认不给 legacy key 自动授予 `config:write`；bootstrap token 只用于创建第一个 `api_key:admin` key，且操作必须审计。
-- Runbook approved ingest 在 embedding provider 不可用时必须降级为 keyword-only/chunk-only，不允许因为 embedding 失败丢失已审核 runbook。
-- Redis lock 默认不续租，要求 lock TTL 大于 task hard time limit；如果任务可能超过 hard limit，必须显式启用 renewal heartbeat 并测试 owner token。
+优先按仓库实际工具执行；如果仓库没有对应工具，记录原因：
 
-### 0.2 Additional Safety Decisions Summary
+```bash
+ruff check .
+mypy .
+pytest tests/unit/<current_area> -q
+pytest tests/integration/<current_area> -q
+alembic upgrade head
+alembic downgrade -1
+alembic upgrade head
+```
 
-| Decision | Required Behavior | Why | Implementation Hook |
-|----------|-------------------|-----|---------------------|
-| Override TTL | `DiscoveryOverride` 必须有 `expires_at`；active override = `revoked_at IS NULL AND expires_at > now` | 防止临时救火配置长期压过 published config | PR 0.2, PR 0.4, PR 5.4 |
-| Backend URL review-first | 生产环境自动发现的 backend URL 不自动发布，只能 `requires_review` / `detected_only` | backend URL 属于高风险配置，发现正确不等于可安全使用 | PR 0.3, PR 2.6, PR 3.5 |
-| Bounded poll scope | Alertmanager poll 必须有至少一个非 severity 范围约束 | 防止拉全量、重复建 incident、误判 resolved | PR 4.3, PR 4.4, PR 4.7 |
-| Regenerate as new draft | Runbook regenerate 创建新 draft，不覆盖旧 draft | 保留人工修改、review 历史和审计链路 | PR 6.2, PR 6.3 |
-| Beat runtime observability | 部署单例 + heartbeat/duplicate metrics + task lock | 不只依赖文档约束，生产可观测、可告警 | PR 4.7, PR 8.5 |
-| Backend URL safety | publish/override/profile/effective config 均执行 URL validator | 防 SSRF、metadata endpoint、危险 scheme、生产 localhost fallback | PR 0.8, PR 2.6, PR 5.4 |
-| BackendAuth redaction | raw secret 只在 runtime client construction 使用，DB/prompt/audit/log 仅保存 redacted/ref | 防止凭据进入 LLM、日志和审计载荷 | PR 0.9, PR 5.5 |
-| Published config staleness | 默认 stale warning，不自动失效 | 防止 30 天后 worker 突然失去生产配置 | PR 0.2, PR 3.6, PR 8.3 |
-| API key bootstrap | legacy key 默认无 config:write；bootstrap token 只创建首个 admin key | 防止迁移后旧 key 获得过大权限 | PR 0.7 |
-| Embedding fallback | Approved runbook ingest 不因 embedding provider 缺失失败 | 保证确定性 runbook 闭环可用 | PR 6.2, PR 8.3 |
+涉及 worker / Celery / Redis / Postgres / HTTP mock 时，还需执行对应 integration 或 e2e smoke。
+
+### B.4 Agent 完成 PR 后必须输出的报告格式
+
+```md
+## PR x.y 完成报告
+
+### 1. 变更摘要
+- ...
+
+### 2. 修改文件
+- `path/to/file.py`：...
+- `tests/...`：...
+
+### 3. 测试结果
+- `command`：pass/fail/未运行原因
+
+### 4. 安全自检
+- raw secret 未进入 DB/audit/log/prompt/state：pass/fail
+- production 默认 safe/degraded：pass/fail
+- worker 不读取 proposal：pass/fail
+- Backend URL safety：pass/fail/不适用
+- Alertmanager poll bounded scope：pass/fail/不适用
+
+### 5. 风险与遗留
+- ...
+
+### 6. 回滚方式
+- ...
+
+### 7. 下一步
+- 建议执行 PR ...
+```
 
 ---
+
+## C. 全局硬性约束
+
+这些规则优先级高于任何单个 PR 的实现便利性：
+
+1. 默认环境保持 `APP_ENV=local`；本地 demo/CI 保持 FakeLLM、fixture、localhost 兼容。
+2. `APP_ENV=production` 时默认 `LLM_PROVIDER=disabled`、`EXECUTOR_BACKEND=fixture`。
+3. Phase 0–8 不依赖真实 LLM 与 web_search。
+4. Discovery 失败不阻塞 agent 启动；必须 degraded，而不是 crash。
+5. worker 只使用 `published` 的 `EffectiveConfigVersion`。
+6. 人工 `.env` / profile / active override 优先于 published discovery。
+7. Override 必须有 `expires_at`；active override = `revoked_at IS NULL AND expires_at > now`。
+8. Published config 默认 stale warning，不硬过期。
+9. 生产环境 backend URL discovery 默认 review-first，不 auto_publish。
+10. Backend URL 必须通过 safety validator，生产默认禁止未授权 localhost、metadata endpoint、link-local、危险 scheme。
+11. `BACKEND_URL_ALLOWLIST` 默认支持 host pattern；CIDR allowlist 是显式高级选项，默认关闭。
+12. Phase 0–8 backend secret reference 仅支持 `env:VAR_NAME`；API/DB 不接收 raw secret。
+13. raw secret 不得进入 DB、audit、debug log、AgentDeps、prompt/state。
+14. API key `api_key:admin` 只管理 key，不隐式拥有 `config:write` / `discovery:write` / `runbook:review`。
+15. legacy API key migration 默认不给 `config:write`。
+16. Alertmanager poll 使用 `source=alertmanager`，内部 marker 存 `ingestion_metadata.ingest_mode=poll` 或 `internal_labels.ingest_mode=poll`。
+17. `raw_labels` 必须原样保留；合成的 `labels.ingest_mode=poll` 不得覆盖 `raw_labels`，不得参与 fingerprint。
+18. Alertmanager poll 有效 scope 必须至少包含 receiver、namespace_allowlist、service_allowlist 或非 severity matcher 之一；severity/priority only 无效。
+19. Alertmanager `receiver` 使用独立 query parameter，不默认伪装成 label matcher。
+20. resolved inference 必须保守；单个 filter hash missing 不得直接关闭 incident。
+21. Discovery scheduled/manual rerun 必须使用 Redis lock；释放锁必须 compare-and-delete。
+22. Redis lock 默认不续租；要求 task hard time limit < lock TTL。长任务才允许 owner-token renewal heartbeat。
+23. Celery Beat 生产必须单独 singleton process；Redis lock 只是 task-level safety net。
+24. Runbook regenerate 必须创建新 pending draft，不覆盖旧 draft。
+25. Approved runbook ingest 在 embedding provider 不可用时降级为 keyword-only/chunk-only，不允许丢失已审核 runbook。
+26. AuditLog 表示 operation origin：`api` / `worker` / `beat` / `system`，不是 alert.source。
+27. 审计日志创建后不可修改或删除；优先使用 DB trigger，ORM guard 只是附加防线。
+28. `EXECUTOR_BACKEND=live` 永不可自动发布。
+29. M8 不是最后才补测试；每个 PR 都必须补测试，M8 作为 release gate 和覆盖收口。
+30. 如任何实现与以上规则冲突，选择禁用、降级、requires_review 或 blocked report。
+
+---
+
+## D. Milestone 执行顺序
+
+```mermaid
+flowchart TD
+    M0[M0 Production Safety Foundation]
+    M1[M1 Prometheus Core Discovery]
+    M2[M2 K8s / Loki / Jaeger / Topology Discovery]
+    M3[M3 DiscoveryRunner + EffectiveConfig Publish Loop]
+    M4c[M4 Core: PR 4.1-4.6 Alertmanager Poll Core]
+    M5[M5 Discovery / Operator API + Worker Config Contract]
+    M47[M4 PR 4.7 Poll Task Production Enablement]
+    M6[M6 Runbook Template Generation]
+    M7[M7 Deterministic Runbook Feedback]
+    M8[M8 Testing / Docs / Release Gate]
+
+    M0 --> M1
+    M0 --> M2
+    M0 --> M4c
+    M1 --> M3
+    M2 --> M3
+    M3 --> M5
+    M4c --> M5
+    M5 --> M47
+    M3 --> M6
+    M6 --> M7
+    M0 --> M8
+    M1 --> M8
+    M2 --> M8
+    M3 --> M8
+    M47 --> M8
+    M5 --> M8
+    M6 --> M8
+    M7 --> M8
+```
+
+| Milestone | Goal | Dependencies | PRs | Execution Mode |
+|---|---|---|---|---|
+| M0 | Production Safety Foundation | 无；必须优先完成 | PR 0.1, PR 0.2, PR 0.3, PR 0.4, PR 0.5, PR 0.6, PR 0.7, PR 0.8, PR 0.9 | 建议顺序执行 0.1 → 0.9 |
+| M1 | Prometheus Core Discovery | M0 | PR 1.1, PR 1.2, PR 1.3, PR 1.4, PR 1.5, PR 1.6 | 可与 M2、M4 core 并行 |
+| M2 | K8s / Loki / Jaeger / Topology Discovery | M0 | PR 2.1, PR 2.2, PR 2.3, PR 2.4, PR 2.5, PR 2.6, PR 2.7 | 可与 M1、M4 core 并行 |
+| M3 | DiscoveryRunner + EffectiveConfig 发布闭环 | M1 + M2 | PR 3.1, PR 3.2, PR 3.3, PR 3.4, PR 3.5, PR 3.6 | M1/M2 完成后执行 |
+| M4 | Alertmanager Poll Production Hardening | PR 4.1–4.6 依赖 M0；PR 4.7 依赖 M5 worker config contract | PR 4.1, PR 4.2, PR 4.3, PR 4.4, PR 4.5, PR 4.6, PR 4.7 | 4.1–4.6 可并行提前；4.7 延后 |
+| M5 | Discovery API / Operator API | M3 + M4 core + PR 0.7 | PR 5.1, PR 5.2, PR 5.3, PR 5.4, PR 5.5 | M3 完成后执行 |
+| M6 | Runbook Template Generation | M3 | PR 6.1, PR 6.2, PR 6.3 | M3 完成后执行 |
+| M7 | Deterministic Runbook Feedback | M6 | PR 7.1, PR 7.2, PR 7.3, PR 7.4 | M6 完成后执行 |
+| M8 | Testing & Docs | M0–M7 | PR 8.1, PR 8.2, PR 8.3, PR 8.4, PR 8.5, PR 8.6 | 贯穿每个 PR；最终作为 release gate |
+
+---
+
+## E. PR 任务索引
+
+| PR | Milestone | Agent Task | Scope Boundary | Done Gate |
+|---|---|---|---|---|
+| PR 0.1 | M0 | Settings 环境默认值与生产 profile 安全默认值 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 0.2 | M0 | Discovery / EffectiveConfig / AuditLog 数据模型与迁移 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 0.3 | M0 | AutomationPolicy | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 0.4 | M0 | EffectiveConfig 读取优先级 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 0.5 | M0 | AuditLog 服务扩展 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 0.6 | M0 | DisabledLLM 与确定性 fallback 可运行路径 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 0.7 | M0 | Operator API Key Role/Scope 授权 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 0.8 | M0 | Backend URL Safety Validator | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 0.9 | M0 | BackendAuthConfig Schema 与脱敏策略 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 1.1 | M1 | Discovery 基础 Pydantic 模型 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 1.2 | M1 | PrometheusClient | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 1.3 | M1 | MetricMatcher 匹配引擎 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 1.4 | M1 | Prometheus Service Label 检测 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 1.5 | M1 | PromQL Builder | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 1.6 | M1 | PromQL Dry-Run 验证 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 2.1 | M2 | K8sDiscovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 2.2 | M2 | Service Label Detector | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 2.3 | M2 | LokiDiscovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 2.4 | M2 | WorkloadBinding | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 2.5 | M2 | ServiceEdge Deriver | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 2.6 | M2 | Observability Backend Endpoint Discovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 2.7 | M2 | Jaeger Service Discovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 3.1 | M3 | DiscoveryRunner 编排 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 3.2 | M3 | 降级输出标准化 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 3.3 | M3 | 成本控制 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 3.4 | M3 | DiscoveryStore | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 3.5 | M3 | Config Proposal 生成 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 3.6 | M3 | EffectiveConfigVersion Publish / Rollback / Revoke | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 4.1 | M4 | AlertmanagerClient | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 4.2 | M4 | Matcher Parser | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 4.3 | M4 | Scope Validation | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 4.4 | M4 | Allowlist Server-side Filter | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 4.5 | M4 | Poll Cursor / Dedup | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 4.6 | M4 | Resolved Inference | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 4.7 | M4 | Poll Task + Redis Lock + Metrics + Audit | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 5.1 | M5 | Discovery Read API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 5.2 | M5 | Discovery Rerun API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 5.3 | M5 | Config Publish / Rollback / Revoke API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 5.4 | M5 | Override API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 5.5 | M5 | Worker `_build_deps` 集成 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 6.1 | M6 | RunbookTemplateEngine | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 6.2 | M6 | RunbookDraft 扩展与 Ingest | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 6.3 | M6 | Runbook Review API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 7.1 | M7 | Incident Aggregation | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 7.2 | M7 | Action Statistics | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 7.3 | M7 | Gap Detection | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 7.4 | M7 | AmendmentDraft 与频率控制 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 8.1 | M8 | 单元测试补齐 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 8.2 | M8 | 集成测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 8.3 | M8 | 生产安全测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 8.4 | M8 | E2E 测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 8.5 | M8 | 文档 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR 8.6 | M8 | 最终执行前 Release Gate / Checklist | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+
+---
+
+## F. PR 执行原则
+
+对每个 `PR x.y`，agent 必须同时满足：
+
+- **Scope**：实现该 PR 的 `范围`。
+- **Non-Scope**：明确不实现 `不做` 中的内容。
+- **Suggested Files**：优先修改 `建议文件`；若实际仓库不同，必须说明替代路径。
+- **Tests**：至少覆盖 `测试清单` 中与当前实现有关的测试；无法覆盖时说明原因。
+- **Acceptance**：所有 `验收标准` 必须可验证。
+- **Risk Handling**：`风险点` 必须在报告中说明是否已缓解。
+- **Rollback**：必须保留或说明 `回滚方案`。
+- **Security**：必须通过“C. 全局硬性约束”。
+
+---
+
+## G. Agent 执行时的仓库勘察规则
+
+1. 不要假设建议路径一定存在；先使用 `ls`、`find`、`rg` 或 IDE search 确认。
+2. 优先复用现有 repository、schema、settings、factory、tool backend 模式。
+3. 如果现有模块命名与文档不同，以仓库现有命名为准，但保留文档语义。
+4. 如果发现已有功能已部分实现：
+   - 不重复实现；
+   - 补齐缺口；
+   - 增加回归测试；
+   - 报告“已存在/补齐/未改动”。
+5. 如果发现文档与代码冲突：
+   - 生产安全约束优先；
+   - 本地兼容优先；
+   - 不能安全判断时输出 blocked report。
+
+---
+
+## H. 提交粒度
+
+每个 PR 建议拆成一个独立 commit 或 branch：
+
+```text
+branch: agent/pr-x-y-short-name
+commit: feat|fix|test|docs(scope): implement PR x.y <short title>
+```
+
+禁止一个提交同时跨多个 milestone。  
+只有纯测试、纯文档、纯重构可作为当前 PR 的辅助提交，不能夹带后续功能。
+
+---
+
+## I. 任务卡片正文
+
+下面保留原文的 PR 级任务卡片。执行时以每个 PR 卡片为当前任务的详细规格。
+
 
 ## 1. Current Repository Assessment
 
@@ -167,7 +385,8 @@ Settings (M0) → 所有模块的基础
 M1 (Prometheus Discovery) → M3 (DiscoveryRunner)
 M2 (K8s/Loki/Topology) → M3 (DiscoveryRunner)
 M3 (DiscoveryRunner + Config) → M5 (API + Worker Integration)
-M4 (Alertmanager Poll) → M5 (Worker task integration)
+M4 core (Alertmanager Poll client/parser/cursor) → M5 (Worker task integration)
+M4 PR 4.7 production poll enablement → PR 0.4 + PR 0.8 + PR 0.9 + M4 PR 4.1–4.6 + M5 worker config contract
 M6 (Runbook Template) → M7 (Runbook Feedback)
 M3 + M5 → M6 (需要 discovery 结果 + effective config)
 M0-M7 → M8 (Testing & Docs)
@@ -178,7 +397,7 @@ M0-M7 → M8 (Testing & Docs)
 1. **M0 的 Settings + Models + OperatorAuth + DisabledLLM 是硬阻塞**：所有后续 milestone 都依赖环境默认值、生产 profile 安全默认值、数据模型、配置写 API 授权和 LLM disabled 可运行路径
 2. **M1 和 M2 可以并行**：Prometheus discovery 和 K8s discovery 互不依赖
 3. **M3 依赖 M1 + M2 的结果模型**：DiscoveryRunner 编排需要所有 discovery 的输出类型
-4. **M4 可以与 M1/M2/M3 并行**：Alertmanager poll 只依赖 Settings (M0)，不依赖 discovery
+4. **M4 核心能力可以与 M1/M2/M3 并行**：PR 4.1–4.6 只依赖 M0；但 PR 4.7 的生产完整集成依赖 EffectiveConfig、BackendAuth、Backend URL safety 和 worker 配置读取约定，不能按纯 M0 任务处理
 5. **M5 依赖 M3**：API 发布的是 M3 产出的 EffectiveConfigVersion
 6. **M6 依赖 M3**：Runbook 模板需要 discovery 结果（服务名、能力矩阵、指标映射）
 7. **M7 依赖 M6**：Runbook 反馈需要已有的 runbook 结构
@@ -213,6 +432,11 @@ M0-M7 → M8 (Testing & Docs)
 24. **Raw labels are immutable input** — poll/webhook 的原始 alert labels 必须保留在 `raw_labels`；内部 ingestion marker 不得覆盖原始 label
 25. **Redis lock TTL is part of correctness** — lock TTL 必须大于 task hard time limit，或实现 owner-token renewal heartbeat
 26. **Embedding failure degrades runbook search only** — approved runbook ingest 不因 embedding provider 缺失失败，只让 semantic search degraded
+27. **Discovery task lock is required** — scheduled/manual discovery 必须使用 Redis lock，避免并发扫描和 proposal 竞争
+28. **Receiver is not a label by default** — Alertmanager `receiver` 使用独立 query parameter；只有明确写入 alert label 的部署才可按 label matcher 处理
+29. **API key admin is not business admin** — `api_key:admin` 只管理 key，不隐式授予 config/discovery/runbook 写权限
+30. **Secret references before secret storage** — Phase 0–8 仅解析 `env:VAR_NAME` secret reference，不把 raw secret 写入 API/DB/audit/log/prompt
+31. **Resolved inference is incident-level conservative** — 多 filter hash 场景下，单个 poll scope missing 只能更新该 scope cursor，不能单独关闭 incident
 
 ---
 
@@ -224,16 +448,16 @@ M0-M7 → M8 (Testing & Docs)
 | **M1** | Prometheus core discovery | M0 (settings + models) | PrometheusClient, MetricCandidate, MetricMatcher, PromQL Builder, PromQL Validator | with M2, M4 |
 | **M2** | K8s / Loki / Jaeger / Topology discovery | M0 | K8sDiscovery, LabelDetector, LokiDiscovery, Jaeger service discovery, observability backend auto-discovery, WorkloadBinding, ServiceEdge Deriver | with M1, M4 |
 | **M3** | DiscoveryRunner + EffectiveConfig 发布闭环 | M1 + M2 | DiscoveryRunner, degradation output, cost control, DiscoveryStore, Config proposal/publish/rollback | no (depends on M1+M2) |
-| **M4** | Alertmanager poll production hardening | M0 | AlertmanagerClient, MatcherParser, Scope validation, Poll Cursor, Resolved inference, Poll task | with M1, M2, M3 |
-| **M5** | Discovery API / Operator API | M3 + M4 | Read APIs, Write APIs, Override API, worker `_build_deps` integration | no (depends on M3) |
+| **M4** | Alertmanager poll production hardening | Core PR 4.1–4.6: M0; PR 4.7: M0 + PR 0.4 + PR 0.8 + PR 0.9 + PR 4.1–4.6 + M5 worker config contract | AlertmanagerClient, MatcherParser, Scope validation, Poll Cursor, conservative Resolved inference, Poll task | Core with M1/M2/M3; PR 4.7 after config/auth contract |
+| **M5** | Discovery API / Operator API | M3 + M4 core + PR 0.7 | Read APIs, Write APIs, Override API, worker `_build_deps` integration | no (depends on M3; enables PR 4.7 production poll) |
 | **M6** | Runbook template generation | M3 | RunbookTemplateEngine, RunbookDraft (template type), Review API, Approved ingest | no (depends on M3) |
 | **M7** | Deterministic runbook feedback | M6 | Incident aggregation, action statistics, gap detection, AmendmentDraft | no (depends on M6) |
-| **M8** | Testing & docs | M0-M7 | Unit, integration, production safety, E2E tests; docs | no (depends on M0-M7) |
+| **M8** | Testing & docs / release gate | M0-M7 | Unit, integration, production safety, E2E tests; docs; final gate | Tests must be added per PR; final gate after M0-M7 |
 | **M9+** | Future extensions | M8 | LLM runbook, web search, Tempo, Grafana | informational only |
 
 ---
 
-## 4. Detailed Milestone Plan
+## I.1 Detailed Milestone / PR Task Cards
 
 ### M0: Production Safety Foundation
 
@@ -268,7 +492,8 @@ M0-M7 → M8 (Testing & Docs)
 - [ ] 新增 `APP_ENV` setting（`local` | `production`），默认 `local`
 - [ ] 生产环境 `LLM_PROVIDER` 默认 `"disabled"`（本地保持 `"fake"`）
 - [ ] 新增 `AUTOMATION_LEVEL`（`off` | `propose` | `supervised` | `autopilot`，默认 `supervised`）
-- [ ] 新增 `DISCOVERY_ENABLED`（`APP_ENV=local` 默认 `true`；`APP_ENV=production` 默认 `false`，推荐由 operator rerun 或独立 Beat schedule 显式启用）
+- [ ] 新增 `DISCOVERY_ENABLED`（`APP_ENV=local` 默认 `true`；`APP_ENV=production` 默认 `false`，仅控制启动时自动 discovery 和 scheduled discovery，不禁止受权 manual rerun）
+- [ ] 新增 `DISCOVERY_MANUAL_RERUN_ENABLED`（默认 `true`；配合 `discovery:write` scope 控制 operator manual rerun）
 - [ ] 新增 `DISCOVERY_APPLY_MODE`（`inherit` | `propose` | `supervised`，默认 `inherit`）
 - [ ] 新增 `RUNBOOK_TEMPLATE_GENERATION_ENABLED`（默认 `true`）
 - [ ] 新增 `RUNBOOK_LLM_GENERATION_ENABLED`（默认 `false`）
@@ -301,6 +526,7 @@ test_local_llm_default_fake
 test_automation_level_default_supervised
 test_discovery_apply_mode_inherit
 test_production_discovery_default_disabled
+test_discovery_manual_rerun_enabled_default_true
 test_runbook_llm_default_false
 test_runbook_web_search_default_false
 test_alert_source_default_webhook
@@ -440,6 +666,8 @@ test_apply_mode_inherit_equals_automation_level
 test_backend_url_discovery_production_requires_review
 test_backend_url_discovery_local_can_auto_apply
 test_backend_url_auth_unknown_requires_review
+test_backend_endpoint_detector_prefers_service_dns
+test_backend_endpoint_detector_does_not_publish_endpoint_ip_without_allowlist
 test_multiple_backend_urls_require_review
 test_service_label_two_sources_cross_validated_auto_apply
 test_metric_mapping_all_checks_pass_auto_apply
@@ -543,7 +771,7 @@ test_has_unresolved_returns_true_when_required_missing
 ##### 范围
 
 - [ ] 扩展 `AuditLogRepository`：添加 `create_config_audit()`, `create_discovery_audit()`, `query_by_action()`, `query_by_target()`
-- [ ] 确保 audit log 不可变：repository 不提供 update/delete，并增加 SQLAlchemy event guard 或数据库 trigger 防止 ORM 直接 update/delete
+- [ ] 确保 audit log 不可变：repository 不提供 update/delete，并优先使用数据库 trigger 禁止 update/delete；SQLAlchemy event guard 仅作为额外防线
 - [ ] 添加 `source` 和 `request_id` 字段到 AuditLog 模型（如尚未存在），并保持现有 `details` 字段向后兼容
 
 ##### 不做
@@ -571,6 +799,8 @@ test_audit_log_discovery_reject
 test_audit_log_override_create
 test_audit_log_immutable_no_update
 test_audit_log_immutable_no_delete
+test_audit_log_db_trigger_blocks_raw_update
+test_audit_log_db_trigger_blocks_raw_delete
 test_query_by_action
 test_query_by_target
 test_query_by_time_range
@@ -585,7 +815,7 @@ test_query_by_time_range
 ##### 风险点
 
 - AuditLog 模型字段扩展需要新的 migration
-- 单靠“无 update/delete repository 方法”不能证明不可变，必须有测试覆盖直接 ORM mutation
+- 单靠“无 update/delete repository 方法”不能证明不可变，必须有测试覆盖直接 ORM mutation 和 raw SQL mutation；生产建议以 DB trigger 为准
 
 ##### 回滚方案
 
@@ -675,6 +905,7 @@ test_llm_disabled_metadata_records_fallback
 
 - [ ] API key migration 策略：existing legacy key 默认 scopes=[]；local/dev 可显式补 read scopes；production legacy key 不自动获得 `config:write`
 - [ ] Bootstrap 策略：`BOOTSTRAP_ADMIN_TOKEN` 只能创建第一个 `api_key:admin` key；创建/轮换操作必须写 audit log；建议创建后禁用或要求显式轮换
+- [ ] `api_key:admin` 只授予 key 管理能力，不隐式包含 `config:write`、`discovery:write`、`runbook:review`；业务写 scope 必须显式授予
 
 ##### 不做
 
@@ -704,6 +935,8 @@ test_plain_api_key_cannot_publish_config
 test_bootstrap_seed_can_create_operator_key
 test_existing_api_key_gets_no_config_write_scope_after_migration
 test_bootstrap_token_can_only_create_first_admin_key
+test_api_key_admin_does_not_imply_config_write
+test_api_key_admin_does_not_imply_discovery_write
 test_audit_includes_actor_scope
 ```
 
@@ -717,7 +950,7 @@ test_audit_includes_actor_scope
 ##### 风险点
 
 - 现有测试默认关闭 auth，需要为 auth-enabled integration tests 单独覆盖
-- Bootstrap seed 权限过宽时可能绕过 scope 模型，需限制为创建/轮换 operator key
+- Bootstrap seed 权限过宽时可能绕过 scope 模型，需限制为创建/轮换 operator key；`api_key:admin` 不得被实现成隐式超级管理员
 
 ##### 回滚方案
 
@@ -736,7 +969,9 @@ test_audit_includes_actor_scope
 - [ ] 新增 `BackendUrlSafetyValidator`
 - [ ] 只允许 `http` / `https` scheme
 - [ ] 生产环境默认拒绝 `localhost`、`127.0.0.0/8`、`::1`、`0.0.0.0`、link-local、`169.254.0.0/16`、metadata endpoint、私有 IP 直连，除非显式 allowlist
-- [ ] 支持 `BACKEND_URL_ALLOWLIST`，允许集群内 DNS，如 `*.svc`, `*.svc.cluster.local`, `prometheus.monitoring.svc`
+- [ ] 支持 `BACKEND_URL_ALLOWLIST` host pattern，允许集群内 DNS，如 `*.svc`, `*.svc.cluster.local`, `prometheus.monitoring.svc`
+- [ ] CIDR allowlist 为显式高级选项，默认关闭；如启用，只接受 operator 明确配置的 CIDR，不从 discovery 自动推断
+- [ ] K8s service discovery evidence 放行时，URL 应优先使用 service DNS，不使用 endpoint/pod IP；直接 IP 仍按 IP safety policy 校验
 - [ ] K8s service discovery evidence 可作为放行依据，但仍需要记录 evidence 和审计
 - [ ] config publish / override / profile load / EffectiveConfig merge 均调用该 validator
 - [ ] rejected URL 不进入 worker backend construction，只进入 proposal warning 或 audit details
@@ -766,6 +1001,9 @@ test_backend_url_rejects_localhost_in_production
 test_backend_url_rejects_link_local
 test_backend_url_allows_https_public_endpoint
 test_backend_url_allows_explicit_allowlisted_internal_dns
+test_backend_url_rejects_private_ip_without_explicit_cidr_allowlist
+test_backend_url_allows_private_ip_only_with_explicit_cidr_allowlist
+test_k8s_evidence_prefers_service_dns_over_endpoint_ip
 test_backend_url_k8s_evidence_allows_cluster_service
 test_override_rejects_unsafe_backend_url
 test_publish_rejects_unsafe_backend_url
@@ -779,7 +1017,7 @@ test_publish_rejects_unsafe_backend_url
 
 ##### 风险点
 
-- 过严会阻止合法集群内地址；必须支持 allowlist 和 K8s evidence
+- 过严会阻止合法集群内地址；必须支持 host allowlist 和 K8s evidence，CIDR 需显式 opt-in
 - 过松会产生 SSRF 风险
 
 ##### 回滚方案
@@ -798,15 +1036,17 @@ test_publish_rejects_unsafe_backend_url
 
 - [ ] 定义 `RuntimeBackendAuthConfig` 与 `RedactedBackendAuthConfig`
 - [ ] 支持 `auth_type: none | bearer | basic | mtls`
-- [ ] raw secret 字段使用 `SecretStr` 或只存 secret reference
+- [ ] raw secret 字段使用 `SecretStr` 或只存 secret reference；Phase 0–8 只支持 `env:VAR_NAME` secret reference
 - [ ] DB 仅存 redacted metadata / secret reference，不存 raw bearer token、password、private key
+- [ ] API 只允许写入 secret reference，不允许写入 raw bearer token/password/private key
+- [ ] 支持非敏感 `extra_safe_headers` 白名单；敏感 header 只能通过 secret reference 注入，且不得进入 audit/prompt/log
 - [ ] `redacted()` 输出只包含 `auth_type`, `username`, `has_token`, `has_password`, `cert_ref`, `tls_verify` 等安全字段
 - [ ] AgentDeps、audit log、debug log、LLM prompt/state 只能使用 redacted form
 - [ ] Backend client construction 才允许读取 runtime secret；构造完成后不得序列化 runtime config
 
 ##### 不做
 
-- 不实现 KMS/Vault 集成；仅保留 secret reference 接口
+- 不实现 KMS/Vault/secret manager 集成；仅保留 `env:VAR_NAME` secret reference 接口
 - 不实现 secret rotation 自动化
 
 ##### 建议文件
@@ -824,6 +1064,9 @@ tests/unit/test_backend_auth_redaction.py           # 新增
 test_backend_auth_redacted_does_not_include_token
 test_backend_auth_redacted_does_not_include_password
 test_backend_auth_db_schema_stores_secret_reference_only
+test_backend_auth_secret_ref_supports_env_prefix
+test_backend_auth_api_rejects_raw_secret
+test_backend_auth_extra_safe_headers_redacted
 test_backend_auth_runtime_only_not_serializable
 test_backend_auth_audit_uses_redacted_form
 test_backend_auth_agentdeps_uses_redacted_form
@@ -1119,6 +1362,7 @@ test_too_many_series_rejected
 - [ ] 支持 list namespaces, pods, deployments, statefulsets, daemonsets, services
 - [ ] 集成 `namespace_allowlist`, `service_allowlist`
 - [ ] RBAC 不足时降级
+- [ ] `kubernetes` Python package 必须懒加载，不允许 module-level import；初始化线程安全，失败缓存 TTL 30–60s
 
 ##### 建议文件
 
@@ -1138,6 +1382,9 @@ test_rbac_forbidden_degraded
 test_k8s_unavailable_returns_empty_services
 test_list_services_includes_selector
 test_pod_sample_ratio
+test_kubernetes_package_lazy_loaded
+test_kubernetes_import_failure_cached_with_short_ttl
+test_kubernetes_lazy_init_thread_safe
 ```
 
 ---
@@ -1262,6 +1509,7 @@ test_edge_has_evidence_field
 - [ ] 实现 `BackendEndpointDetector`
 - [ ] 在允许的 namespace 中扫描 Kubernetes Service / Endpoints / Ingress，识别 Prometheus、Loki、Jaeger、Alertmanager
 - [ ] 输出 `BackendEndpoints`，每个 backend 包含 `url`, `source`, `status`, `confidence`, `evidence`, `auth_required_unknown`
+- [ ] K8s 内发现 backend URL 时优先输出 service DNS 地址，不输出 endpoint/pod IP；如只能获得 IP，必须经过 BackendUrlSafetyValidator 和显式 allowlist
 - [ ] 手动配置优先：`.env` / profile / active override 不被自动发现覆盖
 - [ ] 自动发现仅补齐缺失 backend；低置信或认证未知时标记 `detected_only` 或 `requires_review`
 - [ ] `APP_ENV=production` 时，自动发现的 backend URL 即使高置信也不得直接 auto_publish，只能生成 proposal 并默认 `requires_review`
@@ -1289,6 +1537,8 @@ test_k8s_rbac_forbidden_backend_missing_degraded
 test_production_no_localhost_fallback_for_missing_backend
 test_backend_url_discovery_production_requires_review
 test_backend_url_auth_unknown_requires_review
+test_backend_endpoint_detector_prefers_service_dns
+test_backend_endpoint_detector_does_not_publish_endpoint_ip_without_allowlist
 test_multiple_backend_urls_require_review
 test_detected_only_backend_not_published
 ```
@@ -1413,7 +1663,10 @@ tests/unit/test_discovery_cost_control.py           # 新增
 ```text
 test_metric_names_truncated_with_warning
 test_series_over_limit_rejected
-test_pod_sample_ratio_applied
+test_pod_sample_ratio
+test_kubernetes_package_lazy_loaded
+test_kubernetes_import_failure_cached_with_short_ttl
+test_kubernetes_lazy_init_thread_safe_applied
 test_cache_hit_avoids_api_call
 ```
 
@@ -1425,6 +1678,8 @@ test_cache_hit_avoids_api_call
 
 - [ ] 实现 `DiscoveryStore` — 持久化 DiscoveryRun + DiscoveryProposal
 - [ ] 作为 Celery task 运行（`run_discovery`）
+- [ ] scheduled discovery 和 manual rerun 均必须使用 Redis lock；lock key 包含 discovery scope/profile，释放锁使用 owner token compare-and-delete
+- [ ] manual rerun 与 scheduled run 冲突时返回 existing/skipped 状态并写 audit，不重复扫描后端
 
 ##### 建议文件
 
@@ -1444,6 +1699,10 @@ test_discovery_run_status_succeeded
 test_discovery_run_status_degraded
 test_discovery_proposal_created
 test_proposal_diff_matches_changes
+test_run_discovery_lock_key_includes_scope_profile
+test_manual_rerun_skipped_when_scheduled_run_active
+test_scheduled_run_skipped_when_manual_rerun_active
+test_discovery_lock_release_compare_and_delete
 ```
 
 ---
@@ -1468,13 +1727,13 @@ tests/unit/test_config_proposal.py                  # 新增
 ```text
 test_proposal_not_published_by_default
 test_proposal_diff_empty_when_no_changes
-test_proposal_high_confidence_no_review
+test_service_label_high_confidence_can_auto_apply
+test_metric_mapping_high_confidence_can_auto_apply
 test_proposal_low_confidence_requires_review
 test_proposal_rejected_when_dangerous
 test_backend_url_diff_production_requires_review
 test_backend_url_diff_local_can_auto_apply
-test_service_label_high_confidence_can_auto_apply
-test_metric_mapping_high_confidence_can_auto_apply
+test_backend_url_high_confidence_still_requires_review_in_production
 ```
 
 ---
@@ -1485,6 +1744,7 @@ test_metric_mapping_high_confidence_can_auto_apply
 
 - [ ] 实现 `publish_config()`, `rollback_config()`, `revoke_config()`
 - [ ] 版本 stale 策略（默认 30 天后 warning，不硬过期）
+- [ ] 新版本发布时将上一版本标记为 `superseded_at` / `superseded_by_version_id`，不要使用 `expires_at` 表达 published config 生命周期；`expires_at` 保留给 override TTL
 - [ ] 所有操作写入 audit log
 
 ##### 建议文件
@@ -1498,7 +1758,7 @@ tests/unit/test_config_publisher.py                 # 新增
 
 ```text
 test_publish_config_creates_audit_log
-test_publish_expires_previous_version
+test_publish_supersedes_previous_version
 test_rollback_restores_previous_version
 test_rollback_creates_audit_log
 test_revoke_removes_from_worker_selection
@@ -1514,9 +1774,11 @@ test_version_staleness_warning_after_threshold
 
 **目标：** 支持后端项目零改动接入 Alertmanager poll，保证不拉全量、不误判 resolved。
 
-**前置依赖：** M0
+**前置依赖：**
+- PR 4.1–4.6：依赖 M0，可与 M1/M2/M3 并行。
+- PR 4.7：依赖 PR 0.4、PR 0.8、PR 0.9、PR 4.1–4.6，并依赖 M5 中 worker `_build_deps` / EffectiveConfig 读取约定。
 
-**可以与其他 Milestone 并行**
+**并行策略：** 核心解析、scope、cursor、resolved inference 可并行；生产 poll task 完整启用必须等配置、auth、URL safety 和 worker contract 就绪。
 
 ---
 
@@ -1525,6 +1787,7 @@ test_version_staleness_warning_after_threshold
 ##### 范围
 
 - [ ] 实现 `AlertmanagerClient`（`GET /api/v2/alerts`, `/api/v2/status`）
+- [ ] `receiver` 使用 Alertmanager 独立 query parameter；`filter[]` 用于 label matcher，不将 receiver 默认当作 alert label
 - [ ] 集成 `BackendAuthConfig`
 
 ##### 建议文件
@@ -1605,6 +1868,7 @@ test_cluster_matcher_valid_scope
 ##### 范围
 
 - [ ] 实现 `_allowlist_to_server_matchers()`
+- [ ] `receiver` 不进入 `_allowlist_to_server_matchers()`；它由 AlertmanagerClient 作为独立 query parameter 传递
 - [ ] 生产无法映射 → disabled；非生产 → client-side filter + warning
 - [ ] 生产环境中有效 scope 必须能转成 Alertmanager server-side matcher；不能只依赖 client-side filter 限制拉取范围
 
@@ -1623,6 +1887,7 @@ test_service_allowlist_to_regex_matcher
 test_unmappable_allowlist_production_disabled
 test_unmappable_allowlist_local_client_filter
 test_matchers_added_before_list_alerts
+test_receiver_passed_as_query_parameter_not_label_matcher
 test_non_mappable_scope_production_disabled
 test_non_mappable_scope_local_warns_and_client_filters
 ```
@@ -1636,6 +1901,7 @@ test_non_mappable_scope_local_warns_and_client_filters
 - [ ] 实现 `AlertPollCursor` DB 模型 + repository
 - [ ] `already_seen_active()` 必须更新 seen 状态（即使返回 True）
 - [ ] `mark_seen()` 建立 fingerprint → incident_id 映射
+- [ ] Cursor 可以按 filter hash 记录 seen/missing 状态，但 fingerprint → incident_id 映射必须全局唯一，用于跨 filter hash 和 webhook dedup
 
 ##### 建议文件
 
@@ -1654,6 +1920,7 @@ test_already_seen_updates_last_seen
 test_mark_seen_updates_current_set
 test_cursor_persist_and_load
 test_already_seen_returns_true_but_still_updates_state
+test_same_fingerprint_across_filter_hash_maps_to_same_incident
 ```
 
 ---
@@ -1664,6 +1931,7 @@ test_already_seen_returns_true_but_still_updates_state
 
 - [ ] 实现 `infer_resolved_from_missing_fingerprints()`
 - [ ] truncation 时禁止 resolved 推断
+- [ ] 多 filter hash 场景下，单个 filter hash missing 只能更新该 cursor；incident resolved 必须满足所有曾经看见该 fingerprint 的 active filter 连续 missing N 轮，或通过明确 resolved 状态/全局有界查询确认
 
 ##### 建议文件
 
@@ -1680,11 +1948,21 @@ test_grace_period_blocks_resolved
 test_truncation_blocks_resolved_inference
 test_first_missing_not_resolved
 test_reappeared_resets_missing_counter
+test_single_filter_hash_missing_does_not_resolve_incident
+test_all_active_filter_hashes_missing_enough_rounds_resolves_incident
 ```
 
 ---
 
 #### PR 4.7: Poll Task + Redis Lock + Metrics + Audit
+
+##### 前置依赖
+
+- PR 0.4 EffectiveConfig 读取优先级
+- PR 0.8 BackendUrlSafetyValidator
+- PR 0.9 BackendAuthConfig redaction / runtime secret ref
+- PR 4.1–4.6 Alertmanager client、matcher、scope、cursor、resolved inference
+- M5 worker `_build_deps` / EffectiveConfig 注入约定
 
 ##### 范围
 
@@ -1698,6 +1976,7 @@ test_reappeared_resets_missing_counter
 - [ ] Beat 启动时上报 heartbeat / active instance 指标；检测到 active Beat instances > 1 时记录 warning metric
 - [ ] Redis lock value 使用唯一 token，释放锁必须 compare-and-delete，避免非 owner 释放锁
 - [ ] Poll task lock key 必须包含 effective filter hash，避免不同 receiver/namespace/service 范围互相阻塞
+- [ ] 多 filter hash 命中同一个 Alertmanager alert 时，只能创建一个 incident；resolved inference 必须使用 PR 4.6 的保守 incident-level 判定
 - [ ] Lock TTL 必须大于 task hard time limit；如果启用 renewal heartbeat，必须使用 owner token 续租
 - [ ] Incident/Alert fingerprint 必须有 DB unique constraint，poll/webhook 并发创建使用 get-or-create + retry
 
@@ -1737,6 +2016,8 @@ test_beat_heartbeat_registered
 test_duplicate_beat_instances_emit_warning_metric
 test_existing_api_key_gets_no_config_write_scope_after_migration
 test_bootstrap_token_can_only_create_first_admin_key
+test_api_key_admin_does_not_imply_config_write
+test_api_key_admin_does_not_imply_discovery_write
 test_runbook_ingest_degrades_when_embedding_provider_missing
 test_duplicate_beat_does_not_create_duplicate_incidents
 test_poll_and_webhook_concurrent_same_fingerprint_creates_one_incident
@@ -1750,7 +2031,7 @@ test_audit_safe_dict_contains_allowlist_fields
 
 **目标：** 提供查看 discovery、触发 rerun、发布/回滚配置、设置 override 的 API。
 
-**前置依赖：** M3 + M4 + PR 0.7（operator role/scope 授权）
+**前置依赖：** M3 + M4 core（PR 4.1–4.6）+ PR 0.7（operator role/scope 授权）。M5 的 worker `_build_deps` / EffectiveConfig 注入约定完成后，PR 4.7 才能进入生产完整启用。
 
 ---
 
@@ -1777,6 +2058,7 @@ tests/integration/test_discovery_api.py             # 新增
 
 - [ ] `POST /api/discovery/rerun` → 异步 task_id + audit log
 - [ ] 写 API 必须校验 `discovery:write` scope
+- [ ] manual rerun 必须走 Discovery task Redis lock；与 scheduled run 冲突时返回 existing/skipped 状态并写 audit
 
 ##### 建议文件
 
@@ -1881,6 +2163,9 @@ test_backend_url_rejects_metadata_ip
 test_backend_url_rejects_file_scheme
 test_backend_url_rejects_localhost_in_production
 test_backend_url_allows_explicit_allowlisted_internal_dns
+test_backend_url_rejects_private_ip_without_explicit_cidr_allowlist
+test_backend_url_allows_private_ip_only_with_explicit_cidr_allowlist
+test_k8s_evidence_prefers_service_dns_over_endpoint_ip
 test_missing_backend_tool_degraded
 test_token_not_in_llm_prompt
 test_config_version_id_in_run_state
@@ -2020,6 +2305,15 @@ test_regenerate_audit_log_contains_old_and_new_draft_id
 
 **前置依赖：** M6
 
+#### Feedback Data Source Contract
+
+M7 的反馈分析只能基于结构化、可审计的数据源，不从 LLM 输出中反推事实：
+
+- Incident / Diagnosis state：提供 `service`, `fault_type`, `root_cause_confidence`, `evidence_ids`, `used_tools`, `capability_gaps`。
+- Action approval / execution / audit：提供 `action_type`, `status`（success / failed / skipped / rejected）, `reason`, `executor_backend`, `executor_result_ref`。
+- Runbook review / version：提供 `runbook_id`, `version_id`, `draft_id`, `approved_at`, `supersedes_draft_id`。
+- 如果当前没有稳定的 action outcome 表，PR 7.2 必须新增 `ActionOutcomeEvent` 或明确从不可变 AuditLog 派生；不得从自由文本 report 中解析 action outcome。
+
 ---
 
 #### PR 7.1: Incident Aggregation
@@ -2051,6 +2345,7 @@ test_min_incidents_generates_summary
 
 - [ ] 统计成功/失败/跳过/拒绝的动作
 - [ ] 根因置信度 >= 0.7 才参与
+- [ ] 明确 action outcome 来源：优先读取 `ActionOutcomeEvent`，若暂未建表则从不可变 AuditLog 规范 action 中派生；禁止解析自由文本 report
 
 ##### 建议文件
 
@@ -2067,6 +2362,8 @@ test_failed_actions_collected
 test_skipped_actions_collected
 test_rejected_actions_collected
 test_low_confidence_no_feedback
+test_action_statistics_uses_structured_outcome_source
+test_action_statistics_does_not_parse_free_text_report
 ```
 
 ---
@@ -2168,6 +2465,9 @@ test_backend_url_rejects_metadata_ip
 test_backend_url_rejects_file_scheme
 test_backend_url_rejects_localhost_in_production
 test_backend_url_allows_explicit_allowlisted_internal_dns
+test_backend_url_rejects_private_ip_without_explicit_cidr_allowlist
+test_backend_url_allows_private_ip_only_with_explicit_cidr_allowlist
+test_k8s_evidence_prefers_service_dns_over_endpoint_ip
 test_web_search_default_false
 test_runbook_draft_not_ingested
 test_executor_live_never_auto_apply
@@ -2192,6 +2492,8 @@ test_regenerate_creates_new_draft
 test_duplicate_beat_instances_emit_warning_metric
 test_existing_api_key_gets_no_config_write_scope_after_migration
 test_bootstrap_token_can_only_create_first_admin_key
+test_api_key_admin_does_not_imply_config_write
+test_api_key_admin_does_not_imply_discovery_write
 test_runbook_ingest_degrades_when_embedding_provider_missing
 test_lock_release_compare_and_delete
 ```
@@ -2285,7 +2587,7 @@ test_release_gate_requires_redis_lock_real_redis
 
 ---
 
-## 5. Dependency Graph
+## J. Original Dependency Graph
 
 ```
 M0 (Production Safety Foundation)
@@ -2297,8 +2599,9 @@ M0 (Production Safety Foundation)
  │           └──> (M5 + M6 + M7) ──> M8 (Testing & Docs)
  ├──> M2 (K8s / Loki / Topology)
  │     └──> M3 [...]
- ├──> M4 (Alertmanager Poll)
+ ├──> M4 core (Alertmanager Poll PR 4.1–4.6)
  │     └──> M5 [...]
+ │           └──> PR 4.7 production poll enablement
  └──> M8 [...]
 
 M8 ──> M9+ (Future)
@@ -2308,7 +2611,7 @@ M8 ──> M9+ (Future)
 
 | 可并行组 | 并行条件 |
 |---------|---------|
-| M1 + M2 + M4 | M0 完成后，三个 milestone 互不依赖 |
+| M1 + M2 + M4 core | M0 完成后，M1/M2 与 PR 4.1–4.6 可并行；PR 4.7 需等待 config/auth/worker contract |
 | M1 内部 PR 1.1 → 1.2 → (1.3 + 1.4 + 1.5) → 1.6 | 1.3/1.4/1.5 可并行 |
 | M2 内部 PR 2.1 → (2.2 + 2.3 + 2.4 + 2.5 + 2.6) | 2.2/2.3/2.4/2.5/2.6 可并行；2.6 依赖 K8s service/endpoints 读取能力 |
 | M0 内部 PR 0.1 → (0.2 + 0.3 + 0.6 + 0.7) → 0.4 → 0.5 | 0.2/0.3/0.6/0.7 可并行；0.4 需要模型，M5 需要 0.7 |
@@ -2320,11 +2623,12 @@ M8 ──> M9+ (Future)
 - M0.7 (Operator role/scope auth) 是 M5 写 API 的硬阻塞
 - M1 + M2 是 M3 的硬阻塞
 - M3 是 M5/M6 的硬阻塞
+- PR 4.7 是生产 poll 启用的硬阻塞，且依赖 M5 worker config contract
 - M6 是 M7 的硬阻塞
 
 ---
 
-## 6. Suggested First 10 Issues
+## K. Suggested First 10 Agent Issues
 
 | # | Title | Goal | Files | Tests | Depends On | Parallel? | Risk | TDD First? |
 |---|-------|------|-------|-------|-----------|-----------|------|------------|
@@ -2341,7 +2645,7 @@ M8 ──> M9+ (Future)
 
 ---
 
-## 7. Parallelization Plan
+## L. Parallelization Plan
 
 ### Phase 1 (Days 1-5): Foundation
 - **Day 1-2:** Settings + DB migration + AutomationPolicy
@@ -2372,14 +2676,14 @@ M8 ──> M9+ (Future)
 - **Day 22:** RunbookDraft 扩展 + Review API + embedding fallback ingest
 - **Day 23:** RunbookFeedback 4 个 PR
 
-### Phase 7 (Days 24-25): Testing & Docs
-- **Day 24-25:** M8 单元/集成/生产安全/E2E 测试 + 文档
+### Phase 7 (Days 24-25): Release Gate & Docs
+- **Day 24-25:** M8 release gate、生产安全回归、E2E smoke、文档收口
 
-> 排期说明：以上是约 25 个工作日的单人实现序列。若纳入 code review、环境问题、回归修复和低并行度，项目管理上建议按 6–8 周安排。
+> 排期说明：测试必须跟随每个 PR 同步完成，M8 不承担“集中补测试”的角色。以上是约 25 个工作日的单人实现序列；若纳入 code review、环境问题、回归修复和低并行度，项目管理上建议按 6–8 周安排。
 
 ---
 
-## 8. Risk Register
+## M. Risk Register
 
 | Risk | Area | Impact | Probability | Mitigation | Test Coverage / Gate |
 |------|------|--------|-------------|------------|----------------------|
@@ -2403,7 +2707,9 @@ M8 ──> M9+ (Future)
 | 默认环境误改为 production 破坏本地 demo/CI | Settings | HIGH | MEDIUM | 未设置 APP_ENV 时必须保持 local；production 仅显式启用 | `test_default_app_env_local` |
 | `LLM_PROVIDER=disabled` 无可运行 provider | LLM | CRITICAL | MEDIUM | PR 0.6 实现 DisabledLLM 和确定性 fallback | `test_production_worker_with_disabled_llm_runs_diagnosis`, §12.15 |
 | 配置写 API 权限过宽 | Auth | CRITICAL | MEDIUM | API key role/scope；config write 必须 `config:write`；legacy key 不自动获得写权限 | `test_plain_api_key_cannot_publish_config`, §12.8 |
-| Bootstrap token 权限过宽 | Auth | CRITICAL | MEDIUM | bootstrap token 只能创建第一个 `api_key:admin` key；操作审计；创建后禁用/轮换 | `test_bootstrap_token_can_only_create_first_admin_key`, §12.8 |
+| Bootstrap token 权限过宽 | Auth | CRITICAL | MEDIUM | bootstrap token 只能创建第一个 `api_key:admin` key；操作审计；创建后禁用/轮换 | `test_bootstrap_token_can_only_create_first_admin_key
+test_api_key_admin_does_not_imply_config_write
+test_api_key_admin_does_not_imply_discovery_write`, §12.8 |
 | Discovery 覆盖人工配置 | Config | HIGH | MEDIUM | EffectiveConfig 优先级固定为 env > active override > profile > published > safe default | `test_manual_env_url_wins_over_discovery`, §12.14 |
 | 缺失 backend URL 传入现有工具导致崩溃 | Tooling | HIGH | MEDIUM | `_build_deps()` 使用 UnavailableTool/NoBackendTool，不把 None 传入 MetricsTool/LogsTool | `test_effective_none_url_uses_unavailable_tool` |
 | Unsafe backend URL 进入 worker | Security | CRITICAL | MEDIUM | publish/override/profile/effective merge 统一调用 BackendUrlSafetyValidator | `test_unsafe_backend_url_uses_unavailable_tool`, §12.10 |
@@ -2418,7 +2724,7 @@ M8 ──> M9+ (Future)
 
 ---
 
-## 9. Test Strategy
+## N. Test Strategy
 
 ### 9.1 测试金字塔
 
@@ -2452,7 +2758,7 @@ M8 ──> M9+ (Future)
 
 ---
 
-## 10. Definition of Done
+## O. Definition of Done
 
 ### 全局 DoD
 
@@ -2494,7 +2800,7 @@ M8 ──> M9+ (Future)
 
 ---
 
-## 11. Decisions and Open Questions
+## P. Decisions and Open Questions
 
 ### 11.1 Resolved Decisions
 
@@ -2513,11 +2819,11 @@ M8 ──> M9+ (Future)
 | Alertmanager poll 有效 scope | 必须至少包含一个非 severity 范围约束：receiver、namespace_allowlist、service_allowlist 或非 severity matcher；severity/priority only 无效 | PR 4.3 + PR 4.4 + PR 4.7 |
 | Runbook regenerate 行为 | 不覆盖原 draft；创建新的 pending_review draft，并用 parent/supersedes 字段保留审计链路 | PR 6.2 + PR 6.3 |
 | Published config 生命周期 | 不硬过期；默认 30 天后 stale warning + metric，worker 继续使用最后有效版本 | PR 0.2 + PR 3.6 + PR 8.3 |
-| Backend URL 安全校验 | publish/override/profile/effective merge 全链路校验；生产默认拒绝 metadata endpoint、危险 scheme、未授权 localhost/link-local | PR 0.8 |
-| BackendAuth 存储 | Phase 0–8 不把 raw backend secret 存 DB；DB 仅存 secret reference/redacted metadata | PR 0.9 + PR 5.5 |
-| API key bootstrap/migration | legacy key 默认无 `config:write`；bootstrap token 只创建首个 admin key且必须审计 | PR 0.7 |
+| Backend URL 安全校验 | publish/override/profile/effective merge 全链路校验；生产默认拒绝 metadata endpoint、危险 scheme、未授权 localhost/link-local；host allowlist 默认支持，CIDR 显式 opt-in | PR 0.8 |
+| BackendAuth 存储 | Phase 0–8 不把 raw backend secret 存 DB；DB 仅存 `env:VAR_NAME` secret reference/redacted metadata | PR 0.9 + PR 5.5 |
+| API key bootstrap/migration | legacy key 默认无 `config:write`；bootstrap token 只创建首个 admin key且必须审计；`api_key:admin` 不隐式拥有业务写 scope | PR 0.7 |
 | Runbook embedding fallback | embedding provider 缺失时 approved runbook 仍写 chunk，semantic search degraded | PR 6.2 |
-| Redis lock TTL | 默认要求 lock TTL > task hard time limit；长任务才启用 owner-token renewal heartbeat | PR 4.7 |
+| Redis lock TTL | 默认要求 lock TTL > task hard time limit；长任务才启用 owner-token renewal heartbeat；Poll 与 Discovery task 均适用 | PR 3.4 + PR 4.7 |
 | Beat 单例防护 | 生产部署层 `replicas=1`；应用层增加 heartbeat、active instance、duplicate warning metrics；task 层仍使用 Redis lock | PR 4.7 + PR 8.5 |
 
 ### 11.2 Open Questions
@@ -2544,7 +2850,7 @@ M8 ──> M9+ (Future)
 
 ---
 
-## 12. Final Pre-Execution Checklist / Release Gate
+## Q. Final Pre-Execution Checklist / Release Gate
 
 本节是 Phase 0–8 实现完成后的最终执行前检查表。它不是新功能需求，而是 production/staging 启用前的阻断式 gate。建议把本节同步到 `docs/final-pre-execution-checklist.md`，并在每次上线前填写验证结果。
 
@@ -2625,3 +2931,4 @@ M8 ──> M9+ (Future)
 - poll/webhook 并发会重复创建 incident。
 - DisabledLLM production path 无法完成 degraded diagnosis。
 - Bootstrap token 能执行除创建/轮换首个 admin key 以外的操作。
+

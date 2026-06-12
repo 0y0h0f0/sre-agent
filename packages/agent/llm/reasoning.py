@@ -15,7 +15,7 @@ from packages.common.settings import Settings
 
 # Nodes that benefit from deep reasoning by default. Only LLM-calling nodes are
 # meaningful here; ``diagnose`` is the core hypothesis/root-cause reasoner.
-DEFAULT_DEEP_REASONING_NODES = frozenset({"diagnose"})
+DEFAULT_DEEP_REASONING_NODES = frozenset({"diagnose", "diagnose_synthesize"})
 
 
 def deep_reasoning_nodes(settings: Settings) -> frozenset[str]:
@@ -61,14 +61,17 @@ def format_call_metadata(meta: LLMCallMetadata | dict[str, Any] | None) -> str:
 def record_llm_call(state: IncidentState, node_name: str, meta: dict[str, Any]) -> None:
     """Append a structured LLM-call record to state for auditability.
 
-    Stores only provider/model/usage/finish_reason/reasoning_summary — never the
-    raw chain-of-thought (Phase 1.2 boundary).
+    Stores provider/model/usage/finish_reason — explicitly strips
+    ``reasoning_summary`` to prevent chain-of-thought leakage into the
+    persistent audit trail (Phase 1.2 boundary).
 
-    WARNING: This mutates ``state`` in-place via ``setdefault`` + ``append``.
-    Safe only in sequential LangGraph graphs. Parallel node execution would
-    need a thread-safe accumulator or a reducer that returns a fresh list.
+    Thread-safe via :class:`threading.Lock` for parallel node execution.
     """
     if not meta:
         return
-    record = {"node": node_name, **meta}
+    # Strip reasoning content before recording (Phase 1.2 boundary)
+    safe_meta = {k: v for k, v in meta.items() if k != "reasoning_summary"}
+    if not safe_meta:
+        return
+    record = {"node": node_name, **safe_meta}
     state.setdefault("llm_calls", []).append(record)

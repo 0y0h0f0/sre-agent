@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from packages.agent.nodes._persist import persist_evidence
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
@@ -44,10 +43,6 @@ def collect_logs(state: IncidentState, deps: AgentDeps) -> IncidentState:
                     "summary": result.summary,
                 }
             ]
-        )
-
-        evidence = persist_evidence(
-            deps.db, state["incident_id"], state["agent_run_id"], evidence
         )
 
         deps.node_tracer(

@@ -158,3 +158,70 @@ def test_graph_handles_all_alert_types(db_session) -> None:
         )
         assert len(result.get("hypotheses", [])) >= 1
         assert result.get("root_cause", {}).get("summary")
+
+
+def test_graph_runs_multi_perspective_end_to_end(db_session) -> None:
+    """Full graph run with multi-perspective diagnosis enabled."""
+    from datetime import UTC
+    from datetime import datetime as dt
+
+    settings = Settings(
+        database_url="sqlite://",
+        redis_url="memory://",
+        celery_broker_url="memory://",
+        celery_result_backend="memory://",
+        llm_multi_perspective_enabled=True,
+    )
+    deps = AgentDeps(
+        db=db_session,
+        settings=settings,
+        tool_cache=RequestLocalToolCache(),
+        metrics_tool=_fake_tool("metrics"),
+        logs_tool=_fake_tool("logs"),
+        trace_tool=_fake_tool("traces"),
+        git_change_tool=_fake_tool("git_changes"),
+        runbook_search_tool=_fake_tool("runbook_search"),
+        memory_store=MemoryStore(db_session),
+        context_builder=ContextBuilder(),
+        llm=FakeLLMAdapter(),
+        node_tracer=lambda **kw: None,
+        tool_call_recorder=lambda **kw: None,
+    )
+
+    graph = build_graph(deps)
+    initial: IncidentState = {
+        "incident_id": "inc_mp_test",
+        "agent_run_id": "run_mp_test",
+        "alert_payload": {
+            "service": "checkout",
+            "severity": "P1",
+            "alert_name": "DatabaseConnectionExhaustion",
+            "starts_at": dt(2026, 6, 1, tzinfo=UTC),
+        },
+        "metrics_evidence": [],
+        "logs_evidence": [],
+        "traces_evidence": [],
+        "deployment_evidence": [],
+        "runbook_context": [],
+        "memory_context": [],
+        "hypotheses": [],
+        "root_cause": {},
+        "recommended_actions": [],
+        "approval_status": {},
+        "execution_results": [],
+        "incident_report": {},
+        "token_budget": {},
+        "compression_events": [],
+        "errors": [],
+        "phase": "initial",
+    }
+
+    result = graph.invoke(initial)
+    assert result.get("service_name") == "checkout"
+    assert len(result.get("hypotheses", [])) >= 1
+    assert result.get("root_cause", {}).get("summary")
+    llm_calls = result.get("llm_calls", [])
+    diagnose_nodes = [c["node"] for c in llm_calls if "diagnose" in c.get("node", "")]
+    assert len(diagnose_nodes) >= 5, (
+        f"Expected >=5 diagnose calls with multi_perspective, got {diagnose_nodes}"
+    )

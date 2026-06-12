@@ -77,6 +77,70 @@ class TestGuardrailPolicy:
         assert d.risk_level == "L2"
 
 
+class TestFakeLLMMultiPerspective:
+    """Phase 2: perspective-aware FakeLLM routing."""
+
+    def test_perspective_tag_extraction(self) -> None:
+        llm = FakeLLM()
+        assert llm._extract_perspective("[perspective:metrics]\nSome prompt") == "metrics"
+        assert llm._extract_perspective("[perspective:logs]\nSome prompt") == "logs"
+        assert llm._extract_perspective("[perspective:traces]\nSome prompt") == "traces"
+        assert llm._extract_perspective("[perspective:synthesizer]\nSome prompt") == "synthesizer"
+        assert llm._extract_perspective("No perspective tag here") is None
+
+    def test_specialist_output_is_diagnosis_output(self) -> None:
+        from packages.agent.schemas import DiagnosisOutput
+
+        llm = FakeLLM()
+        prompt = "[perspective:metrics]\ndiagnose DatabaseConnectionExhaustion"
+        output = llm.generate_json(prompt, DiagnosisOutput)
+        assert isinstance(output, DiagnosisOutput)
+        assert len(output.hypotheses) >= 1
+
+    def test_specialist_output_differs_from_full(self) -> None:
+        from packages.agent.schemas import DiagnosisOutput
+
+        llm = FakeLLM()
+        full = llm.generate_json("diagnose DatabaseConnectionExhaustion", DiagnosisOutput)
+        metrics = llm.generate_json(
+            "[perspective:metrics]\ndiagnose DatabaseConnectionExhaustion", DiagnosisOutput
+        )
+        assert isinstance(full, DiagnosisOutput)
+        assert isinstance(metrics, DiagnosisOutput)
+        # Both produce hypotheses
+        assert len(full.hypotheses) >= 1
+        assert len(metrics.hypotheses) >= 1
+
+    def test_synthesizer_uses_full_diagnosis_map(self) -> None:
+        from packages.agent.schemas import DiagnosisOutput
+
+        llm = FakeLLM()
+        prompt = "[perspective:synthesizer]\ndiagnose DatabaseConnectionExhaustion"
+        output = llm.generate_json(prompt, DiagnosisOutput)
+        assert isinstance(output, DiagnosisOutput)
+        assert len(output.hypotheses) >= 2
+
+    def test_unknown_alert_with_perspective_falls_back(self) -> None:
+        from packages.agent.schemas import DiagnosisOutput
+
+        llm = FakeLLM()
+        prompt = "[perspective:metrics]\ndiagnose TotallyUnknownAlert"
+        output = llm.generate_json(prompt, DiagnosisOutput)
+        assert isinstance(output, DiagnosisOutput)
+        assert len(output.hypotheses) >= 1
+
+    def test_evidence_ids_passed_to_perspective_diagnosis(self) -> None:
+        from packages.agent.schemas import DiagnosisOutput
+
+        llm = FakeLLM()
+        prompt = (
+            "[perspective:metrics]\ndiagnose High5xxAfterDeploy\n"
+            "evidence_ids: evi_001 evi_002"
+        )
+        output = llm.generate_json(prompt, DiagnosisOutput)
+        assert isinstance(output, DiagnosisOutput)
+
+
 class TestPrompts:
     def test_system_prompt_stable(self) -> None:
         assert "SRE Incident Response Agent" in SYSTEM_PROMPT

@@ -188,7 +188,6 @@ class TestCollectK8sAndDbNodes:
 
         assert result["phase"] == "k8s_collected"
         assert result["k8s_evidence"]
-        assert result["k8s_evidence"][0]["evidence_id"].startswith("evi_")
 
     def test_collect_db_collects_fixture_evidence(self, db_session: Session) -> None:
         from packages.agent.nodes.collect_db import collect_db
@@ -225,7 +224,6 @@ class TestCollectK8sAndDbNodes:
 
         assert result["phase"] == "db_collected"
         assert result["db_evidence"]
-        assert result["db_evidence"][0]["evidence_id"].startswith("evi_")
 
 
 class TestGuardrailCheckNode:

@@ -8,13 +8,8 @@ from typing import Any
 from langgraph.graph import END, StateGraph
 
 from packages.agent.nodes.build_context import build_context
-from packages.agent.nodes.collect_db import collect_db
-from packages.agent.nodes.collect_deployment import collect_deployment
+from packages.agent.nodes.collect_all_evidence import collect_all_evidence
 from packages.agent.nodes.collect_gap import MAX_DIAGNOSE_CYCLES, collect_gap
-from packages.agent.nodes.collect_k8s import collect_k8s
-from packages.agent.nodes.collect_logs import collect_logs
-from packages.agent.nodes.collect_metrics import collect_metrics
-from packages.agent.nodes.collect_traces import collect_traces
 from packages.agent.nodes.compress_context import compress_context
 from packages.agent.nodes.cross_incident import cross_incident
 from packages.agent.nodes.diagnose import diagnose
@@ -43,12 +38,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph = StateGraph(IncidentState)
 
     graph.add_node("parse_alert", partial(parse_alert, deps=deps))
-    graph.add_node("collect_metrics", partial(collect_metrics, deps=deps))
-    graph.add_node("collect_logs", partial(collect_logs, deps=deps))
-    graph.add_node("collect_traces", partial(collect_traces, deps=deps))
-    graph.add_node("collect_deployment", partial(collect_deployment, deps=deps))
-    graph.add_node("collect_k8s", partial(collect_k8s, deps=deps))
-    graph.add_node("collect_db", partial(collect_db, deps=deps))
+    graph.add_node("collect_all_evidence", partial(collect_all_evidence, deps=deps))
     graph.add_node("collect_gap", partial(collect_gap, deps=deps))
     graph.add_node("retrieve_memory", partial(retrieve_memory, deps=deps))
     graph.add_node("cross_incident", partial(cross_incident, deps=deps))
@@ -67,13 +57,8 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph.add_node("persist_memory", partial(persist_memory, deps=deps))
 
     graph.set_entry_point("parse_alert")
-    graph.add_edge("parse_alert", "collect_metrics")
-    graph.add_edge("collect_metrics", "collect_logs")
-    graph.add_edge("collect_logs", "collect_traces")
-    graph.add_edge("collect_traces", "collect_deployment")
-    graph.add_edge("collect_deployment", "collect_k8s")
-    graph.add_edge("collect_k8s", "collect_db")
-    graph.add_edge("collect_db", "retrieve_memory")
+    graph.add_edge("parse_alert", "collect_all_evidence")
+    graph.add_edge("collect_all_evidence", "retrieve_memory")
     graph.add_edge("retrieve_memory", "cross_incident")
     graph.add_edge("cross_incident", "retrieve_runbook")
     graph.add_edge("retrieve_runbook", "build_context")

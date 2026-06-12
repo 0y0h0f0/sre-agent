@@ -9,450 +9,118 @@ from typing import Any, get_origin
 
 from pydantic import BaseModel
 
+from packages.agent.rules_fallback import (
+    _ACTIONS_MAP,
+    _DIAGNOSIS_MAP,
+    _diag,
+)
 from packages.agent.schemas import DiagnosisOutput, PlannedAction
 
-# Compact builders for the Phase 2.4 fault-catalog expansion. They produce the
-# same dict shape as the explicit MVP entries below, just without the
-# boilerplate (a hypothesis is (statement, confidence, rank_explanation)).
-_Hyp = tuple[str, float, str]
 _EVIDENCE_ID_RE = re.compile(r"\b(?:evi|evd)_[A-Za-z0-9_-]+")
+_PERSPECTIVE_RE = re.compile(r"\[perspective:(metrics|logs|traces|synthesizer)\]")
 
+# Re-export for backward-compatible imports by tests
+_Hyp = tuple[str, float, str]
 
-def _diag(
-    summary: str, confidence: float, h1: _Hyp, h2: _Hyp, missing: list[str]
-) -> dict[str, Any]:
-    return {
-        "hypotheses": [
-            {
-                "id": "h1",
-                "statement": h1[0],
-                "supporting_evidence_ids": [],
-                "confidence": h1[1],
-                "rank_explanation": h1[2],
-            },
-            {
-                "id": "h2",
-                "statement": h2[0],
-                "supporting_evidence_ids": [],
-                "confidence": h2[1],
-                "rank_explanation": h2[2],
-            },
-        ],
-        "root_cause": {"summary": summary, "confidence": confidence, "evidence_ids": []},
-        "evidence_ids": [],
-        "missing_evidence": missing,
-    }
+# ---- Phase 2: perspective-specific specialist diagnoses ----
+# Each entry is a partial DiagnosisOutput focusing on one evidence type.
+# Entries not listed below are auto-generated from _DIAGNOSIS_MAP at import time.
 
-
-def _action(
-    action_type: str,
-    target: str,
-    params: dict[str, Any],
-    reason: str,
-    risk_hint: str,
-    rollback_plan: str = "",
-) -> dict[str, Any]:
-    return {
-        "type": action_type,
-        "target": target,
-        "params": params,
-        "reason": reason,
-        "risk_hint": risk_hint,
-        "rollback_plan": rollback_plan,
-    }
-
-
-_DIAGNOSIS_MAP: dict[str, dict[str, Any]] = {
-    "DatabaseConnectionExhaustion": {
-        "hypotheses": [
-            {
-                "id": "h1",
-                "statement": "Connection pool saturated by slow queries",
-                "supporting_evidence_ids": [],
-                "confidence": 0.88,
-                "rank_explanation": "DB connections near max with elevated query latency",
-            },
-            {
-                "id": "h2",
-                "statement": "Connection leak in application code",
-                "supporting_evidence_ids": [],
-                "confidence": 0.60,
-                "rank_explanation": "Connection count rising without traffic increase",
-            },
-        ],
-        "root_cause": {
-            "summary": "DB connection pool exhausted — max connections reached",
-            "confidence": 0.88,
-            "evidence_ids": [],
-        },
-        "evidence_ids": [],
-        "missing_evidence": ["stack traces", "pool config", "schema changes"],
-    },
-    "High5xxAfterDeploy": {
-        "hypotheses": [
-            {
-                "id": "h1",
-                "statement": "Deployment regression causing 5xx errors",
-                "supporting_evidence_ids": [],
-                "confidence": 0.85,
-                "rank_explanation": "5xx spike started within 3 min of deploy",
-            },
-            {
-                "id": "h2",
-                "statement": "Downstream dependency API incompatibility",
-                "supporting_evidence_ids": [],
-                "confidence": 0.55,
-                "rank_explanation": "Error logs show downstream call failures",
-            },
-        ],
-        "root_cause": {
-            "summary": "Deploy introduced validation bug causing 5xx on checkout",
-            "confidence": 0.85,
-            "evidence_ids": [],
-        },
-        "evidence_ids": [],
-        "missing_evidence": ["deployment diff", "smoke test results"],
-    },
-    "RedisCacheAvalanche": {
-        "hypotheses": [
-            {
-                "id": "h1",
-                "statement": "Synchronized TTL expiry flooded database",
-                "supporting_evidence_ids": [],
-                "confidence": 0.82,
-                "rank_explanation": "Cache hit rate 12%, DB QPS 4x spike",
-            },
-            {
-                "id": "h2",
-                "statement": "Hot key thundering herd under traffic",
-                "supporting_evidence_ids": [],
-                "confidence": 0.70,
-                "rank_explanation": "Single key miss pattern correlated with DB load",
-            },
-        ],
-        "root_cause": {
-            "summary": "Redis cache avalanche — synchronized TTL on hot keys",
-            "confidence": 0.82,
-            "evidence_ids": [],
-        },
-        "evidence_ids": [],
-        "missing_evidence": ["TTL distribution", "hot key patterns"],
-    },
-    "PodRestartLoop": {
-        "hypotheses": [
-            {
-                "id": "h1",
-                "statement": "OOMKilled — memory limit too low",
-                "supporting_evidence_ids": [],
-                "confidence": 0.90,
-                "rank_explanation": "OOMKilled events; memory at limit before restart",
-            },
-            {
-                "id": "h2",
-                "statement": "Startup probe failure after config change",
-                "supporting_evidence_ids": [],
-                "confidence": 0.45,
-                "rank_explanation": "Restarts align with configmap update",
-            },
-        ],
-        "root_cause": {
-            "summary": "CrashLoopBackOff — OOMKilled, memory limit too low",
-            "confidence": 0.90,
-            "evidence_ids": [],
-        },
-        "evidence_ids": [],
-        "missing_evidence": ["memory profile", "HPA events"],
-    },
+_PERSPECTIVE_DIAGNOSIS_MAP: dict[tuple[str, str], dict[str, Any]] = {
+    ("DatabaseConnectionExhaustion", "metrics"): _diag(
+        "Elevated DB connection count and query latency", 0.80,
+        ("Connection pool near capacity", 0.80, "active_connections > 80% max"),
+        ("Query latency spike from slow queries", 0.65, "p99 query time 4x baseline"),
+        ["log samples", "trace spans", "pool config"],
+    ),
+    ("DatabaseConnectionExhaustion", "logs"): _diag(
+        "Connection timeout errors in application logs", 0.75,
+        ("Connection acquisition timeout", 0.75, "timeout errors correlated with pool"),
+        ("Idle-in-transaction connections blocking", 0.50, "idle-in-transaction observed"),
+        ["pool metrics", "lock status", "trace spans"],
+    ),
+    ("DatabaseConnectionExhaustion", "traces"): _diag(
+        "DB span dominates trace latency", 0.78,
+        ("Slow queries identified in traces", 0.78, "DB span > 200ms in 90% of traces"),
+        ("Connection acquisition wait visible", 0.55, "acquire_conn span elevated"),
+        ["pool metrics", "slow query logs"],
+    ),
+    ("High5xxAfterDeploy", "metrics"): _diag(
+        "5xx error rate spike post-deployment", 0.83,
+        ("HTTP 5xx rate elevated", 0.83, "5xx rate > 5% starting at deploy time"),
+        ("Latency increase on affected endpoints", 0.60, "p95 latency 3x baseline"),
+        ["error logs", "stack traces", "deployment diff"],
+    ),
+    ("High5xxAfterDeploy", "logs"): _diag(
+        "Validation errors and downstream call failures", 0.80,
+        ("NullPointerException in request handler", 0.80, "NPE logged at rate 50/min"),
+        ("Downstream API returning 400", 0.55, "downstream 400 errors in logs"),
+        ["metrics", "trace details", "deployment diff"],
+    ),
+    ("High5xxAfterDeploy", "traces"): _diag(
+        "Error spans concentrated in checkout handler", 0.82,
+        ("checkout span failing with status=error", 0.82, "100% error in checkout span"),
+        ("Upstream propagation of errors", 0.50, "errors propagate to edge gateway span"),
+        ["metrics", "error logs"],
+    ),
+    ("RedisCacheAvalanche", "metrics"): _diag(
+        "Cache hit rate collapsed, DB QPS surged", 0.80,
+        ("Cache hit rate dropped to 12%", 0.80, "cache_hit_ratio trending to 0.12"),
+        ("DB query rate 4x normal", 0.70, "db_qps spike correlates with cache miss"),
+        ["TTL distribution", "hot key list", "cache logs"],
+    ),
+    ("RedisCacheAvalanche", "logs"): _diag(
+        "Cache miss storms and DB timeout errors", 0.72,
+        ("Cache miss logged at high rate", 0.72, "cache_miss log rate >> cache_hit"),
+        ("DB timeout due to overload", 0.55, "db query timeout logged after cache miss"),
+        ["metrics", "TTL config", "key patterns"],
+    ),
+    ("RedisCacheAvalanche", "traces"): _diag(
+        "Cache fetch spans missing, DB spans dominate", 0.76,
+        ("cache_get span empty, fallback to DB", 0.76, "cache_get returning empty"),
+        ("DB span time increased", 0.60, "db_query span p99 > 500ms"),
+        ["metrics", "cache config"],
+    ),
+    ("PodRestartLoop", "metrics"): _diag(
+        "Memory usage at limit, pod restarts detected", 0.88,
+        ("Memory usage near limit", 0.88, "container_memory_working_set_bytes near limit"),
+        ("Restart count increasing", 0.82, "kube_pod_container_status_restarts climbing"),
+        ["k8s events", "memory profile", "HPA history"],
+    ),
+    ("PodRestartLoop", "logs"): _diag(
+        "OOMKilled and CrashLoopBackOff events", 0.85,
+        ("OOMKilled logged by kubelet", 0.85, "OOMKilled event for container"),
+        ("Startup probe failing", 0.40, "startup probe timeout in events"),
+        ["k8s events", "memory metrics"],
+    ),
+    ("PodRestartLoop", "traces"): _diag(
+        "Trace spans show increasing latency before restart", 0.65,
+        ("GC pause time increasing before OOM", 0.65, "gc spans growing before restart"),
+        ("Request latency chain from memory pressure", 0.50, "request spans show latency ramp"),
+        ["memory metrics", "heap profile"],
+    ),
 }
 
-_ACTIONS_MAP: dict[str, list[dict[str, Any]]] = {
-    "DatabaseConnectionExhaustion": [
-        {
-            "type": "adjust_connection_pool",
-            "target": "checkout-db",
-            "params": {"pool_size": 50},
-            "reason": "Increase DB pool size",
-            "risk_hint": "L1",
-            "rollback_plan": "Revert pool to original size",
-        },
-        {
-            "type": "create_ticket",
-            "target": "dba-team",
-            "params": {"priority": "P1"},
-            "reason": "Investigate connection leak",
-            "risk_hint": "L1",
-            "rollback_plan": "",
-        },
-    ],
-    "High5xxAfterDeploy": [
-        {
-            "type": "rollback_release",
-            "target": "checkout",
-            "params": {"from_version": "v2026.05.31-1", "to_version": "v2026.05.30-3"},
-            "reason": "5xx spike correlated with deploy",
-            "risk_hint": "L3",
-            "rollback_plan": "Re-deploy after fix validated in staging",
-        },
-        {
-            "type": "create_ticket",
-            "target": "dev-team",
-            "params": {"priority": "P1"},
-            "reason": "Fix 5xx regression",
-            "risk_hint": "L1",
-            "rollback_plan": "",
-        },
-    ],
-    "RedisCacheAvalanche": [
-        {
-            "type": "warmup_cache",
-            "target": "redis-checkout",
-            "params": {"keys": ["product:*", "price:*"], "ttl_stagger": True},
-            "reason": "Rebuild cache with staggered TTL",
-            "risk_hint": "L1",
-            "rollback_plan": "Clear warmed keys if data incorrect",
-        },
-        {
-            "type": "enable_rate_limit",
-            "target": "checkout",
-            "params": {"max_qps": 500},
-            "reason": "Protect DB during rebuild",
-            "risk_hint": "L3",
-            "rollback_plan": "Remove limit when cache > 80%",
-        },
-    ],
-    "PodRestartLoop": [
-        {
-            "type": "scale_deployment",
-            "target": "checkout",
-            "params": {"memory_limit": "512Mi"},
-            "reason": "Increase memory limit",
-            "risk_hint": "L2",
-            "rollback_plan": "Revert to original limits",
-        },
-        {
-            "type": "restart_pod",
-            "target": "checkout",
-            "params": {},
-            "reason": "Restart with new limits",
-            "risk_hint": "L2",
-            "rollback_plan": "Old config in version control",
-        },
-    ],
-}
-
-# Phase 2.4: expand from 4 MVP faults to 15+. New entries use the compact
-# builders. Risk levels stay within MVP scope (no L4; rollback/rate-limit = L3).
-_DIAGNOSIS_MAP.update(
-    {
-        "CPUThrottling": _diag(
-            "CPU throttled — container limit too low for load",
-            0.84,
-            ("CFS throttling from a tight CPU limit", 0.84, "throttled ratio high vs CPU request"),
-            ("Noisy neighbor on the node", 0.40, "node CPU saturated across pods"),
-            ["request/limit config", "HPA history"],
-        ),
-        "MemoryLeak": _diag(
-            "Memory leak — working set grows until OOMKilled",
-            0.86,
-            ("Unbounded growth in app heap", 0.86, "memory_working_set rises monotonically"),
-            ("Cache without eviction", 0.52, "growth correlates with cache size"),
-            ["heap profile", "object retention graph"],
-        ),
-        "DiskFull": _diag(
-            "Disk near full — log rotation or PVC undersized",
-            0.83,
-            ("Log files not rotating", 0.83, "node_filesystem_avail trending to zero"),
-            ("PVC too small for retained data", 0.55, "growth steady with data volume"),
-            ["log rotation config", "PVC size"],
-        ),
-        "CertificateExpiry": _diag(
-            "TLS certificate expiring — renewal pipeline stalled",
-            0.91,
-            ("Cert expiry within threshold", 0.91, "tls_cert_expiry below N days"),
-            ("ACME renewal job failing", 0.60, "no recent renewal events"),
-            ["cert-manager logs", "renewal schedule"],
-        ),
-        "DNSFailure": _diag(
-            "DNS resolution failures — CoreDNS dropping queries",
-            0.80,
-            ("CoreDNS overloaded/packet loss", 0.80, "dns error rate elevated"),
-            ("Upstream resolver flapping", 0.50, "intermittent NXDOMAIN spikes"),
-            ["CoreDNS metrics", "node conntrack table"],
-        ),
-        "MessageQueueLag": _diag(
-            "Consumer lag building — throughput below ingest rate",
-            0.82,
-            ("Consumers under-provisioned", 0.82, "consumer lag growing steadily"),
-            ("Poison message stalling partition", 0.48, "single partition lag spikes"),
-            ["consumer group config", "partition lag breakdown"],
-        ),
-        "RateLimitTriggered": _diag(
-            "Rate limiting firing — policy too aggressive or traffic surge",
-            0.78,
-            ("Limit threshold too low", 0.78, "rate_limit_hits high under normal QPS"),
-            ("Legitimate traffic surge", 0.55, "hits track a real QPS spike"),
-            ["rate limit policy", "client breakdown"],
-        ),
-        "SlowAPI": _diag(
-            "P95 latency spike — downstream span is the bottleneck",
-            0.81,
-            ("Slow downstream dependency", 0.81, "trace p95 dominated by one span"),
-            ("Lock contention in handler", 0.50, "latency rises with concurrency"),
-            ["flame graph", "db lock waits"],
-        ),
-        "ErrorBudgetBurn": _diag(
-            "SLO error budget burning fast — sustained elevated errors",
-            0.85,
-            ("High burn rate from 5xx", 0.85, "burn rate well above 1x"),
-            ("Bad deploy eroding budget", 0.58, "burn started after release"),
-            ["SLO config", "recent deploys"],
-        ),
-        "P0SiteOutage": _diag(
-            "P0 multi-service outage — shared dependency failure",
-            0.92,
-            ("Shared dependency down", 0.92, "many services alerting together"),
-            ("Network partition", 0.60, "cross-AZ errors correlated"),
-            ["dependency health", "network topology"],
-        ),
-        "DownstreamTimeout": _diag(
-            "Downstream timeouts — upstream callers retrying and stacking",
-            0.79,
-            ("Downstream service slow/unavailable", 0.79, "timeout errors to one dependency"),
-            ("Retry storm amplifying load", 0.52, "retry budget exhausted in logs"),
-            ["downstream SLOs", "retry policy"],
-        ),
-    }
-)
-
-_ACTIONS_MAP.update(
-    {
-        "CPUThrottling": [
-            _action(
-                "scale_deployment",
-                "checkout",
-                {"cpu_limit": "1000m"},
-                "Raise CPU limit",
-                "L2",
-                "Revert to original CPU limit",
-            ),
-            _action(
-                "create_ticket", "platform-team", {"priority": "P2"}, "Right-size requests", "L1"
-            ),
-        ],
-        "MemoryLeak": [
-            _action(
-                "restart_pod",
-                "checkout",
-                {},
-                "Reclaim leaked memory",
-                "L2",
-                "No state lost; rolling restart",
-            ),
-            _action("create_ticket", "dev-team", {"priority": "P1"}, "Find and fix leak", "L1"),
-        ],
-        "DiskFull": [
-            _action(
-                "create_ticket",
-                "platform-team",
-                {"priority": "P1"},
-                "Expand PVC / fix rotation",
-                "L1",
-            ),
-            _action(
-                "adjust_connection_pool",
-                "log-shipper",
-                {"retention_days": 3},
-                "Shorten log retention",
-                "L1",
-                "Restore prior retention",
-            ),
-        ],
-        "CertificateExpiry": [
-            _action(
-                "create_ticket", "security-team", {"priority": "P1"}, "Renew certificate", "L1"
-            ),
-        ],
-        "DNSFailure": [
-            _action(
-                "scale_deployment",
-                "coredns",
-                {"replicas": 4},
-                "Scale CoreDNS",
-                "L2",
-                "Revert replica count",
-            ),
-            _action(
-                "create_ticket", "platform-team", {"priority": "P1"}, "Investigate DNS loss", "L1"
-            ),
-        ],
-        "MessageQueueLag": [
-            _action(
-                "scale_deployment",
-                "consumer",
-                {"replicas": 6},
-                "Add consumers to drain lag",
-                "L2",
-                "Scale back after lag clears",
-            ),
-            _action(
-                "create_ticket", "data-team", {"priority": "P2"}, "Check poison messages", "L1"
-            ),
-        ],
-        "RateLimitTriggered": [
-            _action(
-                "enable_rate_limit",
-                "checkout",
-                {"max_qps": 800},
-                "Loosen limit to fit traffic",
-                "L3",
-                "Restore prior limit",
-            ),
-            _action("create_ticket", "api-team", {"priority": "P2"}, "Review limit policy", "L1"),
-        ],
-        "SlowAPI": [
-            _action("create_ticket", "dev-team", {"priority": "P1"}, "Optimize slow span", "L1"),
-        ],
-        "ErrorBudgetBurn": [
-            _action(
-                "rollback_release",
-                "checkout",
-                {"from_version": "v2026.06.01-2", "to_version": "v2026.06.01-1"},
-                "Stop budget burn from bad deploy",
-                "L3",
-                "Re-deploy after fix in staging",
-            ),
-            _action("create_ticket", "sre-team", {"priority": "P1"}, "Review SLO and burn", "L1"),
-        ],
-        "P0SiteOutage": [
-            _action(
-                "create_ticket",
-                "incident-commander",
-                {"priority": "P0"},
-                "Page on-call, open bridge",
-                "L1",
-            ),
-            _action(
-                "enable_rate_limit",
-                "edge",
-                {"max_qps": 200},
-                "Shed load to protect recovery",
-                "L3",
-                "Remove limit once services healthy",
-            ),
-        ],
-        "DownstreamTimeout": [
-            _action(
-                "enable_rate_limit",
-                "checkout",
-                {"max_qps": 400},
-                "Throttle to stop retry storm",
-                "L3",
-                "Remove limit when downstream recovers",
-            ),
-            _action("create_ticket", "dev-team", {"priority": "P1"}, "Tune timeouts/retries", "L1"),
-        ],
-    }
-)
+# Fill remaining alert types with auto-generated perspective entries.
+for _alert_name in _DIAGNOSIS_MAP:
+    for _persp in ("metrics", "logs", "traces"):
+        if (_alert_name, _persp) not in _PERSPECTIVE_DIAGNOSIS_MAP:
+            full = _DIAGNOSIS_MAP[_alert_name]
+            hyps = full.get("hypotheses", [])
+            rc = full.get("root_cause", {})
+            h1 = hyps[0] if len(hyps) > 0 else None
+            h2 = hyps[1] if len(hyps) > 1 else None
+            _PERSPECTIVE_DIAGNOSIS_MAP[(_alert_name, _persp)] = _diag(
+                rc.get("summary", f"{_alert_name} — {_persp} perspective"),
+                min(rc.get("confidence", 0.7) * 0.85, 0.95),
+                (h1["statement"] if h1 else f"Primary cause from {_persp}",
+                 h1["confidence"] * 0.9 if h1 else 0.6,
+                 h1.get("rank_explanation", "") if h1 else ""),
+                (h2["statement"] if h2 else f"Secondary cause from {_persp}",
+                 h2["confidence"] * 0.8 if h2 else 0.4,
+                 h2.get("rank_explanation", "") if h2 else ""),
+                ["additional evidence"],
+            )
 
 
 class FakeLLM:
@@ -464,25 +132,27 @@ class FakeLLM:
         alert_name = self._extract_alert_name(messages)
         content = str(messages)
         evidence_ids = self._extract_evidence_ids_from_text(content)
+        perspective = self._extract_perspective(content)
         if "report" in content.lower():
             return json.dumps(self._report_dict(alert_name))
         if "rank" in content.lower():
             return self._ranked_json(alert_name, evidence_ids)
         if "plan" in content.lower() or "action" in content.lower():
             return json.dumps(_ACTIONS_MAP.get(alert_name, _ACTIONS_MAP["High5xxAfterDeploy"]))
-        return json.dumps(self._diagnosis_dict(alert_name, evidence_ids))
+        return json.dumps(self._diagnosis_dict(alert_name, evidence_ids, perspective))
 
     def generate_json(
         self, prompt: str, output_schema: type[BaseModel], *, thinking: bool = False, **kwargs: Any
     ) -> Any:
         alert_name = self._extract_alert_name_from_text(prompt)
+        perspective = self._extract_perspective(prompt)
         origin = get_origin(output_schema)
         if origin is list:
             actions = _ACTIONS_MAP.get(alert_name, _ACTIONS_MAP["High5xxAfterDeploy"])
             return [PlannedAction(**a) for a in actions]
         if output_schema is DiagnosisOutput:
             evidence_ids = self._extract_evidence_ids_from_text(prompt)
-            return DiagnosisOutput(**self._diagnosis_dict(alert_name, evidence_ids))
+            return DiagnosisOutput(**self._diagnosis_dict(alert_name, evidence_ids, perspective))
         return output_schema()
 
     def _report_dict(self, alert_name: str) -> dict[str, Any]:
@@ -507,8 +177,20 @@ class FakeLLM:
         return json.dumps(data)
 
     @staticmethod
-    def _diagnosis_dict(alert_name: str, evidence_ids: list[str] | None = None) -> dict[str, Any]:
-        data = deepcopy(_DIAGNOSIS_MAP.get(alert_name, _DIAGNOSIS_MAP["High5xxAfterDeploy"]))
+    def _diagnosis_dict(alert_name: str, evidence_ids: list[str] | None = None,
+                        perspective: str | None = None) -> dict[str, Any]:
+        if perspective and perspective != "synthesizer":
+            key = (alert_name, perspective)
+            fallback_key = ("High5xxAfterDeploy", perspective)
+            data = deepcopy(_PERSPECTIVE_DIAGNOSIS_MAP.get(
+                key,
+                _PERSPECTIVE_DIAGNOSIS_MAP.get(
+                    fallback_key,
+                    _DIAGNOSIS_MAP.get(alert_name, _DIAGNOSIS_MAP["High5xxAfterDeploy"]),
+                ),
+            ))
+        else:
+            data = deepcopy(_DIAGNOSIS_MAP.get(alert_name, _DIAGNOSIS_MAP["High5xxAfterDeploy"]))
         ids = list(evidence_ids or [])
         if ids:
             data["evidence_ids"] = ids
@@ -532,6 +214,12 @@ class FakeLLM:
             if name in text:
                 return name
         return "High5xxAfterDeploy"
+
+    @staticmethod
+    def _extract_perspective(text: str) -> str | None:
+        """Extract perspective tag from a prompt, e.g. ``[perspective:metrics]``."""
+        m = _PERSPECTIVE_RE.search(text)
+        return m.group(1) if m else None
 
     @staticmethod
     def _extract_evidence_ids_from_text(text: str) -> list[str]:

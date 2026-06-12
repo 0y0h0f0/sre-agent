@@ -2,6 +2,31 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Current Phase: Real Backend Integration
+
+The MVP (M1-M7) and post-MVP implementation slices are complete for the local-demo scope. The project is now in the **real backend integration** phase — extending the agent from fixture-only mode to safely connect to real Prometheus, Loki, Jaeger, Kubernetes, and Alertmanager backends for production diagnosis.
+
+**Authoritative implementation documents:**
+- `docs/superpowers/specs/2026-06-10-real-backend-integration-design.md` — design decisions
+- `docs/superpowers/specs/2026-06-11-real-backend-integration-implementation-plan.md` — milestone/PR breakdown
+- `sre-agent-agent-execution-plan.md` — **agent-executable task cards with hard constraints** (read this before implementing any PR)
+
+## Agent Execution Discipline
+
+When implementing a `PR x.y` from the execution plan:
+
+1. **Read the PR card first**: Scope / Non-Scope / Suggested Files / Test Checklist / Acceptance Criteria / Risks / Rollback.
+2. **One PR at a time** — never implement ahead of the assigned PR or across milestone boundaries.
+3. **Production safety > convenience**. Default: `APP_ENV=local`, `LLM_PROVIDER=disabled` in production, `EXECUTOR_BACKEND=fixture`.
+4. **Phase 0–8 does not use real LLM or web_search**. All diagnosis and runbook capabilities must work deterministically.
+5. **Raw secrets never enter** DB, audit log, debug log, AgentDeps, LLM prompt, or LangGraph state.
+6. **Worker only reads published EffectiveConfigVersion** — never proposals or detected_only.
+7. **Backend URLs must pass safety validation** before entering EffectiveConfig or worker construction.
+8. **Every PR must include tests**. Output a completion report: changes, test results, security self-check, risks, rollback, next step.
+9. **If blocked**, report: what was explored, why blocked, minimal repro, suggested decision, alternative task.
+
+Full execution rules, state machine, stop conditions, and report format are in `sre-agent-agent-execution-plan.md` §A–B.
+
 ## Commands
 
 ```bash
@@ -53,24 +78,30 @@ npm run test:e2e      # Playwright E2E tests
 
 ## Architecture
 
-This is a completed SRE Incident Response Agent for the documented local-demo scope. It receives alerts, diagnoses incidents via a LangGraph workflow on Celery, and produces root cause analysis, guarded mock actions, approvals, reports, evals, and a React console.
+This is an SRE Incident Response Agent. It receives alerts, diagnoses incidents via a LangGraph workflow on Celery, and produces root cause analysis, guarded actions, approvals, reports, evals, and a React console.
+
+**Current scope:** MVP complete (local demo with fixtures). Real backend integration in progress — the agent is being extended to safely connect to real Prometheus, Loki, Jaeger, Kubernetes, and Alertmanager for production diagnosis, while preserving fixture/demo compatibility for local dev and CI.
 
 ### Monorepo layout
 
 - `apps/api/` — FastAPI application: routers, Pydantic schemas, services
-- `apps/worker/` — Celery app and tasks (diagnosis workflow)
+- `apps/worker/` — Celery app and tasks (diagnosis, discovery, alertmanager poll)
 - `apps/web/` — React + TypeScript + Vite console (TanStack Query, React Router)
 - `packages/` — shared library code imported by both api and worker
-  - `packages/common/` — Settings (pydantic-settings), AppError types, ID helpers, time utils
+  - `packages/agent/` — LangGraph workflow, LLM adapters (fake/disabled/real), guardrails, nodes
+  - `packages/common/` — Settings (pydantic-settings), AppError, ID helpers, time utils, backend auth
   - `packages/db/` — SQLAlchemy models, repositories, session factory
-  - `packages/tools/` — Tool client layer (Metrics, Logs, Traces, GitChanges) with caching
+  - `packages/discovery/` — **(new)** Prometheus/Loki/Jaeger/K8s/Alertmanager discovery, automation policy, config merge, runbook templates
+  - `packages/tools/` — Tool client layer (Metrics, Logs, Traces, K8s, DB, GitChanges, executor) with caching
+  - `packages/rag/` — Runbook RAG, ingestion, embedding
+  - `packages/memory/` — Memory store, token cache, context compression
 - `demo/` — demo alert fixtures, mock service, fault data
 - `deploy/` — Docker Compose configs (Prometheus, Loki, Grafana, OTel collector)
 - `migrations/` — Alembic migrations
 - `docs/` — current reader-facing documentation and architecture references
+  - `docs/superpowers/specs/` — design and implementation plan documents
 - `plans/` — original implementation specs, codegen constraints, and roadmap completion notes
-  - `plans/11-roadmap/` — post-MVP phase notes, sourced from `tzplan.md`
-- `AGENTS.md` — coding guide with detailed constraints (read before implementing or changing code)
+- `AGENTS.md` — detailed coding guide with constraints
 
 ### Layered architecture (apps/api)
 
@@ -85,43 +116,83 @@ Routers are thin (validation + service call). Services contain business logic. R
 ### Settings
 
 `packages/common/settings.py` — all configuration via `pydantic-settings`, reads from env vars / `.env`. Key settings:
+
+**Environment & safety:**
+- `APP_ENV` — `local` (default) or `production`. Production enables safety defaults.
+- `LLM_PROVIDER` — `fake` in local, `disabled` in production (defaults). Phase 0–8 does not call real LLMs.
+- `AUTOMATION_LEVEL` — `off` | `propose` | `supervised` (default) | `autopilot`
+- `DISCOVERY_ENABLED`, `DISCOVERY_APPLY_MODE` — control automatic backend discovery
+
+**LLM & reasoning (for manual eval only, not CI):**
+- `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_MAX_TOKENS` / `LLM_TEMPERATURE`
+- `LLM_REASONING_ENABLED` / `LLM_REASONING_EFFORT` / `LLM_REASONING_NODES`
+
+**Infrastructure:**
 - `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`
-- `LLM_PROVIDER` / `EMBEDDING_PROVIDER` — must be `"fake"` for tests and local dev. `LLM_PROVIDER` selects an adapter via `packages/agent/llm/factory.py`: `fake` | `vllm` | `openai` | `deepseek` | `anthropic`
-- `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_MAX_TOKENS` / `LLM_TEMPERATURE` / `LLM_REASONING_ENABLED` / `LLM_REASONING_EFFORT` — provider config (only used by non-fake adapters; completed Phase 1.1)
-- `LLM_REASONING_NODES` — comma-separated nodes that use deep reasoning when `LLM_REASONING_ENABLED` is true (default `diagnose`; completed Phase 1.2). Gated by `packages/agent/llm/reasoning.py`; the `diagnose` node emits an auditable `diagnosis_rationale` and records LLM call metadata in `state["llm_calls"]` without persisting raw chain-of-thought
 - `TOOL_TIMEOUT_SECONDS` — default 2.0s
-- `CELERY_TASK_ALWAYS_EAGER` — set to `True` to run tasks synchronously in tests
+- `CELERY_TASK_ALWAYS_EAGER` — set to `True` for synchronous tests
+
+**Real backend integration (new):**
+- `ALERT_SOURCE` — `webhook` (default) | `poll` | `both` | `none`
+- `ALERT_POLL_*` — poll interval, filters, allowlist, lock TTL
+- `BACKEND_URL_ALLOWLIST` — host patterns for allowed internal service DNS
+- `RUNBOOK_TEMPLATE_GENERATION_ENABLED` / `RUNBOOK_LLM_GENERATION_ENABLED` / `RUNBOOK_WEB_SEARCH_ENABLED`
+- `BackendAuthConfig` — per-backend auth (bearer token, basic, mTLS) with secret references
 
 ### Database
 
-PostgreSQL with pgvector extension. Models use prefixed public IDs (`inc_`, `run_`, `tool_`, `act_`, `apv_`, `rpt_`, `chk_`, `mem_`, `evd_`, `nd_`, `eval_`, `req_`). All times are timezone-aware UTC.
+PostgreSQL with pgvector extension. Models use prefixed public IDs (`inc_`, `run_`, `tool_`, `act_`, `apv_`, `rpt_`, `chk_`, `mem_`, `evd_`, `nd_`, `eval_`, `req_`, `key_`). All times are timezone-aware UTC.
 
 Key model relationships:
 - `Incident` has many `AgentRun`, `EvidenceItem`, `Action`
 - `AgentRun` has many `AgentRunNode`
 - `IncidentReport` uses unique constraint on `(incident_id, version)` — regeneration creates new versions
-- `RunbookChunk` has `vector(384)` embedding column, `MemoryItem` has `vector(384) nullable`
+- `RunbookChunk` has `vector(512)` embedding column, `MemoryItem` has `vector(512) nullable`
 - Fingerprint deduplication is enforced at the DB level for open incidents
+- **(new)** `DiscoveryRun` → `DiscoveryProposal` → `EffectiveConfigVersion` chain
+- **(new)** `DiscoveryOverride` with mandatory `expires_at`, active = `revoked_at IS NULL AND expires_at > now`
+- **(new)** `AlertPollCursor` for poll dedup and cursor state
+- **(new)** `ApiKey` extended with `roles` and `scopes`
 
 ### Key design constraints
 
-- **Mock executor only in MVP** — no real production writes, no destructive actions
-- **Risk levels**: L0 read-only (auto), L1 low-risk write (auto), L2 restart/scale (approval), L3 rollback/rate-limit (approval + second confirmation), L4 destructive (hard reject)
-- **L3 approval requires** `risk_ack=true`, `confirm_action_type`, `confirm_target`
-- **POST /api/alerts** creates incident + agent run, then enqueues Celery task — never runs LangGraph inline
-- **Fingerprint** deduplicates open incidents
-- **Tests must use FakeLLM** and deterministic fixtures — no random vectors
-- **Tool cache** uses UTC time buckets (metrics/logs: 1min, traces: 5min, git: 10min)
-- **Error envelope** — all API errors return `{"error": {"code", "message", "request_id", "details"}}`
-- **X-Request-Id** — middleware generates one if missing, returned in response headers
-- **LangGraph checkpointing** uses `PostgresSaver` with `thread_id=agent_run_id`, `checkpoint_ns=""`
-- **Token cache separation** — provider cache metrics are distinct from app-level Redis cache metrics
-- **Context compression** triggers when logs > 20 entries or > 3000 tokens, evidence exceeds 80% budget, or runbook chunks exceed budget
-- **Evidence cross-validation** (completed Phase 1.3, `packages/agent/evidence_validation.py`) — the `diagnose` node fuses metrics/logs/traces/deployment signals (weights Trace > Metrics > Logs > Git); corroboration raises root-cause confidence, conflict sets `state["needs_human_review"]`, missing sources degrade without blocking. Deployment absence is neutral, not a healthy dissent
-- **Cascading-failure analysis** (completed Phase 1.4, `packages/agent/topology.py`) — service dependency graph (config `SERVICE_TOPOLOGY_PATH`/`demo/topology.json` or trace-derived); `analyze_propagation` finds the root service of a chain, `correlate_incidents` clusters co-occurring related incidents. The `diagnose` node writes `state["cascade_analysis"]` (informational; `is_cascade=False` for single-service incidents)
+- **Local by default**: `APP_ENV=local` keeps FakeLLM, fixture backends, localhost defaults for demo/CI.
+- **Production safe**: `APP_ENV=production` defaults `LLM_PROVIDER=disabled`, `EXECUTOR_BACKEND=fixture`. No hidden localhost fallback.
+- **Phase 0–8 deterministic**: All diagnosis, runbook template, and feedback use deterministic methods. Real LLM and web_search are gated behind explicit flags.
+- **Executor backends**: Fixture executor is the default. `LiveK8sExecutorBackend` is opt-in via `EXECUTOR_BACKEND=live`, limited to restart/scale/rollback K8s mutations after guardrails and approval.
+- **Risk levels**: L0 read-only (auto), L1 low-risk write (auto), L2 restart/scale (approval), L3 rollback/rate-limit (approval + second confirmation), L4 destructive (hard reject).
+- **L3 approval requires** `risk_ack=true`, `confirm_action_type`, `confirm_target`.
+- **POST /api/alerts** creates incident + agent run, then enqueues Celery task — never runs LangGraph inline.
+- **Fingerprint** deduplicates open incidents. Poll and webhook must produce identical fingerprints for the same alert.
+- **Alertmanager poll**: Uses `source=alertmanager` + `labels.ingest_mode=poll` (no new enum). Poll scope must have a non-severity constraint. Conservative resolved inference.
+- **Tests must use FakeLLM** and deterministic fixtures — no random vectors.
+- **Tool cache** uses UTC time buckets (metrics/logs: 1min, traces: 5min, git: 10min).
+- **Error envelope** — all API errors return `{"error": {"code", "message", "request_id", "details"}}`.
+- **X-Request-Id** — middleware generates one if missing, returned in response headers.
+- **Operator API key** has `roles`/`scopes`. Config write requires `config:write`, discovery rerun requires `discovery:write`. `api_key:admin` manages keys only, does not imply business write scopes.
+- **Manual config wins**: `env > active override > profile > published EffectiveConfigVersion > safe default`. Discovery only fills gaps, never overrides explicit config.
+- **Worker reads only published config** — never unpublished proposals or detected_only backends.
+- **Backend URL safety**: All URLs pass `BackendUrlSafetyValidator` before publish/override/worker use. Production rejects localhost, link-local, metadata endpoints unless explicitly allowlisted.
+- **Raw secrets** use `env:VAR_NAME` references in Phase 0–8. Never stored in DB, audit, log, AgentDeps, or LLM prompt/state.
+- **Audit log immutable**: No update/delete. Prefer DB trigger enforcement over ORM-only guards.
+- **Discovery failure is not agent failure**: Degraded backends produce `UnavailableTool`, not crashes.
+- **Override must expire**: All overrides require `expires_at`. Expired/revoked overrides do not participate in EffectiveConfig merge.
+- **Regenerate creates new draft**: Runbook regenerate never overwrites the previous draft.
+- **LangGraph checkpointing** uses `PostgresSaver` with `thread_id=agent_run_id`, `checkpoint_ns=""`.
+- **Token cache separation** — provider cache metrics are distinct from app-level Redis cache metrics.
+- **Context compression** triggers when logs > 20 entries or > 3000 tokens, evidence exceeds 80% budget, or runbook chunks exceed budget.
+- **Evidence cross-validation** — `diagnose` node fuses metrics/logs/traces/deployment signals with evidence weighting.
+- **Cascading-failure analysis** — service dependency graph with propagation analysis from `packages/agent/topology.py`.
+- **K8s client lazy loading**: `kubernetes` package imported only on first `LiveK8sBackend.fetch()` call.
+- **Celery Beat**: Separate process in production; same-process acceptable for local/CI.
 
-## Project Status And Roadmap Notes
+## Implementation Phase Documents
 
-M1-M7 (the MVP) and the documented post-MVP implementation slices are complete for this repository's local-demo scope. Current reader documentation lives in `docs/`; phase-level completion notes live in `plans/11-roadmap/` (sourced from `tzplan.md`).
+When implementing real backend integration PRs:
 
-Completion does not relax the safety boundaries above: keep mock-executor-only for execution, FakeLLM in tests and CI smoke, no real production K8s/cloud writes, L4 hard reject, and L3 second confirmation. Items that would loosen scope, such as production writes, model fine-tuning, or full enterprise RBAC/SSO, still require separate sign-off and must not be implemented by default.
+| Document | Purpose |
+|----------|---------|
+| `sre-agent-agent-execution-plan.md` | Agent-executable PR task cards, global hard constraints, state machine, report format |
+| `docs/superpowers/specs/2026-06-11-real-backend-integration-implementation-plan.md` | Milestone overview, dependency graph, risk register, parallelization plan |
+| `docs/superpowers/specs/2026-06-10-real-backend-integration-design.md` | Design rationale, data models, protocol contracts, algorithm details |
+| `AGENTS.md` | Detailed coding standards, stack constraints, per-module rules |

@@ -66,7 +66,7 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
                 "plan_actions: LLM generate_json failed, using fallback",
                 exc_info=True,
             )
-            from packages.agent.fake_llm import _ACTIONS_MAP
+            from packages.agent.rules_fallback import _ACTIONS_MAP
 
             fallback = _ACTIONS_MAP.get(
                 state.get("alert_name", ""), _ACTIONS_MAP["High5xxAfterDeploy"]

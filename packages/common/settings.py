@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     # Web search for runbook enrichment (Phase 0-8 default off).
     runbook_web_search_enabled: bool = False
 
+    # --- M7: Deterministic Runbook Feedback ---
+    # Minimum incidents of the same (service, fault_type) before feedback triggers.
+    runbook_amendment_min_incidents: int = Field(default=5, gt=0)
+    # Cooldown in days between successive amendment drafts for the same
+    # (service, fault_type) pair.
+    runbook_amendment_cooldown_days: int = Field(default=7, gt=0)
+
     # Alert ingestion source.
     # webhook=POST /api/alerts only, poll=Alertmanager poll only,
     # both=webhook + poll, none=no ingestion.

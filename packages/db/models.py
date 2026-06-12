@@ -405,6 +405,14 @@ class RunbookDraft(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     front_matter: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    draft_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="incident_cluster", index=True
+    )
+    source: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="llm"
+    )
+    discovery_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parent_draft_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reviewer: Mapped[str | None] = mapped_column(String(128), nullable=True)
     review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_chunk_ids: Mapped[list[str] | None] = mapped_column(JSONType, nullable=True)
@@ -771,6 +779,113 @@ class ApiKey(Base):
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class RunbookFeedbackSummary(Base):
+    """Aggregated runbook feedback for a (service, fault_type) group.
+
+    Created deterministically when >= runbook_amendment_min_incidents
+    incidents of the same (service, fault_type) have been resolved.
+    No LLM / web_search involved — purely statistical aggregation.
+    """
+
+    __tablename__ = "runbook_feedback_summaries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    summary_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    service: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    fault_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    incident_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    incident_ids: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
+    # Action statistics
+    total_actions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    successful_actions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_actions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_actions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejected_actions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Top action types for this fault_type
+    top_action_types: Mapped[dict[str, int]] = mapped_column(JSONType, nullable=False, default=dict)
+    # Gap detection results
+    missing_fault_types: Mapped[list[str]] = mapped_column(
+        JSONType, nullable=False, default=list
+    )
+    missing_diagnostic_steps: Mapped[list[str]] = mapped_column(
+        JSONType, nullable=False, default=list
+    )
+    recurring_evidence_patterns: Mapped[list[str]] = mapped_column(
+        JSONType, nullable=False, default=list
+    )
+    # Metadata
+    cooldown_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    generated_by: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="runbook_feedback"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class AmendmentDraft(Base):
+    """Proposed runbook amendment derived from deterministic feedback analysis.
+
+    Points to a RunbookFeedbackSummary for provenance. Amendments enter the
+    review queue as pending_review — they are never ingested automatically.
+    No LLM / web_search involved in Phase 0-8.
+    """
+
+    __tablename__ = "amendment_drafts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    amendment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    summary_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("runbook_feedback_summaries.summary_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    service: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    fault_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    # The target runbook draft this amendment proposes to change
+    target_draft_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Amendment content — proposed additions/changes to the runbook
+    amendment_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="addition"
+    )  # addition | correction | removal
+    section_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    original_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposed_content: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    # Evidence from feedback analysis
+    evidence_incident_ids: Mapped[list[str]] = mapped_column(
+        JSONType, nullable=False, default=list
+    )
+    evidence_action_stats: Mapped[dict[str, Any]] = mapped_column(
+        JSONType, nullable=False, default=dict
+    )
+    # Review state — amendments always enter review queue
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending_review", index=True
+    )
+    reviewer: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
     )
 
 

@@ -1,0 +1,86 @@
+---
+service: {{ service_name }}
+incident_type: {{ incident_type }}
+severity: {{ severity }}
+owner: {{ owner }}
+updated_at: {{ today }}
+generated_by: runbook_template_engine
+---
+
+# {{ title }}
+
+## Detection
+
+Dependency failure is detected when service **{{ service_name }}** experiences failures caused by an unavailable or degraded upstream/downstream dependency (database, message queue, external API, or another microservice).
+
+### Alert Triggers
+- **Connection Errors**: Spike in connection refused, DNS resolution failure, or TLS handshake errors.
+- **Timeout Spike**: Increase in downstream call timeout rate.
+- **Circuit Breaker Open**: Circuit breaker transitions to OPEN state for any dependency.
+{% if has_error_rate_metric %}
+- **Error Rate**: `{{ metric_by_type.error_rate.metric_name }}` may spike due to dependency errors.
+{% endif %}
+
+## Evidence To Collect
+
+{% if metrics_available %}
+### Dependency Metrics
+{% if has_error_rate_metric %}
+- **Error Rate**: `{{ metric_by_type.error_rate.promql_template }}`
+- Filter by dependency target if the `status` label includes downstream service information.
+{% endif %}
+{% if has_latency_metric %}
+- **Latency to Dependencies**: `{{ metric_by_type.latency.promql_template }}`
+- Check if latency is uniform across dependencies or specific to one target.
+{% endif %}
+- Check for connection pool exhaustion metrics (e.g., `db_connection_pool_active`, `http_client_pool_size`).
+{% endif %}
+
+{% if logs_available %}
+### Log Analysis
+- Search for "connection refused", "no route to host", "timeout", or "circuit breaker open" in **{{ service_name }}** logs.
+- Look for DNS resolution failures or TLS certificate errors.
+- Check upstream dependency logs if accessible.
+{% endif %}
+
+{% if traces_available %}
+### Trace Analysis
+- Filter traces for **{{ service_name }}** and group by downstream service.
+- Identify which downstream dependency has the highest error rate or latency.
+- Check if a specific dependency endpoint or operation is failing.
+- Look for cascading failure patterns (e.g., dependency A fails → service times out → client retries → overload).
+{% endif %}
+
+{% if k8s_accessible %}
+### Infrastructure Check
+- Verify dependency endpoints are resolvable: `kubectl run -it --rm debug --image=busybox -- nslookup <dependency-host>`
+- Check if dependency pods exist and are healthy: `kubectl get pods -l app=<dependency>`
+- Review network policies that may block traffic between services.
+{% endif %}
+
+{% if capability_gaps %}
+### Known Capability Gaps
+{% for gap in capability_gaps %}
+- {{ gap }}
+{% endfor %}
+{% endif %}
+
+## Initial Decision
+
+1. **If a specific downstream service is down**: Check that service's status and escalate to its on-call team. Apply circuit breaker or fallback in the meantime.
+2. **If database is slow or unavailable**: Check database connection pool, active connections, and query performance. Consider read-replica failover.
+3. **If DNS resolution is failing**: Check CoreDNS/kube-dns health, service mesh configuration, or external DNS provider.
+4. **If TLS certificate is expired**: Update certificates and restart affected services.
+5. **If network policy blocks traffic**: Verify network policy changes and roll back if needed.
+
+### Immediate Actions
+- Identify the specific failing dependency from error logs and traces.
+- If the dependency is a database or message queue: check its health and connection pool.
+- If the dependency is another service: contact that service's on-call or check its status page.
+- Apply a graceful degradation strategy: circuit breaker, fallback response, or cache stale data.
+
+## Escalation Path
+
+1. **L1 (On-call)**: Identify the failing dependency, collect evidence, apply graceful degradation.
+2. **L2 (Service Team)**: Investigate dependency integration, review connection parameters, optimize retry/timeout configuration.
+3. **L3 (Platform/SRE)**: Network/DNS debugging, infrastructure-level failover, dependency team escalation.

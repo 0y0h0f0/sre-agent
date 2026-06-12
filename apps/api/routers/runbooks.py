@@ -10,10 +10,13 @@ from apps.api.schemas.runbooks import (
     RunbookDraftGenerateRequest,
     RunbookDraftGenerateResponse,
     RunbookDraftItem,
+    RunbookDraftRegenerateRequest,
     RunbookDraftReviewRequest,
     RunbookIngestRequest,
     RunbookIngestResponse,
     RunbookSearchItem,
+    RunbookTemplateGenerateRequest,
+    RunbookTemplateGenerateResponse,
     RunbookVersionItem,
 )
 from apps.api.services.runbook_service import RunbookService
@@ -85,6 +88,23 @@ def review_draft(
     db: Session = Depends(get_db),
 ) -> RunbookDraftItem:
     return RunbookService(db).review_draft(draft_id, payload)
+
+
+@router.post("/drafts/{draft_id}/regenerate", response_model=RunbookDraftItem)
+def regenerate_draft(
+    draft_id: str,
+    payload: RunbookDraftRegenerateRequest,
+    db: Session = Depends(get_db),
+) -> RunbookDraftItem:
+    return RunbookService(db).regenerate_draft(draft_id, payload)
+
+
+@router.post("/template", response_model=RunbookTemplateGenerateResponse)
+def generate_template(
+    payload: RunbookTemplateGenerateRequest,
+    db: Session = Depends(get_db),
+) -> RunbookTemplateGenerateResponse:
+    return RunbookService(db).generate_template_draft(payload)
 
 
 # ---------------------------------------------------------------------------

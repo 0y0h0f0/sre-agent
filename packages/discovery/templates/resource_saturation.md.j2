@@ -1,0 +1,94 @@
+---
+service: {{ service_name }}
+incident_type: {{ incident_type }}
+severity: {{ severity }}
+owner: {{ owner }}
+updated_at: {{ today }}
+generated_by: runbook_template_engine
+---
+
+# {{ title }}
+
+## Detection
+
+Resource saturation is detected when CPU, memory, or disk utilization exceeds critical thresholds for service **{{ service_name }}** or its underlying infrastructure.
+
+### Alert Triggers
+{% if has_cpu_metric %}
+- **CPU Throttle**: `{{ metric_by_type.cpu_throttle.metric_name }}` rate exceeds threshold.
+{% endif %}
+{% if has_disk_metric %}
+- **Disk Space**: `{{ metric_by_type.disk_avail.metric_name }}` drops below warning threshold.
+{% endif %}
+- **Memory**: Container/pod memory usage exceeds 90% of limit for 5+ minutes.
+- **Secondary**: OOMKilled pod events or GC overhead warnings in logs.
+
+## Evidence To Collect
+
+{% if metrics_available %}
+### Resource Metrics
+{% if has_cpu_metric %}
+- **CPU Throttling Rate**: `{{ metric_by_type.cpu_throttle.promql_template }}`
+  - Status: {{ metric_by_type.cpu_throttle.status }}
+{% else %}
+- Check container_cpu_usage_seconds_total and container_spec_cpu_quota for CPU utilization.
+{% endif %}
+{% if has_disk_metric %}
+- **Disk Available**: `{{ metric_by_type.disk_avail.promql_template }}`
+  - Status: {{ metric_by_type.disk_avail.status }}
+{% endif %}
+- **Memory**: Check `container_memory_working_set_bytes` vs `container_spec_memory_limit_bytes`.
+{% endif %}
+
+{% if metrics_available and has_error_rate_metric %}
+### Impact Assessment
+- **Error Rate**: `{{ metric_by_type.error_rate.promql_template }}`
+- Check if resource saturation is causing errors or degraded responses.
+{% endif %}
+
+{% if metrics_available and has_latency_metric %}
+### Latency Impact
+- **Latency**: `{{ metric_by_type.latency.promql_template }}`
+- Resource saturation often manifests as increased latency before errors appear.
+{% endif %}
+
+{% if logs_available %}
+### Log Analysis
+- Search for OOMKilled events, "OutOfMemoryError", or "disk space exhausted" in **{{ service_name }}** logs.
+- Look for GC log patterns indicating heap pressure.
+- Check system logs for disk I/O errors or filesystem issues.
+{% endif %}
+
+{% if k8s_accessible %}
+### Kubernetes Resource Status
+- Check node conditions: `kubectl describe nodes | grep -A5 Conditions`
+- Check pod resource usage: `kubectl top pods -l app={{ service_name }}`
+- Review resource requests/limits: `kubectl get pods -l app={{ service_name }} -o yaml | grep -A4 resources`
+- Check for evicted or pending pods due to resource constraints.
+{% endif %}
+
+{% if capability_gaps %}
+### Known Capability Gaps
+{% for gap in capability_gaps %}
+- {{ gap }}
+{% endfor %}
+{% endif %}
+
+## Initial Decision
+
+1. **If CPU throttling is high**: Increase CPU limits or add replicas to distribute load. Check for runaway processes or infinite loops.
+2. **If memory usage is near limit**: Check for memory leaks (increasing memory over time) or high traffic (memory proportional to load). Increase limits or fix the leak.
+3. **If disk space is low**: Identify and rotate large log files, clean up temp files, check for core dumps. Increase volume size if needed.
+4. **If multiple resources are saturated**: Consider scale-out, load shedding, or rate limiting.
+
+### Immediate Actions
+- If the service is OOMKilled: increase memory limit temporarily, then investigate root cause.
+- If disk is full: rotate logs and clean up temp files immediately.
+- If CPU is throttled: scale out replicas or increase CPU limit.
+- Check for resource leaks (memory, file descriptors, goroutines/threads).
+
+## Escalation Path
+
+1. **L1 (On-call)**: Identify which resource is saturated, apply temporary increase if safe, collect evidence.
+2. **L2 (Service Team)**: Profile resource usage, identify leaks or inefficiencies, optimize code.
+3. **L3 (Platform/SRE)**: Node-level resource management, cluster auto-scaling, persistent volume expansion.

@@ -1,0 +1,90 @@
+---
+service: {{ service_name }}
+incident_type: {{ incident_type }}
+severity: {{ severity }}
+owner: {{ owner }}
+updated_at: {{ today }}
+generated_by: runbook_template_engine
+---
+
+# {{ title }}
+
+## Detection
+
+High error rate is detected when the ratio of failed requests to total requests exceeds the error budget for service **{{ service_name }}**.
+
+### Alert Triggers
+{% if has_error_rate_metric %}
+- **Primary**: `{{ metric_by_type.error_rate.metric_name }}` error ratio > 5% for 5 consecutive minutes.
+{% else %}
+- Monitor error rate through available APM or load-balancer metrics.
+{% endif %}
+- **Secondary**: Spike in 5xx HTTP status codes from the service.
+- **Secondary**: Increase in log ERROR/FATAL frequency.
+
+## Evidence To Collect
+
+{% if metrics_available and has_error_rate_metric %}
+### Error Rate Analysis
+- **Error rate over time**: `{{ metric_by_type.error_rate.promql_template }}`
+- **Error breakdown by status code**: Group error metrics by `status` or `code` label.
+- **Error rate by endpoint/route**: Break down by HTTP path or gRPC method if available.
+{% endif %}
+
+{% if metrics_available and has_latency_metric %}
+### Latency Correlation
+- `{{ metric_by_type.latency.promql_template }}`
+- Check if errors are timeouts (high latency + deadline exceeded) or application errors (low latency + 500).
+{% endif %}
+
+{% if metrics_available and has_qps_metric %}
+### Traffic Check
+- `{{ metric_by_type.qps.promql_template }}`
+- Verify if error rate increase coincides with a traffic spike.
+{% endif %}
+
+{% if logs_available %}
+### Log Analysis
+- Search for ERROR and FATAL logs in **{{ service_name }}** during the incident window.
+- Look for stack traces, panic messages, or assertion failures.
+- Check for upstream/downstream connection errors.
+{% endif %}
+
+{% if traces_available %}
+### Trace Analysis
+- Filter traces with `error=true` for **{{ service_name }}**.
+- Identify the error span and surrounding context (what service/operation failed).
+- Check if errors cluster on specific downstream dependencies.
+{% endif %}
+
+{% if k8s_accessible %}
+### Deployment Check
+- Check for recent deployments: `kubectl rollout history deployment/{{ service_name }}`
+- Review pod restarts: `kubectl get pods -l app={{ service_name }}`
+- Check configmap/secret changes in the last hour.
+{% endif %}
+
+{% if capability_gaps %}
+### Known Capability Gaps
+{% for gap in capability_gaps %}
+- {{ gap }}
+{% endfor %}
+{% endif %}
+
+## Initial Decision
+
+1. **If errors are timeouts (> 5s)**: The root cause is likely latency — follow the High Latency runbook first. Apply timeout tuning or circuit breaking as temporary mitigation.
+2. **If errors are 500s with normal latency**: Investigate application logic, nil pointer / null reference, or upstream data format changes. Check recent deployments.
+3. **If errors are 4xx (client errors)**: Verify API contract changes, authentication/authorization, or client configuration.
+4. **If errors correlate with a deployment**: Consider rollback as the first action.
+
+### Immediate Actions
+- Identify the top error type (timeout vs application error vs client error).
+- Check for recent deployments — consider rollback if errors started after deployment.
+- Verify downstream dependency health — a failing downstream can cascade.
+
+## Escalation Path
+
+1. **L1 (On-call)**: Triage error type, check recent deployments, collect evidence.
+2. **L2 (Service Team)**: Debug specific error paths, review code changes, apply hotfix.
+3. **L3 (Platform/SRE)**: If infrastructure-related (network, DNS, storage), escalate for platform-level mitigation.

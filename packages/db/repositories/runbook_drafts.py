@@ -28,6 +28,10 @@ class RunbookDraftRepository:
         front_matter: dict[str, Any],
         source_chunk_ids: list[str] | None = None,
         llm_model: str | None = None,
+        draft_type: str = "incident_cluster",
+        source: str = "llm",
+        discovery_run_id: str | None = None,
+        parent_draft_id: str | None = None,
     ) -> RunbookDraft:
         draft = RunbookDraft(
             draft_id=new_id("drf_"),
@@ -41,6 +45,10 @@ class RunbookDraftRepository:
             status="draft",
             source_chunk_ids=source_chunk_ids,
             llm_model=llm_model,
+            draft_type=draft_type,
+            source=source,
+            discovery_run_id=discovery_run_id,
+            parent_draft_id=parent_draft_id,
         )
         self.db.add(draft)
         self.db.flush()

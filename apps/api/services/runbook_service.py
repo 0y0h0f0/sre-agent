@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from sqlalchemy.orm import Session
 
@@ -8,24 +9,32 @@ from apps.api.schemas.runbooks import (
     RunbookDraftGenerateRequest,
     RunbookDraftGenerateResponse,
     RunbookDraftItem,
+    RunbookDraftRegenerateRequest,
     RunbookDraftReviewRequest,
     RunbookIngestRequest,
     RunbookIngestResponse,
     RunbookSearchItem,
+    RunbookTemplateGenerateRequest,
+    RunbookTemplateGenerateResponse,
     RunbookVersionItem,
 )
 from packages.agent.llm.base import LLMProvider
 from packages.common.errors import NotFoundError, ValidationAppError
+from packages.common.ids import new_id
 from packages.db.models import RunbookDraft
 from packages.db.repositories.incidents import IncidentRepository
 from packages.db.repositories.runbook_drafts import RunbookDraftRepository
 from packages.db.repositories.runbook_versions import RunbookVersionRepository
 from packages.db.repositories.runbooks import RunbookChunkRepository
+from packages.rag.embedding_factory import build_embedding_provider
 from packages.rag.ingest import RunbookIngestor
-from packages.rag.metadata import RunbookMetadataError
+from packages.rag.metadata import RunbookMetadataError, parse_runbook_markdown
 from packages.rag.retriever import RunbookRetriever, RunbookSearchQuery
 from packages.rag.runbook_generator import RunbookGenerator
+from packages.rag.splitter import split_markdown_document
 from packages.rag.template_extractor import TemplateExtractor
+
+logger = logging.getLogger(__name__)
 
 
 class RunbookService:
@@ -130,9 +139,148 @@ class RunbookService:
                 related_draft_id=draft.draft_id,
                 created_by=request.reviewer,
             )
+            self._ingest_draft_chunks(draft)
 
         self.db.commit()
         return _draft_to_item(draft)
+
+    def regenerate_draft(
+        self, draft_id: str, request: RunbookDraftRegenerateRequest
+    ) -> RunbookDraftItem:
+        """Regenerate a draft — creates a NEW pending draft, never overwrites the original.
+
+        The new draft inherits service/incident_type/fingerprint/content from the
+        original and sets parent_draft_id for audit trail.
+        """
+        original = self._draft_repo.get_by_draft_id(draft_id)
+        if original is None:
+            raise NotFoundError("draft", draft_id)
+
+        new_draft = self._draft_repo.create(
+            fingerprint=original.fingerprint,
+            incident_ids=list(original.incident_ids or []),
+            service=original.service,
+            incident_type=original.incident_type,
+            title=f"{original.title} (Regenerated)",
+            content=original.content,
+            front_matter=dict(original.front_matter or {}),
+            source_chunk_ids=list(original.source_chunk_ids) if original.source_chunk_ids else None,
+            draft_type=getattr(original, "draft_type", "incident_cluster"),
+            source="regenerated",
+            discovery_run_id=getattr(original, "discovery_run_id", None),
+            parent_draft_id=original.draft_id,
+        )
+        self.db.commit()
+        return _draft_to_item(new_draft)
+
+    def generate_template_draft(
+        self, request: RunbookTemplateGenerateRequest
+    ) -> RunbookTemplateGenerateResponse:
+        """Generate a runbook draft deterministically from the template engine."""
+        from hashlib import sha256
+
+        from packages.discovery.runbook_template_engine import (
+            RunbookTemplateContext,
+            RunbookTemplateEngine,
+        )
+
+        engine = RunbookTemplateEngine()
+        context = RunbookTemplateContext(
+            service_name=request.service_name,
+            incident_type=request.incident_type,
+            title=request.title or f"{request.incident_type.replace('_', ' ').title()} Runbook",
+            severity=request.severity,
+            owner=request.owner,
+        )
+        content = engine.render(context)
+
+        fingerprint = sha256(
+            f"template:{request.service_name}:{request.incident_type}".encode()
+        ).hexdigest()[:16]
+
+        draft = self._draft_repo.create(
+            fingerprint=fingerprint,
+            incident_ids=[],
+            service=request.service_name,
+            incident_type=request.incident_type,
+            title=context.title,
+            content=content,
+            front_matter={
+                "service": request.service_name,
+                "incident_type": request.incident_type,
+                "severity": request.severity,
+                "owner": request.owner,
+                "updated_at": context.today,
+            },
+            draft_type="template",
+            source="template_engine",
+            discovery_run_id=request.discovery_run_id,
+        )
+        self.db.commit()
+        return RunbookTemplateGenerateResponse(
+            draft_id=draft.draft_id,
+            title=draft.title,
+            incident_type=draft.incident_type,
+            service_name=draft.service,
+        )
+
+    def _ingest_draft_chunks(self, draft: RunbookDraft) -> None:
+        """Ingest an approved draft's content into runbook_chunks.
+
+        Embedding failures are non-fatal: if the embedding provider is unavailable,
+        chunks are stored with empty embeddings (keyword-only search still works).
+        """
+        try:
+            document = parse_runbook_markdown(
+                draft.content,
+                source_path=f"drafts/{draft.draft_id}.md",
+            )
+        except RunbookMetadataError as exc:
+            logger.warning(
+                "Draft %s content could not be parsed as runbook: %s",
+                draft.draft_id,
+                exc,
+            )
+            return
+
+        try:
+            from packages.common.settings import get_settings
+            embedding_provider = build_embedding_provider(get_settings())
+        except Exception:
+            logger.warning(
+                "Embedding provider unavailable for draft %s — storing chunks without embeddings",
+                draft.draft_id,
+            )
+            embedding_provider = None
+
+        chunk_drafts = split_markdown_document(document)
+        for cd in chunk_drafts:
+            if self.repository.get_by_content_hash(cd.content_hash) is not None:
+                continue
+            embedding: list[float] = []
+            embedding_model = "none"
+            if embedding_provider is not None:
+                try:
+                    embedding = embedding_provider.embed_text(f"{cd.title}\n{cd.content}")
+                    embedding_model = embedding_provider.model_name
+                except Exception:
+                    logger.warning(
+                        "Embedding failed for chunk '%s' in draft %s — storing without embedding",
+                        cd.title,
+                        draft.draft_id,
+                    )
+            chunk = self.repository.create_chunk(
+                chunk_id=new_id("chk_"),
+                document_id=cd.document_id,
+                source_path=cd.source_path,
+                title=cd.title,
+                content=cd.content,
+                content_hash=cd.content_hash,
+                embedding=embedding,
+                embedding_model=embedding_model,
+                metadata=dict(cd.metadata),
+            )
+            chunk.language = document.metadata.language
 
     # ------------------------------------------------------------------
     # versions (4.3)
@@ -168,6 +316,10 @@ def _draft_to_item(draft: RunbookDraft) -> RunbookDraftItem:
         title=draft.title,
         content=draft.content,
         status=draft.status,
+        draft_type=getattr(draft, "draft_type", "incident_cluster"),
+        source=getattr(draft, "source", "llm"),
+        discovery_run_id=getattr(draft, "discovery_run_id", None),
+        parent_draft_id=getattr(draft, "parent_draft_id", None),
         reviewer=draft.reviewer,
         review_comment=draft.review_comment,
         source_chunk_ids=draft.source_chunk_ids,

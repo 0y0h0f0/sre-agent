@@ -42,6 +42,10 @@ class RunbookDraftItem(BaseModel):
     title: str
     content: str
     status: str
+    draft_type: str = "incident_cluster"
+    source: str = "llm"
+    discovery_run_id: str | None = None
+    parent_draft_id: str | None = None
     reviewer: str | None = None
     review_comment: str | None = None
     source_chunk_ids: list[str] | None = None
@@ -64,6 +68,27 @@ class RunbookDraftReviewRequest(BaseModel):
     status: str  # "published" or "rejected"
     reviewer: str = Field(min_length=1)
     comment: str | None = None
+
+
+class RunbookDraftRegenerateRequest(BaseModel):
+    reviewer: str = Field(min_length=1)
+    comment: str | None = None
+
+
+class RunbookTemplateGenerateRequest(BaseModel):
+    service_name: str = Field(min_length=1)
+    incident_type: str = Field(min_length=1)
+    title: str | None = None
+    severity: str = "P2"
+    owner: str = "agent"
+    discovery_run_id: str | None = None
+
+
+class RunbookTemplateGenerateResponse(BaseModel):
+    draft_id: str
+    title: str
+    incident_type: str
+    service_name: str
 
 
 # ---------------------------------------------------------------------------

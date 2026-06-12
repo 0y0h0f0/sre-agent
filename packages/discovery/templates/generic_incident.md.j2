@@ -1,0 +1,103 @@
+---
+service: {{ service_name }}
+incident_type: {{ incident_type }}
+severity: {{ severity }}
+owner: {{ owner }}
+updated_at: {{ today }}
+generated_by: runbook_template_engine
+---
+
+# {{ title }}
+
+## Detection
+
+This incident type is detected via monitoring alerts for service **{{ service_name }}**.
+
+### Alert Triggers
+{% if has_error_rate_metric %}
+- **Error Rate Spike**: `{{ metric_by_type.error_rate.metric_name }}` exceeds baseline by 3x for 5+ minutes.
+{% endif %}
+{% if has_latency_metric %}
+- **Latency SLO Breach**: p95 `{{ metric_by_type.latency.metric_name }}` exceeds 500ms for 5+ minutes.
+{% endif %}
+{% if has_qps_metric %}
+- **Traffic Anomaly**: `{{ metric_by_type.qps.metric_name }}` deviates > 50% from 7-day trend.
+{% endif %}
+{% if not has_error_rate_metric and not has_latency_metric and not has_qps_metric %}
+- Monitor service health through available signals.
+{% endif %}
+
+## Evidence To Collect
+
+Gather the following evidence to narrow down the root cause.
+
+{% if metrics_available %}
+### Metrics
+{% if has_latency_metric %}
+- **Latency (p95)**: `{{ metric_by_type.latency.promql_template }}`
+  - Status: {{ metric_by_type.latency.status }}
+  - Service label: `{{ metric_by_type.latency.service_label }}`
+{% endif %}
+{% if has_error_rate_metric %}
+- **Error Rate**: `{{ metric_by_type.error_rate.promql_template }}`
+  - Status: {{ metric_by_type.error_rate.status }}
+{% endif %}
+{% if has_qps_metric %}
+- **QPS**: `{{ metric_by_type.qps.promql_template }}`
+  - Status: {{ metric_by_type.qps.status }}
+{% endif %}
+{% if has_cpu_metric %}
+- **CPU Throttle**: `{{ metric_by_type.cpu_throttle.promql_template }}`
+{% endif %}
+{% if has_disk_metric %}
+- **Disk Available**: `{{ metric_by_type.disk_avail.promql_template }}`
+{% endif %}
+{% endif %}
+
+{% if logs_available %}
+### Logs
+- Search for ERROR/FATAL log lines in service **{{ service_name }}** for the incident time window.
+- Look for stack traces, connection errors, or timeout messages.
+- Correlate log timestamps with metric anomalies.
+{% endif %}
+
+{% if traces_available %}
+### Traces
+- Query traces for service **{{ service_name }}**.
+- Identify slowest spans and error spans.
+- Check downstream dependency latency contributions.
+{% endif %}
+
+{% if k8s_accessible %}
+### Kubernetes
+- Check pod status: `kubectl get pods -l app={{ service_name }}`
+- Review recent pod restarts and events: `kubectl describe pod`
+- Check resource utilization (CPU/Memory) against requests/limits.
+{% endif %}
+
+{% if capability_gaps %}
+### Known Capability Gaps
+{% for gap in capability_gaps %}
+- {{ gap }}
+{% endfor %}
+{% endif %}
+
+## Initial Decision
+
+Based on evidence collected:
+
+1. **If metrics show elevated error rate but normal latency**: Investigate application logic errors, input validation, or upstream data quality.
+2. **If metrics show elevated latency but normal error rate**: Check for resource saturation, GC pauses, or downstream slowdown.
+3. **If both error rate and latency are elevated**: Check for cascading failure, dependency outage, or infrastructure issue.
+4. **If no metric anomaly is found**: Review recent deployments (`git log`), configuration changes, or external dependency status.
+
+### Immediate Actions
+- Check recent deployments: look for changes in the last 24 hours.
+- Verify upstream/downstream dependencies are healthy.
+- Review any configuration or feature flag changes.
+
+## Escalation Path
+
+1. **L1 (On-call)**: Collect evidence, apply runbook actions.
+2. **L2 (Service Team)**: Escalate if root cause is not identified within 30 minutes or if actions require service-specific knowledge.
+3. **L3 (Platform/SRE)**: Escalate if infrastructure-level changes are needed (scaling, network, storage).

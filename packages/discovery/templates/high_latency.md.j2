@@ -1,0 +1,86 @@
+---
+service: {{ service_name }}
+incident_type: {{ incident_type }}
+severity: {{ severity }}
+owner: {{ owner }}
+updated_at: {{ today }}
+generated_by: runbook_template_engine
+---
+
+# {{ title }}
+
+## Detection
+
+High latency is detected when p95 or p99 response time exceeds the SLO threshold for service **{{ service_name }}**.
+
+### Alert Triggers
+{% if has_latency_metric %}
+- **Primary**: `{{ metric_by_type.latency.metric_name }}` p95 > 500ms for 5 consecutive minutes.
+{% else %}
+- Monitor service latency through available APM or load-balancer metrics.
+{% endif %}
+- **Secondary**: Client-side timeout rate exceeds 1% of requests.
+- **Secondary**: Request queue depth growing (if applicable).
+
+## Evidence To Collect
+
+{% if metrics_available and has_latency_metric %}
+### Latency Analysis
+- **P50/P95/P99 breakdown**: `histogram_quantile(0.5, sum(rate({{ metric_by_type.latency.metric_name }}{service_label="{{ service_name }}"}[5m])) by (le))`
+- **P95 trend (1h)**: Compare current p95 against the previous hour.
+- **Throughput correlation**: Is latency increase correlated with QPS increase?
+  {% if has_qps_metric %}
+  - `{{ metric_by_type.qps.promql_template }}`
+  {% endif %}
+{% endif %}
+
+{% if metrics_available and has_error_rate_metric %}
+### Error Rate Correlation
+- `{{ metric_by_type.error_rate.promql_template }}`
+- Check if errors are from timeouts (context deadline exceeded) vs application errors.
+{% endif %}
+
+{% if logs_available %}
+### Log Analysis
+- Search for slow-query logs, GC pause events, or connection pool exhaustion in **{{ service_name }}**.
+- Look for thread pool / event loop saturation warnings.
+{% endif %}
+
+{% if traces_available %}
+### Trace Analysis
+- Identify the top-5 slowest spans for **{{ service_name }}**.
+- Check if latency originates in the service itself or in downstream calls.
+- Look for serialization/deserialization hotspots.
+{% endif %}
+
+{% if k8s_accessible %}
+### Resource Check
+- CPU throttling: `container_cpu_cfs_throttled_seconds_total` for **{{ service_name }}** pods.
+- Memory: Check if pods are near their memory limits (OOM risk).
+- Check node-level resource pressure.
+{% endif %}
+
+{% if capability_gaps %}
+### Known Capability Gaps
+{% for gap in capability_gaps %}
+- {{ gap }}
+{% endfor %}
+{% endif %}
+
+## Initial Decision
+
+1. **If latency correlates with QPS increase**: Scale horizontally (add replicas) or apply rate limiting.
+2. **If latency is downstream**: Identify the slowest downstream dependency from traces and escalate.
+3. **If latency is internal (GC, CPU)**: Check JVM/Go runtime metrics, thread dumps, or CPU profiles.
+4. **If latency is in database queries**: Check database slow query log, connection pool, and index usage.
+
+### Immediate Actions
+- Check for recent deployments that may have introduced performance regressions.
+- Verify downstream service health and latency.
+- If CPU throttling is detected, consider increasing CPU limits or replica count.
+
+## Escalation Path
+
+1. **L1 (On-call)**: Collect latency metrics, traces, and logs. Identify if the issue is internal or downstream.
+2. **L2 (Service Team)**: Profile the service, analyze slow endpoints, optimize queries.
+3. **L3 (Platform/SRE)**: Scale infrastructure, adjust resource limits, or implement circuit breakers.

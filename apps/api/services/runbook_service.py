@@ -6,6 +6,10 @@ import logging
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.runbooks import (
+    AmendmentDraftItem,
+    AmendmentReviewRequest,
+    IncidentDiffRequest,
+    IncidentDiffResponse,
     LLMRunbookGenerateRequest,
     LLMRunbookGenerateResponse,
     RunbookDraftGenerateRequest,
@@ -24,12 +28,15 @@ from packages.agent.llm.base import LLMProvider
 from packages.common.errors import NotFoundError, ValidationAppError
 from packages.common.ids import new_id
 from packages.common.settings import Settings
+from packages.common.time import utc_now
+from packages.db.models import AmendmentDraft as AmendmentDraftModel
 from packages.db.models import RunbookDraft
 from packages.db.repositories.incidents import IncidentRepository
 from packages.db.repositories.runbook_drafts import RunbookDraftRepository
 from packages.db.repositories.runbook_versions import RunbookVersionRepository
 from packages.db.repositories.runbooks import RunbookChunkRepository
 from packages.rag.embedding_factory import build_embedding_provider
+from packages.rag.incident_diff import IncidentDiffAnalyzer
 from packages.rag.ingest import RunbookIngestor
 from packages.rag.llm_runbook_generator import LLMRunbookGenerator
 from packages.rag.metadata import RunbookMetadataError, parse_runbook_markdown
@@ -308,6 +315,115 @@ class RunbookService:
             action_classification_summary=result.action_classification_summary or {},
         )
 
+    # ------------------------------------------------------------------
+    # M9: LLM Incident Diff Analysis (PR 9.3)
+    # ------------------------------------------------------------------
+
+    def llm_incident_diff(
+        self,
+        request: IncidentDiffRequest,
+        llm: LLMProvider,
+        settings: Settings,
+    ) -> IncidentDiffResponse:
+        """Analyze incident vs approved runbook differences via LLM.
+
+        Only creates AmendmentDraft(status=pending_review). Never modifies
+        the approved RunbookVersion.
+        """
+        analyzer = IncidentDiffAnalyzer(settings=settings, llm=llm)
+        result = analyzer.analyze(
+            service=request.service,
+            fault_type=request.fault_type,
+            approved_runbook=request.approved_runbook,
+            diagnosis_report=request.diagnosis_report,
+            operator_feedback=request.operator_feedback,
+            action_execution_results=(
+                request.action_execution_results
+                if request.action_execution_results
+                else None
+            ),
+            linked_approved_runbook_version=request.linked_approved_runbook_version,
+            evidence_refs=request.evidence_refs,
+        )
+
+        if result.status != "generated":
+            return IncidentDiffResponse(
+                status=result.status,
+                error_message=result.error_message,
+            )
+
+        # Persist each proposal as an AmendmentDraft.
+        amendment_ids: list[str] = []
+        proposal_items: list[dict[str, object]] = []
+        for p in result.proposals:
+            amendment = AmendmentDraftModel(
+                amendment_id=new_id("amd_"),
+                summary_id="",  # Not linked to M7 feedback summary
+                service=request.service,
+                fault_type=request.fault_type,
+                target_draft_id=None,
+                amendment_type=p.amendment_type.value,
+                proposed_content=p.proposed_content,
+                rationale=p.rationale,
+                evidence_incident_ids=list(p.evidence_refs),
+                status="pending_review",
+            )
+            self.db.add(amendment)
+            self.db.flush()
+            amendment_ids.append(amendment.amendment_id)
+            proposal_items.append({
+                "amendment_type": p.amendment_type.value,
+                "rationale": p.rationale[:200],
+                "proposed_content": p.proposed_content[:200],
+                "evidence_refs": p.evidence_refs,
+                "confidence": p.confidence,
+            })
+
+        self.db.commit()
+
+        return IncidentDiffResponse(
+            status="generated",
+            proposals=proposal_items,
+            amendment_ids=amendment_ids,
+        )
+
+    def list_amendments(
+        self, *, status: str | None = None, service: str | None = None
+    ) -> list[AmendmentDraftItem]:
+        from sqlalchemy import select as _select
+
+        stmt = _select(AmendmentDraftModel).order_by(AmendmentDraftModel.created_at.desc())
+        if status:
+            stmt = stmt.where(AmendmentDraftModel.status == status)
+        if service:
+            stmt = stmt.where(AmendmentDraftModel.service == service)
+        rows = self.db.scalars(stmt).all()
+        return [_amendment_to_item(r) for r in rows]
+
+    def review_amendment(
+        self, amendment_id: str, request: AmendmentReviewRequest
+    ) -> AmendmentDraftItem:
+        from sqlalchemy import select as _select
+
+        if request.status not in ("approved", "rejected"):
+            raise ValidationAppError(
+                "status must be 'approved' or 'rejected'",
+                details={"status": request.status},
+            )
+        stmt = _select(AmendmentDraftModel).where(
+            AmendmentDraftModel.amendment_id == amendment_id
+        )
+        amendment = self.db.scalar(stmt)
+        if amendment is None:
+            raise NotFoundError("amendment", amendment_id)
+
+        amendment.status = request.status
+        amendment.reviewer = request.reviewer
+        amendment.review_comment = request.comment
+        amendment.reviewed_at = utc_now()
+        self.db.commit()
+        return _amendment_to_item(amendment)
+
     def _ingest_draft_chunks(self, draft: RunbookDraft) -> None:
         """Ingest an approved draft's content into runbook_chunks.
 
@@ -410,4 +526,21 @@ def _draft_to_item(draft: RunbookDraft) -> RunbookDraftItem:
         llm_model=draft.llm_model,
         created_at=draft.created_at.isoformat(),
         updated_at=draft.updated_at.isoformat(),
+    )
+
+
+def _amendment_to_item(a: AmendmentDraftModel) -> AmendmentDraftItem:
+    return AmendmentDraftItem(
+        amendment_id=a.amendment_id,
+        service=a.service,
+        fault_type=a.fault_type,
+        amendment_type=a.amendment_type,
+        proposed_content=a.proposed_content,
+        rationale=a.rationale,
+        status=a.status,
+        evidence_incident_ids=list(a.evidence_incident_ids or []),
+        reviewer=a.reviewer,
+        review_comment=a.review_comment,
+        created_at=a.created_at.isoformat(),
+        updated_at=a.updated_at.isoformat(),
     )

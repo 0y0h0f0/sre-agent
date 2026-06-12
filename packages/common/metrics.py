@@ -131,6 +131,12 @@ m9_feature_flag_conflict_total = Counter(
     ["feature"],
 )
 
+llm_incident_diff_total = Counter(
+    "agentp_llm_incident_diff_total",
+    "LLM incident diff analysis outcomes",
+    ["status"],
+)
+
 # --- Gauges ---
 
 active_diagnoses = Gauge(

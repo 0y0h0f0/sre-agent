@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 
 from apps.api.dependencies import get_app_settings, get_db, require_scope
 from apps.api.schemas.runbooks import (
+    AmendmentDraftItem,
+    AmendmentReviewRequest,
+    IncidentDiffRequest,
+    IncidentDiffResponse,
     LLMRunbookGenerateRequest,
     LLMRunbookGenerateResponse,
     RunbookDraftGenerateRequest,
@@ -125,6 +129,42 @@ def llm_generate_runbook(
 ) -> LLMRunbookGenerateResponse:
     llm = build_llm(settings)
     return RunbookService(db).llm_generate_draft(payload, llm, settings)
+
+
+# ---------------------------------------------------------------------------
+# M9: LLM Incident Diff Analysis (PR 9.3)
+# ---------------------------------------------------------------------------
+
+_require_incident_diff = require_scope("runbook:review", "incident:llm_diff")
+
+
+@router.post("/incident-diff", response_model=IncidentDiffResponse)
+def incident_diff(
+    payload: IncidentDiffRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_app_settings),
+    _scope: None = Depends(_require_incident_diff),
+) -> IncidentDiffResponse:
+    llm = build_llm(settings)
+    return RunbookService(db).llm_incident_diff(payload, llm, settings)
+
+
+@router.get("/amendments", response_model=list[AmendmentDraftItem])
+def list_amendments(
+    status: str | None = None,
+    service: str | None = None,
+    db: Session = Depends(get_db),
+) -> list[AmendmentDraftItem]:
+    return RunbookService(db).list_amendments(status=status, service=service)
+
+
+@router.post("/amendments/{amendment_id}/review", response_model=AmendmentDraftItem)
+def review_amendment(
+    amendment_id: str,
+    payload: AmendmentReviewRequest,
+    db: Session = Depends(get_db),
+) -> AmendmentDraftItem:
+    return RunbookService(db).review_amendment(amendment_id, payload)
 
 
 # ---------------------------------------------------------------------------

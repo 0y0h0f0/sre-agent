@@ -141,3 +141,66 @@ class LLMRunbookGenerateResponse(BaseModel):
     draft_type: str | None = None
     action_classification_summary: dict[str, object] | None = None
     error_message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# M9 LLM Incident Diff schemas (PR 9.3)
+# ---------------------------------------------------------------------------
+
+
+class IncidentDiffRequest(BaseModel):
+    """Request to analyze differences between an incident and an approved runbook."""
+
+    service: str = Field(min_length=1, max_length=128)
+    fault_type: str = Field(min_length=1, max_length=128)
+    approved_runbook: str = Field(min_length=1)
+    diagnosis_report: str | None = None
+    operator_feedback: str | None = None
+    action_execution_results: list[dict[str, object]] | None = None
+    linked_approved_runbook_version: str | None = None
+    evidence_refs: list[str] | None = None
+
+
+class AmendmentProposalItem(BaseModel):
+    """A single amendment proposal from incident diff analysis."""
+
+    amendment_type: str
+    rationale: str
+    proposed_content: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    confidence: str = "low"
+
+
+class IncidentDiffResponse(BaseModel):
+    """Response from an incident diff analysis attempt."""
+
+    status: str
+    # "generated" | "disabled" | "blocked" | "degraded" | "skipped_insufficient_evidence"
+    proposals: list[AmendmentProposalItem] = Field(default_factory=list)
+    amendment_ids: list[str] = Field(default_factory=list)
+    error_message: str | None = None
+
+
+class AmendmentReviewRequest(BaseModel):
+    """Review an M9 amendment draft."""
+
+    status: str = Field(min_length=1)  # "approved" | "rejected"
+    reviewer: str = Field(min_length=1)
+    comment: str | None = None
+
+
+class AmendmentDraftItem(BaseModel):
+    """Amendment draft in list/detail views."""
+
+    amendment_id: str
+    service: str
+    fault_type: str
+    amendment_type: str
+    proposed_content: str
+    rationale: str
+    status: str
+    evidence_incident_ids: list[str] = Field(default_factory=list)
+    reviewer: str | None = None
+    review_comment: str | None = None
+    created_at: str
+    updated_at: str

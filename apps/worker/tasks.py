@@ -41,6 +41,7 @@ from packages.tools import (
 from packages.tools.base import ToolResult
 from packages.tools.cache import RequestLocalToolCache
 from packages.tools.runbook_search import RunbookSearchTool
+from packages.tools.unavailable import UnavailableTool
 
 
 class TransientError(Exception):
@@ -302,29 +303,82 @@ def _close_checkpointer(checkpointer: Any | None) -> None:
 
 
 def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str) -> AgentDeps:
+    """Build AgentDeps with effective config integration (M5 PR 5.5).
+
+    - Production: uses EffectiveConfig.from_operator_sources() with full
+      priority chain (env > override > profile > published > safe default).
+    - Demo/local: uses EffectiveConfig.from_demo_sources() with settings defaults.
+    - Missing backends get UnavailableTool (never None passed to tool constructors).
+    """
+    from packages.db.repositories.effective_configs import EffectiveConfigRepository
+    from packages.discovery.config_merge import EffectiveConfig
+
     cache = RequestLocalToolCache()
     timeout = settings.tool_timeout_seconds
 
-    metrics_tool = MetricsTool(
-        base_url=settings.prometheus_url,
+    # ------------------------------------------------------------------
+    # Determine effective config source.
+    # ------------------------------------------------------------------
+    effective_config: Any = None
+    config_version_id: str | None = None
+
+    if settings.app_env == "production":
+        # Production path: full priority chain.
+        # Worker reads published config only — never proposals.
+        ec_repo = EffectiveConfigRepository(db)
+        published_version = ec_repo.get_latest_published()
+        published_config = (
+            published_version.config_snapshot
+            if published_version and published_version.config_snapshot
+            else None
+        )
+        if published_version is not None:
+            config_version_id = published_version.version_id
+
+        effective_config = EffectiveConfig.from_operator_sources(
+            settings,
+            published_config=published_config,
+        )
+    else:
+        # Demo/local path: use settings defaults (backward compatible).
+        effective_config = EffectiveConfig.from_demo_sources(settings)
+
+    # ------------------------------------------------------------------
+    # Build tools using effective config URLs; use UnavailableTool
+    # when a backend URL is None to avoid crashing real tool constructors.
+    # ------------------------------------------------------------------
+    metrics_tool: Any = _build_or_unavailable(
+        MetricsTool,
+        effective_config.prometheus.url,
+        "metrics",
         timeout_seconds=timeout,
         cache=cache,
-        service_label=settings.metrics_service_label,
+        service_label=effective_config.metrics_service_label,
         step_seconds=settings.metrics_step_seconds,
         max_window_seconds=settings.metrics_max_window_seconds,
         max_shards=settings.metrics_max_shards,
     )
-    logs_tool = LogsTool(
-        base_url=settings.loki_url,
+
+    logs_tool: Any = _build_or_unavailable(
+        LogsTool,
+        effective_config.loki.url,
+        "logs",
         timeout_seconds=timeout,
         cache=cache,
-        service_label=settings.logs_service_label,
+        service_label=effective_config.logs_service_label,
     )
-    # Phase 2.1: trace/deployment data sources are now pluggable backends
-    # (default fixture). Phase 2.2/2.3 add read-only K8s and DB diagnosis tools.
-    trace_tool = TraceTool(
-        backend=build_trace_backend(settings), timeout_seconds=timeout, cache=cache
-    )
+
+    # Trace tool with backend.
+    trace_tool: Any
+    if effective_config.jaeger.url:
+        trace_tool = TraceTool(
+            backend=build_trace_backend(settings),
+            timeout_seconds=timeout,
+            cache=cache,
+        )
+    else:
+        trace_tool = UnavailableTool("trace", reason="Jaeger backend not configured")
+
     git_change_tool = GitChangeTool(
         backend=build_deployment_backend(settings), timeout_seconds=timeout, cache=cache
     )
@@ -418,7 +472,25 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
         node_tracer=node_tracer,
         tool_call_recorder=tool_call_recorder,
         executor_backend=executor_backend,
+        effective_config=effective_config,
+        config_version_id=config_version_id,
     )
+
+
+def _build_or_unavailable(
+    tool_cls: Any,
+    url: str | None,
+    name: str,
+    **kwargs: Any,
+) -> Any:
+    """Build a tool from ``tool_cls`` or return ``UnavailableTool`` if url is None.
+
+    This prevents passing ``None`` to real tool constructors that call
+    ``base_url.rstrip()`` and similar operations.
+    """
+    if url is not None:
+        return tool_cls(base_url=url, **kwargs)
+    return UnavailableTool(name, reason=f"{name} backend URL not configured")
 
 
 def _sync_incident_diagnosis(incident: Any, state: dict[str, Any]) -> None:
@@ -745,6 +817,212 @@ def send_daily_incident_summary(
     return result  # type: ignore[no-any-return]
 
 
+def enqueue_discovery_rerun_task(discovery_run_id: str, triggered_by: str | None = None) -> str:
+    """Enqueue a Celery task to run discovery asynchronously."""
+    async_result = run_discovery_rerun.delay(discovery_run_id, triggered_by=triggered_by)
+    return str(async_result.id)
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    bind=True,
+    autoretry_for=(TransientError,),
+    retry_backoff=True,
+    max_retries=1,
+)
+def run_discovery_rerun(
+    self: Any,
+    discovery_run_id: str,
+    triggered_by: str | None = None,
+) -> dict[str, Any]:
+    """Run a discovery scan asynchronously.
+
+    Builds DiscoveryRunner from current settings, runs all discovery
+    components, persists results via DiscoveryStore, and generates
+    a DiscoveryProposal for config changes.
+
+    Redis lock is acquired at the API layer (before enqueue) to
+    prevent concurrent discovery runs.
+    """
+
+    from packages.db.repositories.audit_logs import AuditLogRepository
+    from packages.discovery.store import DiscoveryStore
+
+    settings = get_settings()
+
+    try:
+        with SessionLocal() as db:
+            store = DiscoveryStore(db)
+            audit_repo = AuditLogRepository(db)
+            run = store.get_run(discovery_run_id)
+
+            if run is None:
+                raise NotFoundError("discovery_run", discovery_run_id)
+
+            # Build runner from settings (will be refactored in PR 5.5).
+            runner = _build_discovery_runner(settings)
+
+            # Execute discovery.
+            result = runner.run(run_id=discovery_run_id)
+
+            # Persist result.
+            store.finish_run(run, result, status=result.status)
+
+            # Generate proposal if there are changes.
+            if result.backend_endpoints or result.metric_mappings:
+                store.create_proposal(
+                    discovery_run_id=discovery_run_id,
+                    config_diff=_result_to_config_diff(result),
+                    confidence=0.8 if result.status == "succeeded" else 0.5,
+                    status="pending_review",
+                )
+
+            audit_repo.create_discovery_audit(
+                action="discovery.rerun_complete",
+                resource_type="discovery_run",
+                resource_id=discovery_run_id,
+                actor=triggered_by or "system",
+                details={
+                    "status": result.status,
+                    "total_services": result.total_services_discovered,
+                    "total_metrics": result.total_metrics_scanned,
+                    "duration_seconds": result.duration_seconds,
+                    "warnings": result.warnings,
+                },
+            )
+
+            db.commit()
+            return {
+                "discovery_run_id": discovery_run_id,
+                "status": result.status,
+            }
+    except Exception as exc:
+        # Mark the run as failed.
+        try:
+            with SessionLocal() as db:
+                store = DiscoveryStore(db)
+                run = store.get_run(discovery_run_id)
+                if run:
+                    empty_result = _empty_discovery_result()
+                    store.finish_run(
+                        run,
+                        empty_result,
+                        status="failed",
+                        error_message=str(exc),
+                    )
+                    db.commit()
+        except Exception:
+            pass
+        raise
+
+
+def _build_discovery_runner(settings: Any) -> Any:
+    """Build a DiscoveryRunner from current settings.
+
+    Uses settings to construct backend clients. Will be refactored in
+    PR 5.5 to use EffectiveConfig.from_operator_sources().
+    """
+    from packages.discovery.backend_endpoints import BackendEndpointDetector
+    from packages.discovery.k8s_discovery import K8sDiscovery
+    from packages.discovery.loki_discovery import LokiClient
+    from packages.discovery.prom_discovery import PrometheusClient
+    from packages.discovery.runner import DiscoveryRunner
+
+    prom_client = None
+    loki_client = None
+    k8s = None
+    jaeger_client = None
+
+    # Build Prometheus client if URL is configured.
+    if settings.prometheus_url:
+        prom_client = PrometheusClient(settings.prometheus_url)
+
+    # Build Loki client if URL is configured.
+    if settings.loki_url:
+        loki_client = LokiClient(settings.loki_url)
+
+    # Build K8s discovery if enabled.
+    if settings.discovery_enabled:
+        try:
+            k8s = K8sDiscovery(
+                namespace_allowlist=settings.k8s_namespace_allowlist,
+                service_allowlist=settings.k8s_service_allowlist,
+            )
+        except Exception:
+            pass
+
+    # Build Jaeger client if URL is configured.
+    if settings.jaeger_url:
+        try:
+            from packages.discovery.jaeger_discovery import JaegerDiscoveryClient
+            jaeger_client = JaegerDiscoveryClient(settings.jaeger_url)
+        except Exception:
+            pass
+
+    # Build backend endpoint detector from K8s results.
+    backend_detector = None
+    if k8s is not None:
+        try:
+            k8s_result = k8s.discover_all()
+            backend_detector = BackendEndpointDetector(k8s_result.services)
+        except Exception:
+            pass
+
+    return DiscoveryRunner(
+        k8s=k8s,
+        prom_client=prom_client,
+        loki_client=loki_client,
+        jaeger_client=jaeger_client,
+        backend_detector=backend_detector,
+        metrics_service_label=settings.metrics_service_label,
+        logs_service_label=settings.logs_service_label,
+    )
+
+
+def _result_to_config_diff(result: Any) -> dict[str, Any]:
+    """Convert a DiscoveryResult to a config_diff for proposal creation."""
+    diff: dict[str, Any] = {}
+    if hasattr(result, "backend_endpoints") and result.backend_endpoints:
+        diff["backend_endpoints"] = [
+            {
+                "backend_type": (
+                    ep.backend_type if hasattr(ep, "backend_type")
+                    else ep.get("backend_type")
+                ),
+                "url": ep.url if hasattr(ep, "url") else ep.get("url"),
+                "status": (
+                    ep.status if hasattr(ep, "status")
+                    else ep.get("status")
+                ),
+            }
+            for ep in result.backend_endpoints
+        ]
+    if hasattr(result, "metric_mappings") and result.metric_mappings:
+        diff["metric_mappings"] = [
+            {
+                "semantic_type": (
+                    m.semantic_type if hasattr(m, "semantic_type")
+                    else m.get("semantic_type")
+                ),
+                "metric_name": (
+                    m.metric_name if hasattr(m, "metric_name")
+                    else m.get("metric_name")
+                ),
+                "status": (
+                    m.status if hasattr(m, "status")
+                    else m.get("status")
+                ),
+            }
+            for m in result.metric_mappings
+        ]
+    return diff
+
+
+def _empty_discovery_result() -> Any:
+    """Return an empty DiscoveryResult for failure cases."""
+    from packages.discovery.models import DiscoveryResult
+    return DiscoveryResult(status="failed")
+
+
 @celery_app.task(bind=True)  # type: ignore[untyped-decorator]
 def auto_approve_stale_approvals(self: Any) -> dict[str, Any]:
     """Auto-approve L2 (or lower) approvals that have been waiting beyond the threshold.
@@ -836,3 +1114,369 @@ def auto_approve_stale_approvals(self: Any) -> dict[str, Any]:
             "auto_approved": count,
             "threshold_minutes": threshold_minutes,
         }
+
+
+# ---------------------------------------------------------------------------
+# PR 4.7: Poll Alertmanager Task
+# ---------------------------------------------------------------------------
+
+
+def _build_filter_hash(filters: Any) -> str:
+    """Build a stable, deterministic filter hash for poll scope dedup.
+
+    The hash is derived from the effective poll filters (receiver, namespace,
+    service allowlist, extra matchers) so that different poll scopes use
+    different lock keys and cursor namespaces.
+    """
+    import hashlib
+    import json
+
+    canonical: dict[str, Any] = {}
+    if filters.receiver:
+        canonical["receiver"] = filters.receiver
+    if filters.namespace_allowlist:
+        canonical["namespace_allowlist"] = sorted(filters.namespace_allowlist)
+    if filters.service_allowlist:
+        canonical["service_allowlist"] = sorted(filters.service_allowlist)
+    if filters.extra_matchers:
+        canonical["extra_matchers"] = sorted(filters.extra_matchers)
+    raw = json.dumps(canonical, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _get_poll_filters(settings: Any) -> Any:
+    """Build AlertPollFilters from settings."""
+    from packages.discovery.matcher_parser import AlertPollFilters
+
+    receiver = settings.alert_poll_receiver_filter.strip() or None
+    namespace_allowlist = [
+        ns.strip()
+        for ns in settings.alert_poll_namespace_allowlist.split(",")
+        if ns.strip()
+    ]
+    service_allowlist = [
+        svc.strip()
+        for svc in settings.alert_poll_service_allowlist.split(",")
+        if svc.strip()
+    ]
+    extra_matchers = [
+        m.strip()
+        for m in settings.alert_poll_filter_matchers.split(",")
+        if m.strip()
+    ]
+
+    return AlertPollFilters(
+        receiver=receiver,
+        namespace_allowlist=namespace_allowlist,
+        service_allowlist=service_allowlist,
+        extra_matchers=extra_matchers,
+    )
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    bind=True,
+    autoretry_for=(TransientError,),
+    retry_backoff=True,
+    max_retries=1,
+)
+def poll_alertmanager(self: Any) -> dict[str, Any]:
+    """Poll Alertmanager for alerts and create incidents.
+
+    Uses Redis lock per effective filter hash to prevent concurrent polls.
+    Produces the same fingerprint as the webhook path for deduplication.
+    Includes conservative resolved inference via PR 4.6 logic.
+    """
+    import redis as redis_lib
+
+    from packages.common.redis_lock import RedisLock
+    from packages.discovery.matcher_parser import has_valid_scope
+
+    settings = get_settings()
+
+    # Quick skip if poll is not enabled.
+    if settings.alert_source not in ("poll", "both"):
+        return {"status": "skipped", "reason": "alert_source is not poll/both"}
+
+    # Build filters and validate scope.
+    filters = _get_poll_filters(settings)
+    if not has_valid_scope(filters):
+        return {"status": "skipped", "reason": "no valid poll scope configured"}
+
+    filter_hash = _build_filter_hash(filters)
+
+    # Acquire Redis lock per filter hash.
+    try:
+        r = redis_lib.Redis.from_url(settings.redis_url)
+    except Exception:
+        r = None
+
+    if r is not None:
+        lock_key = f"lock:poll:alertmanager:{filter_hash}"
+        lock = RedisLock(r, lock_key, ttl=settings.alert_poll_lock_ttl_seconds)
+        if not lock.acquire():
+            return {
+                "status": "locked",
+                "filter_hash": filter_hash,
+                "message": "Another poll instance holds the lock for this scope",
+            }
+
+    try:
+        return _poll_alertmanager_logic(
+            db_factory=SessionLocal,
+            settings=settings,
+            filters=filters,
+            filter_hash=filter_hash,
+        )
+    except Exception:
+        raise
+    finally:
+        if r is not None:
+            try:
+                lock.release()
+            except Exception:
+                pass
+
+
+def _poll_alertmanager_logic(
+    *,
+    db_factory: Any,
+    settings: Any,
+    filters: Any,
+    filter_hash: str,
+) -> dict[str, Any]:
+    """Core poll logic — fetch alerts, dedup, create incidents, infer resolved."""
+    from packages.db.repositories.audit_logs import AuditLogRepository
+    from packages.db.repositories.effective_configs import EffectiveConfigRepository
+    from packages.db.repositories.poll_cursor import PollCursorRepository
+    from packages.discovery.alertmanager_client import AlertmanagerClient
+    from packages.discovery.config_merge import EffectiveConfig
+    from packages.discovery.resolved_inference import (
+        infer_resolved_from_missing_fingerprints,
+    )
+
+    with db_factory() as db:
+        # Build EffectiveConfig to get Alertmanager URL.
+        ec_repo = EffectiveConfigRepository(db)
+        published_version = ec_repo.get_latest_published()
+        published_config = (
+            published_version.config_snapshot
+            if published_version and published_version.config_snapshot
+            else None
+        )
+        effective_config = EffectiveConfig.from_operator_sources(
+            settings,
+            published_config=published_config,
+        )
+
+        am_url = effective_config.alertmanager.url
+        if not am_url:
+            return {"status": "degraded", "reason": "No Alertmanager URL configured"}
+
+        # Build Alertmanager client.
+        client = AlertmanagerClient(am_url, timeout=settings.alert_poll_timeout_seconds)
+
+        # Build server-side matchers from filters.
+        from packages.discovery.matcher_parser import (
+            _allowlist_to_server_matchers,
+            can_map_to_server_side,
+        )
+
+        matchers: list[str] = []
+        if can_map_to_server_side(filters):
+            matchers = _allowlist_to_server_matchers(
+                filters.namespace_allowlist,
+                filters.service_allowlist,
+                service_label=effective_config.metrics_service_label,
+            )
+            matchers.extend(filters.extra_matchers)
+
+        # Fetch alerts (with truncation flag).
+        results_truncated = False
+        try:
+            raw_alerts = client.list_alerts(
+                filter_matchers=matchers if matchers else None,
+                receiver=filters.receiver,
+            )
+            if len(raw_alerts) > settings.alert_poll_max_alerts_per_round:
+                raw_alerts = raw_alerts[: settings.alert_poll_max_alerts_per_round]
+                results_truncated = True
+        except Exception as exc:
+            _audit_poll(db, filter_hash, "failed", str(exc))
+            return {"status": "failed", "reason": str(exc)[:200]}
+
+        # Process each alert.
+        from apps.api.schemas.alerts import _from_alertmanager_single_alert
+        from apps.api.services.alert_service import AlertService
+
+        cursor_repo = PollCursorRepository(db)
+        audit_repo = AuditLogRepository(db)
+
+        new_incidents = 0
+        seen_fingerprints: set[str] = set()
+        incidents_per_service: dict[str, int] = {}
+
+        for alert in raw_alerts:
+            if new_incidents >= settings.alert_poll_max_new_incidents_per_round:
+                break
+
+            parsed = _from_alertmanager_single_alert(alert)
+            fingerprint = parsed["fingerprint"]
+
+            # Dedup via poll cursor.
+            if cursor_repo.already_seen_active(fingerprint, filter_hash):
+                seen_fingerprints.add(fingerprint)
+                continue
+
+            # Rate-limit per service.
+            svc = parsed["service"]
+            if (
+                incidents_per_service.get(svc, 0)
+                >= settings.alert_poll_max_incidents_per_service_per_minute
+            ):
+                continue
+
+            # Create incident via AlertService.
+            try:
+                from apps.api.schemas.alerts import AlertCreateRequest
+
+                req = AlertCreateRequest(
+                    source="alertmanager",
+                    fingerprint=fingerprint,
+                    service=svc,
+                    severity=parsed["severity"],
+                    alert_name=parsed["alert_name"],
+                    starts_at=parsed["starts_at"],
+                    ends_at=parsed["ends_at"],
+                    labels=parsed["labels"],
+                    annotations=parsed["annotations"],
+                    raw_payload=alert,
+                )
+
+                alert_svc = AlertService(
+                    db, settings, enqueue_diagnosis=enqueue_diagnosis_task
+                )
+                resp = alert_svc.create_alert(req)
+
+                cursor_repo.mark_seen(
+                    fingerprint=fingerprint,
+                    incident_id=resp.incident_id,
+                    filter_hash=filter_hash,
+                )
+                seen_fingerprints.add(fingerprint)
+                new_incidents += 1
+                incidents_per_service[svc] = incidents_per_service.get(svc, 0) + 1
+
+            except Exception as exc:
+                # Log and continue — single alert failure must not block the
+                # entire poll round.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "poll_alertmanager: failed to create incident for "
+                    "fingerprint=%s: %s", fingerprint, exc
+                )
+                continue
+
+        # Run resolved inference on previously-seen fingerprints (PR 4.6).
+        resolved_count = 0
+        try:
+            active_hashes = [filter_hash]  # single-poll use case
+            for fp in cursor_repo.get_active_fingerprints(filter_hash):
+                if fp in seen_fingerprints:
+                    continue  # Still active.
+                cursor_repo.mark_missing(fp, filter_hash)
+                decision = infer_resolved_from_missing_fingerprints(
+                    fingerprint=fp,
+                    all_active_filter_hashes=active_hashes,
+                    cursor_repo=cursor_repo,
+                    results_truncated=results_truncated,
+                    grace_rounds=max(
+                        1,
+                        settings.alert_poll_resolved_grace_period_seconds
+                        // max(1, settings.alert_poll_interval_seconds),
+                    ),
+                    resolved_rounds=settings.alert_poll_resolved_missing_rounds,
+                    poll_interval_seconds=settings.alert_poll_interval_seconds,
+                )
+                if decision.is_resolved:
+                    from apps.api.schemas.common import IncidentStatus
+                    from packages.db.repositories.incidents import IncidentRepository
+
+                    incident_repo = IncidentRepository(db)
+                    incident = incident_repo.get_open_by_fingerprint(fp)
+                    if incident is not None and incident.status not in (
+                        IncidentStatus.RESOLVED.value,
+                        IncidentStatus.MITIGATED.value,
+                    ):
+                        incident.status = IncidentStatus.RESOLVED.value
+                        audit_repo.create_config_audit(
+                            action="incident.resolved_inferred",
+                            resource_type="incident",
+                            resource_id=incident.incident_id,
+                            actor="poll_alertmanager",
+                            details={
+                                "fingerprint": fp,
+                                "filter_hash": filter_hash,
+                                "reason": decision.reason,
+                                "evidence": decision.evidence,
+                            },
+                        )
+                        resolved_count += 1
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "poll_alertmanager: resolved inference failed: %s", exc
+            )
+
+        db.commit()
+
+        _audit_poll(
+            db,
+            filter_hash,
+            "completed",
+            extra={
+                "new_incidents": new_incidents,
+                "resolved_incidents": resolved_count,
+                "total_alerts": len(raw_alerts),
+                "truncated": results_truncated,
+                "seen_count": len(seen_fingerprints),
+            },
+        )
+
+        return {
+            "status": "completed",
+            "filter_hash": filter_hash,
+            "new_incidents": new_incidents,
+            "resolved_incidents": resolved_count,
+            "total_alerts_scanned": len(raw_alerts),
+            "truncated": results_truncated,
+        }
+
+
+def _audit_poll(
+    db: Any,
+    filter_hash: str,
+    status: str,
+    error: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Write a poll audit log entry."""
+    from packages.common.ids import new_id
+    from packages.db.models import AuditLog
+
+    details: dict[str, Any] = {"filter_hash": filter_hash, "status": status}
+    if error:
+        details["error"] = error
+    if extra:
+        details.update(extra)
+
+    entry = AuditLog(
+        audit_id=new_id("aud_"),
+        actor="poll_alertmanager",
+        action="alertmanager.poll",
+        resource_type="alert_poll",
+        resource_id=filter_hash or "default",
+        details=details,
+        source="beat",
+    )
+    db.add(entry)
+    db.flush()

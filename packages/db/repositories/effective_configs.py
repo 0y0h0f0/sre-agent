@@ -62,3 +62,12 @@ class EffectiveConfigRepository:
             .limit(limit)
         )
         return self.db.scalars(stmt).all()
+
+    def list_all(self, limit: int = 20) -> Sequence[EffectiveConfigVersion]:
+        """List all recent config versions regardless of status."""
+        stmt = (
+            select(EffectiveConfigVersion)
+            .order_by(EffectiveConfigVersion.version_number.desc())
+            .limit(limit)
+        )
+        return self.db.scalars(stmt).all()

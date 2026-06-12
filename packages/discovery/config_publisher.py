@@ -274,6 +274,10 @@ class ConfigPublisher:
         """List recent published versions."""
         return list(self._repo.list_published(limit))
 
+    def list_all_versions(self, limit: int = 20) -> list[EffectiveConfigVersion]:
+        """List all recent versions regardless of status."""
+        return list(self._repo.list_all(limit))
+
     def is_stale(self, version: EffectiveConfigVersion) -> bool:
         """Check if a config version is past its stale warning threshold."""
         if version.stale_warning_at is None:

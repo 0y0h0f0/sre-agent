@@ -67,6 +67,13 @@ class ScopeRequirement:
     def __call__(self, request: Request) -> None:
         from fastapi import HTTPException
 
+        from packages.common.settings import get_settings
+
+        # When auth is disabled (local/CI), skip scope checks entirely.
+        settings = get_settings()
+        if not settings.api_key_auth_enabled:
+            return
+
         api_key: dict[str, object] = getattr(request.state, "api_key", {})
         if not api_key:
             raise HTTPException(status_code=401, detail="Authentication required")

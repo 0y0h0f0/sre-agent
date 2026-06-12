@@ -79,6 +79,8 @@ class AgentDeps:
         k8s_tool: BaseTool | None = None,
         db_diagnostics_tool: BaseTool | None = None,
         executor_backend: ExecutorBackend | None = None,
+        effective_config: Any | None = None,
+        config_version_id: str | None = None,
     ) -> None:
         self.db = db
         self.settings = settings
@@ -98,3 +100,6 @@ class AgentDeps:
         self.llm = llm
         self.node_tracer = node_tracer
         self.tool_call_recorder = tool_call_recorder
+        # M5 PR 5.5: effective config and version tracking.
+        self.effective_config = effective_config
+        self.config_version_id = config_version_id

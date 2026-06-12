@@ -18,6 +18,8 @@ from apps.api.routers import (
     approval_groups,
     approvals,
     comments,
+    config,
+    discovery,
     evals,
     health,
     incidents,
@@ -64,6 +66,8 @@ def create_app() -> FastAPI:
     app.include_router(comments.router)
     app.include_router(approval_groups.router)
     app.include_router(api_keys.router)
+    app.include_router(config.router)
+    app.include_router(discovery.router)
     app.include_router(evals.router)
     app.include_router(ws_router)
     return app

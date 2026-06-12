@@ -202,77 +202,77 @@ flowchart TD
     M7 --> M8
 ```
 
-| Milestone | Goal | Dependencies | PRs | Execution Mode |
-|---|---|---|---|---|
-| M0 | Production Safety Foundation | 无；必须优先完成 | PR 0.1, PR 0.2, PR 0.3, PR 0.4, PR 0.5, PR 0.6, PR 0.7, PR 0.8, PR 0.9 | 建议顺序执行 0.1 → 0.9 |
-| M1 | Prometheus Core Discovery | M0 | PR 1.1, PR 1.2, PR 1.3, PR 1.4, PR 1.5, PR 1.6 | 可与 M2、M4 core 并行 |
-| M2 | K8s / Loki / Jaeger / Topology Discovery | M0 | PR 2.1, PR 2.2, PR 2.3, PR 2.4, PR 2.5, PR 2.6, PR 2.7 | 可与 M1、M4 core 并行 |
-| M3 | DiscoveryRunner + EffectiveConfig 发布闭环 | M1 + M2 | PR 3.1, PR 3.2, PR 3.3, PR 3.4, PR 3.5, PR 3.6 | M1/M2 完成后执行 |
-| M4 | Alertmanager Poll Production Hardening | PR 4.1–4.6 依赖 M0；PR 4.7 依赖 M5 worker config contract | PR 4.1, PR 4.2, PR 4.3, PR 4.4, PR 4.5, PR 4.6, PR 4.7 | 4.1–4.6 可并行提前；4.7 延后 |
-| M5 | Discovery API / Operator API | M3 + M4 core + PR 0.7 | PR 5.1, PR 5.2, PR 5.3, PR 5.4, PR 5.5 | M3 完成后执行 |
-| M6 | Runbook Template Generation | M3 | PR 6.1, PR 6.2, PR 6.3 | M3 完成后执行 |
-| M7 | Deterministic Runbook Feedback | M6 | PR 7.1, PR 7.2, PR 7.3, PR 7.4 | M6 完成后执行 |
-| M8 | Testing & Docs | M0–M7 | PR 8.1, PR 8.2, PR 8.3, PR 8.4, PR 8.5, PR 8.6 | 贯穿每个 PR；最终作为 release gate |
+| Milestone | Goal | Dependencies | PRs | Execution Mode | Status |
+|---|---|---|---|---|---|---|
+| M0 | Production Safety Foundation | 无；必须优先完成 | PR 0.1, PR 0.2, PR 0.3, PR 0.4, PR 0.5, PR 0.6, PR 0.7, PR 0.8, PR 0.9 | 建议顺序执行 0.1 → 0.9 | ✅ 完成 |
+| M1 | Prometheus Core Discovery | M0 | PR 1.1, PR 1.2, PR 1.3, PR 1.4, PR 1.5, PR 1.6 | 可与 M2、M4 core 并行 | ✅ 完成 |
+| M2 | K8s / Loki / Jaeger / Topology Discovery | M0 | PR 2.1, PR 2.2, PR 2.3, PR 2.4, PR 2.5, PR 2.6, PR 2.7 | 可与 M1、M4 core 并行 | ✅ 完成 |
+| M3 | DiscoveryRunner + EffectiveConfig 发布闭环 | M1 + M2 | PR 3.1, PR 3.2, PR 3.3, PR 3.4, PR 3.5, PR 3.6 | M1/M2 完成后执行 | ✅ 完成 |
+| M4 | Alertmanager Poll Production Hardening | PR 4.1–4.6 依赖 M0；PR 4.7 依赖 M5 worker config contract | PR 4.1, PR 4.2, PR 4.3, PR 4.4, PR 4.5, PR 4.6, PR 4.7 | 4.1–4.6 可并行提前；4.7 延后 | ⚠️ PR 4.1-4.6 完成；PR 4.7 部分（Redis Lock 就绪，Poll Task 待 M5） |
+| M5 | Discovery API / Operator API | M3 + M4 core + PR 0.7 | PR 5.1, PR 5.2, PR 5.3, PR 5.4, PR 5.5 | M3 完成后执行 | ⏳ 待执行 |
+| M6 | Runbook Template Generation | M3 | PR 6.1, PR 6.2, PR 6.3 | M3 完成后执行 | ⏳ 待执行 |
+| M7 | Deterministic Runbook Feedback | M6 | PR 7.1, PR 7.2, PR 7.3, PR 7.4 | M6 完成后执行 | ⏳ 待执行 |
+| M8 | Testing & Docs | M0–M7 | PR 8.1, PR 8.2, PR 8.3, PR 8.4, PR 8.5, PR 8.6 | 贯穿每个 PR；最终作为 release gate | ⏳ 待执行 |
 
 ---
 
 ## E. PR 任务索引
 
-| PR | Milestone | Agent Task | Scope Boundary | Done Gate |
-|---|---|---|---|---|
-| PR 0.1 | M0 | Settings 环境默认值与生产 profile 安全默认值 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 0.2 | M0 | Discovery / EffectiveConfig / AuditLog 数据模型与迁移 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 0.3 | M0 | AutomationPolicy | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 0.4 | M0 | EffectiveConfig 读取优先级 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 0.5 | M0 | AuditLog 服务扩展 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 0.6 | M0 | DisabledLLM 与确定性 fallback 可运行路径 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 0.7 | M0 | Operator API Key Role/Scope 授权 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 0.8 | M0 | Backend URL Safety Validator | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 0.9 | M0 | BackendAuthConfig Schema 与脱敏策略 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 1.1 | M1 | Discovery 基础 Pydantic 模型 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 1.2 | M1 | PrometheusClient | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 1.3 | M1 | MetricMatcher 匹配引擎 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 1.4 | M1 | Prometheus Service Label 检测 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 1.5 | M1 | PromQL Builder | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 1.6 | M1 | PromQL Dry-Run 验证 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 2.1 | M2 | K8sDiscovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 2.2 | M2 | Service Label Detector | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 2.3 | M2 | LokiDiscovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 2.4 | M2 | WorkloadBinding | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 2.5 | M2 | ServiceEdge Deriver | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 2.6 | M2 | Observability Backend Endpoint Discovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 2.7 | M2 | Jaeger Service Discovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 3.1 | M3 | DiscoveryRunner 编排 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 3.2 | M3 | 降级输出标准化 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 3.3 | M3 | 成本控制 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 3.4 | M3 | DiscoveryStore | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 3.5 | M3 | Config Proposal 生成 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 3.6 | M3 | EffectiveConfigVersion Publish / Rollback / Revoke | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 4.1 | M4 | AlertmanagerClient | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 4.2 | M4 | Matcher Parser | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 4.3 | M4 | Scope Validation | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 4.4 | M4 | Allowlist Server-side Filter | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 4.5 | M4 | Poll Cursor / Dedup | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 4.6 | M4 | Resolved Inference | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 4.7 | M4 | Poll Task + Redis Lock + Metrics + Audit | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 5.1 | M5 | Discovery Read API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 5.2 | M5 | Discovery Rerun API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 5.3 | M5 | Config Publish / Rollback / Revoke API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 5.4 | M5 | Override API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 5.5 | M5 | Worker `_build_deps` 集成 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 6.1 | M6 | RunbookTemplateEngine | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 6.2 | M6 | RunbookDraft 扩展与 Ingest | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 6.3 | M6 | Runbook Review API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 7.1 | M7 | Incident Aggregation | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 7.2 | M7 | Action Statistics | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 7.3 | M7 | Gap Detection | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 7.4 | M7 | AmendmentDraft 与频率控制 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 8.1 | M8 | 单元测试补齐 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 8.2 | M8 | 集成测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 8.3 | M8 | 生产安全测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 8.4 | M8 | E2E 测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 8.5 | M8 | 文档 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
-| PR 8.6 | M8 | 最终执行前 Release Gate / Checklist | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD |
+| PR | Milestone | Agent Task | Scope Boundary | Done Gate | Status |
+|---|---|---|---|---|---|
+| PR 0.1 | M0 | Settings 环境默认值与生产 profile 安全默认值 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 0.2 | M0 | Discovery / EffectiveConfig / AuditLog 数据模型与迁移 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 0.3 | M0 | AutomationPolicy | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 0.4 | M0 | EffectiveConfig 读取优先级 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 0.5 | M0 | AuditLog 服务扩展 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 0.6 | M0 | DisabledLLM 与确定性 fallback 可运行路径 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 0.7 | M0 | Operator API Key Role/Scope 授权 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 0.8 | M0 | Backend URL Safety Validator | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 0.9 | M0 | BackendAuthConfig Schema 与脱敏策略 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 1.1 | M1 | Discovery 基础 Pydantic 模型 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 1.2 | M1 | PrometheusClient | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 1.3 | M1 | MetricMatcher 匹配引擎 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 1.4 | M1 | Prometheus Service Label 检测 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 1.5 | M1 | PromQL Builder | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 1.6 | M1 | PromQL Dry-Run 验证 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 2.1 | M2 | K8sDiscovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 2.2 | M2 | Service Label Detector | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 2.3 | M2 | LokiDiscovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 2.4 | M2 | WorkloadBinding | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 2.5 | M2 | ServiceEdge Deriver | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 2.6 | M2 | Observability Backend Endpoint Discovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 2.7 | M2 | Jaeger Service Discovery | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 3.1 | M3 | DiscoveryRunner 编排 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 3.2 | M3 | 降级输出标准化 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 3.3 | M3 | 成本控制 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 3.4 | M3 | DiscoveryStore | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 3.5 | M3 | Config Proposal 生成 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 3.6 | M3 | EffectiveConfigVersion Publish / Rollback / Revoke | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 4.1 | M4 | AlertmanagerClient | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 4.2 | M4 | Matcher Parser | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 4.3 | M4 | Scope Validation | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 4.4 | M4 | Allowlist Server-side Filter | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 4.5 | M4 | Poll Cursor / Dedup | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 4.6 | M4 | Resolved Inference | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ✅ |
+| PR 4.7 | M4 | Poll Task + Redis Lock + Metrics + Audit | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⚠️ 部分（Redis Lock 就绪；Poll Task 待 M5） |
+| PR 5.1 | M5 | Discovery Read API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 5.2 | M5 | Discovery Rerun API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 5.3 | M5 | Config Publish / Rollback / Revoke API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 5.4 | M5 | Override API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 5.5 | M5 | Worker `_build_deps` 集成 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 6.1 | M6 | RunbookTemplateEngine | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 6.2 | M6 | RunbookDraft 扩展与 Ingest | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 6.3 | M6 | Runbook Review API | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 7.1 | M7 | Incident Aggregation | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 7.2 | M7 | Action Statistics | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 7.3 | M7 | Gap Detection | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 7.4 | M7 | AmendmentDraft 与频率控制 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 8.1 | M8 | 单元测试补齐 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 8.2 | M8 | 集成测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 8.3 | M8 | 生产安全测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 8.4 | M8 | E2E 测试 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 8.5 | M8 | 文档 | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
+| PR 8.6 | M8 | 最终执行前 Release Gate / Checklist | 执行该 PR 章节内 Scope；不得提前实现后续 PR | 该 PR 验收标准 + 全局 DoD | ⏳ |
 
 ---
 
@@ -483,6 +483,9 @@ M0-M7 → M8 (Testing & Docs)
 
 #### PR 0.1: Settings 环境默认值与生产 profile 安全默认值
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 背景
 
 当前 settings.py 缺少 `APP_ENV` 区分，所有后端 URL 默认 `localhost`，`LLM_PROVIDER` 默认 `fake`。需要引入环境 profile，但默认环境必须保持 `local`，避免破坏本地 demo、CI 和现有测试；生产安全默认值只在 `APP_ENV=production` 时生效。
@@ -556,6 +559,9 @@ test_backward_compat_existing_fields
 
 #### PR 0.2: Discovery / EffectiveConfig / AuditLog 数据模型与迁移
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 背景
 
 设计文档定义了 `DiscoveryRun`, `DiscoveryProposal`, `EffectiveConfigVersion`, `DiscoveryOverride`, `AutomationDecision` 等核心模型。需要创建 DB 模型和 Alembic 迁移。
@@ -627,6 +633,9 @@ test_migration_upgrade_downgrade
 
 #### PR 0.3: AutomationPolicy
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 背景
 
 设计文档 §3.8 定义了 `AutomationDecision` 模型和自动化判定规则。
@@ -694,6 +703,9 @@ test_metric_mapping_metadata_missing_not_auto_apply
 ---
 
 #### PR 0.4: EffectiveConfig 读取优先级
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 背景
 
@@ -764,6 +776,9 @@ test_has_unresolved_returns_true_when_required_missing
 
 #### PR 0.5: AuditLog 服务扩展
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 背景
 
 现有 `AuditLog` 和 `AuditLogRepository` 需要扩展以支持 discovery/config 操作审计。
@@ -824,6 +839,9 @@ test_query_by_time_range
 ---
 
 #### PR 0.6: DisabledLLM 与确定性 fallback 可运行路径
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 背景
 
@@ -889,6 +907,9 @@ test_llm_disabled_metadata_records_fallback
 ---
 
 #### PR 0.7: Operator API Key Role/Scope 授权
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 背景
 
@@ -960,6 +981,9 @@ test_audit_includes_actor_scope
 
 #### PR 0.8: Backend URL Safety Validator
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 背景
 
 生产环境中的 backend URL 会被 worker、discovery client 和诊断工具主动访问。无论 URL 来自 `.env`、profile、active override、published config 还是 discovery proposal，都必须在进入 EffectiveConfig 或执行 publish/override 前进行安全校验，避免 SSRF、metadata endpoint 访问、危险 scheme 和隐式 localhost fallback。
@@ -1027,6 +1051,9 @@ test_publish_rejects_unsafe_backend_url
 ---
 
 #### PR 0.9: BackendAuthConfig Schema 与脱敏策略
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 背景
 
@@ -1105,6 +1132,9 @@ test_backend_auth_agentdeps_uses_redacted_form
 
 #### PR 1.1: Discovery 基础 Pydantic 模型
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 背景
 
 设计文档 §3.3 定义了核心 Pydantic 模型和 §3.4 的 `SEMANTIC_PATTERNS` 模板库。
@@ -1159,6 +1189,9 @@ test_discovery_result_serialization
 ---
 
 #### PR 1.2: PrometheusClient
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 背景
 
@@ -1215,6 +1248,9 @@ test_tls_verify_false
 ---
 
 #### PR 1.3: MetricMatcher 匹配引擎
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 背景
 
@@ -1276,6 +1312,9 @@ test_timeout_degraded
 
 #### PR 1.4: Prometheus Service Label 检测
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 实现 `detect_metrics_service_label()` 方法
@@ -1292,6 +1331,9 @@ tests/unit/test_prometheus_label_detection.py       # 新增
 ---
 
 #### PR 1.5: PromQL Builder
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1318,6 +1360,9 @@ test_gauge_does_not_use_rate
 ---
 
 #### PR 1.6: PromQL Dry-Run 验证
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1356,6 +1401,9 @@ test_too_many_series_rejected
 
 #### PR 2.1: K8sDiscovery
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 实现 `K8sDiscovery` 类
@@ -1391,6 +1439,9 @@ test_kubernetes_lazy_init_thread_safe
 
 #### PR 2.2: Service Label Detector
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 实现 `detect_k8s_service_label()`
@@ -1417,6 +1468,9 @@ test_cross_validation_increases_confidence
 ---
 
 #### PR 2.3: LokiDiscovery
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1448,6 +1502,9 @@ test_detect_logs_service_label_does_not_use_keys_only
 
 #### PR 2.4: WorkloadBinding
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 实现 Service selector → Pod labels → ownerRef → Workload 推导链
@@ -1471,6 +1528,9 @@ test_missing_owner_ref_no_binding
 ---
 
 #### PR 2.5: ServiceEdge Deriver
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1499,6 +1559,9 @@ test_edge_has_evidence_field
 ---
 
 #### PR 2.6: Observability Backend Endpoint Discovery
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 背景
 
@@ -1546,6 +1609,9 @@ test_detected_only_backend_not_published
 ---
 
 #### PR 2.7: Jaeger Service Discovery
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 背景
 
@@ -1601,6 +1667,9 @@ test_jaeger_discovery_no_raw_secret_in_output
 
 #### PR 3.1: DiscoveryRunner 编排
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 编排 K8sDiscovery + PromDiscovery + LokiDiscovery + BackendEndpointDetector + TopologyDeriver
@@ -1630,6 +1699,9 @@ test_runner_output_includes_degraded_signals
 
 #### PR 3.2: 降级输出标准化
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 实现 `CapabilityAssessor`
@@ -1645,6 +1717,9 @@ tests/unit/test_capability_assessor.py              # 新增
 ---
 
 #### PR 3.3: 成本控制
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1673,6 +1748,9 @@ test_cache_hit_avoids_api_call
 ---
 
 #### PR 3.4: DiscoveryStore
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1709,6 +1787,9 @@ test_discovery_lock_release_compare_and_delete
 
 #### PR 3.5: Config Proposal 生成
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 实现 `ConfigProposalGenerator` — 比较 discovery 与当前 config，生成 diff
@@ -1739,6 +1820,9 @@ test_backend_url_high_confidence_still_requires_review_in_production
 ---
 
 #### PR 3.6: EffectiveConfigVersion Publish / Rollback / Revoke
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1784,6 +1868,9 @@ test_version_staleness_warning_after_threshold
 
 #### PR 4.1: AlertmanagerClient
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 实现 `AlertmanagerClient`（`GET /api/v2/alerts`, `/api/v2/status`）
@@ -1800,6 +1887,9 @@ tests/unit/test_alertmanager_client.py              # 新增
 ---
 
 #### PR 4.2: Matcher Parser
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1831,6 +1921,9 @@ test_escape_matcher_value
 ---
 
 #### PR 4.3: Scope Validation
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1865,6 +1958,9 @@ test_cluster_matcher_valid_scope
 
 #### PR 4.4: Allowlist Server-side Filter
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 实现 `_allowlist_to_server_matchers()`
@@ -1895,6 +1991,9 @@ test_non_mappable_scope_local_warns_and_client_filters
 ---
 
 #### PR 4.5: Poll Cursor / Dedup
+
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
 
 ##### 范围
 
@@ -1927,6 +2026,9 @@ test_same_fingerprint_across_filter_hash_maps_to_same_incident
 
 #### PR 4.6: Resolved Inference
 
+> **状态: ✅ 已完成** — 实现、测试、类型检查均通过（2026-06-12）
+
+
 ##### 范围
 
 - [ ] 实现 `infer_resolved_from_missing_fingerprints()`
@@ -1955,6 +2057,12 @@ test_all_active_filter_hashes_missing_enough_rounds_resolves_incident
 ---
 
 #### PR 4.7: Poll Task + Redis Lock + Metrics + Audit
+
+> **状态: ⚠️ 部分完成** — Redis Lock 就绪；Celery Poll Task 完整集成待 M5 worker config contract
+
+
+> **状态: ⚠️ 部分完成** — Redis Lock 就绪；Celery Poll Task 完整集成待 M5 worker config contract
+
 
 ##### 前置依赖
 

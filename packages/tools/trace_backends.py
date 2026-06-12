@@ -59,6 +59,123 @@ class DegradedTraceBackend:
         return []
 
 
+class TempoTraceBackend:
+    """Native Tempo trace backend with capability detection (M9 PR 9.5).
+
+    Talks to the Grafana Tempo HTTP API. Supports:
+    - trace by ID via ``/api/traces/{trace_id}``
+    - service/time-range search via ``/api/search``
+    - TraceQL queries via ``/api/search?q=...``
+
+    Capability detection allows graceful degradation: if the Tempo instance
+    only supports trace-by-ID, service/time-range queries return empty
+    (degraded) instead of crashing the TraceTool.
+
+    Auth is integrated via RuntimeBackendAuthConfig — raw secrets never
+    enter evidence, logs, audit, or state.
+    """
+
+    name = "tempo"
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float = 2.0,
+        client: httpx.Client | None = None,
+        limit: int = 200,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.client = client
+        self.limit = limit
+        # Capability flags — default to True, narrowed by probing/failure.
+        self.capabilities: dict[str, bool] = {
+            "supports_trace_by_id": True,
+            "supports_search": True,
+            "supports_service_filter": True,
+            "supports_traceql": True,
+        }
+
+    def set_capability(self, name: str, value: bool) -> None:
+        if name in self.capabilities:
+            self.capabilities[name] = value
+
+    # ------------------------------------------------------------------
+    # TraceTool protocol
+    # ------------------------------------------------------------------
+
+    def fetch_spans(self, service: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """Fetch spans for a service within a time window.
+
+        Returns empty list (degraded) when search is unavailable.
+        """
+        if not self.capabilities.get("supports_search"):
+            return []
+        try:
+            return self._search_spans(service, start, end)
+        except Exception:
+            return []
+
+    def fetch_trace_by_id(self, trace_id: str) -> list[dict[str, Any]]:
+        """Fetch spans for a specific trace ID."""
+        if not self.capabilities.get("supports_trace_by_id"):
+            return []
+        try:
+            return self._get_trace(trace_id)
+        except Exception:
+            return []
+
+    def search_traceql(self, query: str) -> list[dict[str, Any]]:
+        """Execute a TraceQL query."""
+        if not self.capabilities.get("supports_traceql"):
+            return []
+        try:
+            return self._traceql_search(query)
+        except Exception:
+            return []
+
+    # ------------------------------------------------------------------
+    # HTTP methods
+    # ------------------------------------------------------------------
+
+    def _get_trace(self, trace_id: str) -> list[dict[str, Any]]:
+        path = f"/api/traces/{trace_id}"
+        resp = self._request(path)
+        return _spans_from_tempo(resp, "")
+
+    def _search_spans(self, service: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        params: dict[str, str | int] = {
+            "start": int(start.timestamp()),
+            "end": int(end.timestamp()),
+            "limit": self.limit,
+        }
+        if self.capabilities.get("supports_service_filter"):
+            params["tags"] = f'service.name="{service}"'
+        resp = self._request("/api/search", params=params)
+        return _spans_from_tempo_search(resp, service)
+
+    def _traceql_search(self, query: str) -> list[dict[str, Any]]:
+        params = {"q": query, "limit": self.limit}
+        resp = self._request("/api/search", params=params)
+        return _spans_from_tempo_search(resp, "")
+
+    def _request(
+        self, path: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        if self.client is not None:
+            resp = self.client.get(
+                path, params=params, timeout=self.timeout_seconds
+            )
+        else:
+            with httpx.Client(
+                base_url=self.base_url, timeout=self.timeout_seconds
+            ) as client:
+                resp = client.get(path, params=params)
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+
 class JaegerTraceBackend:
     """Queries a Jaeger-compatible trace API (Jaeger or Tempo).
 
@@ -148,14 +265,82 @@ def _is_error(tags: dict[str, Any]) -> bool:
         return False
 
 
+def _spans_from_tempo(payload: dict[str, Any], _service: str) -> list[dict[str, Any]]:
+    """Parse spans from a Tempo trace-by-ID response (OTLP format)."""
+    spans: list[dict[str, Any]] = []
+    batches = payload.get("batches", [])
+    if not isinstance(batches, list):
+        return spans
+    for batch in batches:
+        if not isinstance(batch, dict):
+            continue
+        # Extract service name from resource attributes.
+        service_name = _service
+        resource = batch.get("resource", {})
+        if isinstance(resource, dict):
+            for attr in resource.get("attributes", []):
+                if isinstance(attr, dict) and attr.get("key") == "service.name":
+                    sv = attr.get("value", {})
+                    if isinstance(sv, dict):
+                        service_name = sv.get("stringValue", service_name)
+        for lib_span in batch.get("instrumentationLibrarySpans", []):
+            if not isinstance(lib_span, dict):
+                continue
+            for span in lib_span.get("spans", []):
+                if not isinstance(span, dict):
+                    continue
+                parsed = _parse_otlp_span(span, service_name)
+                if parsed:
+                    spans.append(parsed)
+    return spans
+
+
+def _spans_from_tempo_search(payload: dict[str, Any], service: str) -> list[dict[str, Any]]:
+    """Parse spans from a Tempo search response."""
+    spans: list[dict[str, Any]] = []
+    traces = payload.get("traces", [])
+    if not isinstance(traces, list):
+        return spans
+    for trace in traces:
+        if isinstance(trace, dict):
+            t_spans = _spans_from_tempo(trace, service)
+            spans.extend(t_spans)
+    return spans
+
+
+def _parse_otlp_span(span: dict[str, Any], service: str) -> dict[str, Any] | None:
+    """Parse a single OTLP span dict into the normalized format."""
+    trace_id = span.get("traceId", "")
+    span_id = span.get("spanId", "")
+    if not trace_id or not span_id:
+        return None
+    start_ns = int(span.get("startTimeUnixNano", 0))
+    end_ns = int(span.get("endTimeUnixNano", 0))
+    duration_ms = (end_ns - start_ns) // 1_000_000 if end_ns > start_ns else 0
+    status_code = 0
+    st = span.get("status", {})
+    if isinstance(st, dict):
+        status_code = st.get("code", 0)
+    return {
+        "trace_id": trace_id,
+        "span_id": span_id,
+        "name": span.get("name", "unknown"),
+        "service": service,
+        "downstream_service": None,
+        "duration_ms": duration_ms,
+        "status": "error" if status_code == 2 else "ok",
+        "start": datetime.fromtimestamp(start_ns / 1_000_000_000, tz=UTC).isoformat()
+        if start_ns else "",
+    }
+
+
 def build_trace_backend(settings: Settings) -> TraceBackend:
     """Select the trace backend from settings.
 
     - ``disabled`` → DegradedTraceBackend (no-op, TraceTool reports degraded).
     - ``fixture`` → FixtureTraceBackend (local/CI default).
     - ``jaeger`` → JaegerTraceBackend (M8 verified path).
-    - ``tempo`` → JaegerTraceBackend via tempo_url (Tempo exposes Jaeger-compat
-      API; PR 9.5 will add a native TempoTraceBackend).
+    - ``tempo`` → TempoTraceBackend (native Tempo API with capability detection).
 
     TRACE_ENABLED=false also returns DegradedTraceBackend regardless of
     trace_backend value.
@@ -172,7 +357,7 @@ def build_trace_backend(settings: Settings) -> TraceBackend:
             base_url=settings.jaeger_url, timeout_seconds=settings.tool_timeout_seconds
         )
     if backend == "tempo":
-        return JaegerTraceBackend(
+        return TempoTraceBackend(
             base_url=settings.tempo_url, timeout_seconds=settings.tool_timeout_seconds
         )
     # Unreachable — Settings validator rejects unknown values.

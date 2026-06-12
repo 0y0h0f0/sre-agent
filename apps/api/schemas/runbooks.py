@@ -204,3 +204,39 @@ class AmendmentDraftItem(BaseModel):
     review_comment: str | None = None
     created_at: str
     updated_at: str
+
+
+# ---------------------------------------------------------------------------
+# M9 Web Search schemas (PR 9.4)
+# ---------------------------------------------------------------------------
+
+
+class WebSearchRequest(BaseModel):
+    """Request to search the web for runbook enrichment context.
+
+    Results are evidence for draft review only — never auto-published.
+    """
+
+    query: str = Field(min_length=1, max_length=500)
+    purpose: str = "draft_enrichment"
+
+
+class WebSearchResultItem(BaseModel):
+    """A single web search result with traceability metadata."""
+
+    title: str
+    original_url: str
+    final_url: str
+    snippet: str
+    content_hash: str
+    provider: str
+
+
+class WebSearchResponse(BaseModel):
+    """Response from a web search for runbook enrichment."""
+
+    status: str  # "ok" | "disabled" | "degraded" | "blocked"
+    purpose: str = "draft_enrichment"
+    results: list[WebSearchResultItem] = Field(default_factory=list)
+    query_redacted: str = ""
+    error_message: str | None = None

@@ -24,6 +24,8 @@ from apps.api.schemas.runbooks import (
     RunbookTemplateGenerateRequest,
     RunbookTemplateGenerateResponse,
     RunbookVersionItem,
+    WebSearchRequest,
+    WebSearchResponse,
 )
 from apps.api.services.runbook_service import RunbookService
 from packages.agent.llm.factory import build_llm
@@ -129,6 +131,42 @@ def llm_generate_runbook(
 ) -> LLMRunbookGenerateResponse:
     llm = build_llm(settings)
     return RunbookService(db).llm_generate_draft(payload, llm, settings)
+
+
+# ---------------------------------------------------------------------------
+# M9: Web Search for Runbook Enrichment (PR 9.4)
+# ---------------------------------------------------------------------------
+
+_require_web_search_scope = require_scope("runbook:review", "runbook:web_search")
+
+
+@router.post("/web-search", response_model=WebSearchResponse)
+def web_search(
+    payload: WebSearchRequest,
+    settings: Settings = Depends(get_app_settings),
+    _scope: None = Depends(_require_web_search_scope),
+) -> WebSearchResponse:
+    from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+    builder = RunbookWebContextBuilder(settings=settings)
+    result = builder.build_context(query=payload.query, purpose=payload.purpose)
+    return WebSearchResponse(
+        status=result.status,
+        purpose=result.purpose,
+        results=[
+            {
+                "title": r.title,
+                "original_url": r.original_url,
+                "final_url": r.final_url,
+                "snippet": r.snippet,
+                "content_hash": r.content_hash,
+                "provider": r.provider,
+            }
+            for r in result.results
+        ],
+        query_redacted=result.query_redacted,
+        error_message=result.error_message,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -183,6 +183,21 @@ class Settings(BaseSettings):
     # regardless of their individual settings.
     m9_extensions_enabled: bool = False
 
+    # --- M9: Web Search Safety Settings (PR 9.4) ---
+    # Web search provider: disabled | fake | exa
+    runbook_web_search_provider: str = "disabled"
+    runbook_web_search_timeout_seconds: int = Field(default=10, gt=0)
+    runbook_web_search_max_results: int = Field(default=5, gt=0, le=20)
+    runbook_web_search_require_https: bool = True
+    # Comma-separated allowed domain patterns (e.g. '*.docs.example.com,wikipedia.org').
+    # In production, this MUST be non-empty for web search to be enabled.
+    runbook_web_search_allowed_domains: str = ""
+    # Comma-separated blocked domain patterns (overrides allowed).
+    runbook_web_search_blocked_domains: str = ""
+    runbook_web_search_max_content_bytes: int = Field(default=1_048_576, gt=0)
+    runbook_web_search_cache_ttl_seconds: int = Field(default=86400, gt=0)
+    runbook_web_search_max_redirects: int = Field(default=3, ge=0, le=10)
+
     # M9 sub-feature gates — each default-off.
     # LLM-based runbook draft generation (PR 9.2).
     # (runbook_llm_generation_enabled already declared above, preserved for M8 compat)

@@ -10,6 +10,7 @@ from apps.api.schemas.alerts import AlertCreateRequest, AlertCreateResponse
 from apps.api.schemas.common import IncidentStatus
 from packages.common.errors import DependencyUnavailableError
 from packages.common.ids import new_id
+from packages.common.metrics import grafana_webhook_ignored_total, grafana_webhook_ingest_total
 from packages.common.settings import Settings
 from packages.db.models import Incident
 from packages.db.repositories.agent_runs import AgentRunRepository
@@ -95,6 +96,39 @@ class AlertService:
         except Exception:
             # Notification enqueue failures must not block alert ingestion.
             return
+
+    def ingest_grafana_alert(self, raw_payload: dict[str, Any]) -> AlertCreateResponse | None:
+        """Ingest a Grafana unified alerting webhook payload.
+
+        Returns AlertCreateResponse on successful ingest, or None when ingest
+        is disabled (caller should return 204).
+
+        Raises ValueError for malformed payloads (caller should return 400).
+        """
+        # 1. Feature gate check.
+        if not self.settings.grafana_alert_ingest_enabled:
+            grafana_webhook_ignored_total.labels(reason="disabled").inc()
+            return None
+
+        # 2. Basic payload validation.
+        if not isinstance(raw_payload, dict):
+            grafana_webhook_ingest_total.labels(status="malformed").inc()
+            raise ValueError("payload must be a JSON object")
+
+        if "alerts" not in raw_payload or not isinstance(raw_payload["alerts"], list):
+            grafana_webhook_ingest_total.labels(status="malformed").inc()
+            raise ValueError("missing 'alerts' field in Grafana payload")
+
+        # 3. Parse via Grafana schema.
+        from apps.api.schemas.alerts import grafana_to_alert
+        parsed = grafana_to_alert(raw_payload)
+        parsed["source"] = "grafana"
+        request = AlertCreateRequest.model_validate(parsed)
+
+        # 4. Create alert (dedup handled internally).
+        response = self.create_alert(request)
+        grafana_webhook_ingest_total.labels(status="success").inc()
+        return response
 
     def _deduplicated_response(self, incident: Incident) -> AlertCreateResponse:
         latest_run = self.agent_runs.get_latest_for_incident(incident.incident_id)

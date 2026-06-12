@@ -137,6 +137,18 @@ llm_incident_diff_total = Counter(
     ["status"],
 )
 
+grafana_webhook_ingest_total = Counter(
+    "agentp_grafana_webhook_ingest_total",
+    "Grafana webhook ingest attempts",
+    ["status"],
+)
+
+grafana_webhook_ignored_total = Counter(
+    "agentp_grafana_webhook_ignored_total",
+    "Grafana webhook requests ignored (disabled)",
+    ["reason"],
+)
+
 # --- Gauges ---
 
 active_diagnoses = Gauge(

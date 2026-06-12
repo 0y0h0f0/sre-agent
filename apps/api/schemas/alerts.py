@@ -312,10 +312,8 @@ def _from_grafana(payload: dict[str, Any]) -> dict[str, Any]:
         "GrafanaAlert",
     )
     service = _string(labels.get("service") or labels.get("job") or labels.get("app"), "unknown")
-    fingerprint = _string(
-        first.get("fingerprint") or payload.get("groupKey") or payload.get("ruleUrl"),
-        f"grafana:{service}:{alert_name}",
-    )
+    # Stable fingerprint: exclude dashboardURL, panelURL, ruleUID, generatorURL.
+    fingerprint = _grafana_fingerprint(service, alert_name, labels)
     return {
         "fingerprint": fingerprint,
         "service": service,
@@ -330,6 +328,28 @@ def _from_grafana(payload: dict[str, Any]) -> dict[str, Any]:
         "labels": labels,
         "annotations": annotations,
     }
+
+
+def grafana_to_alert(payload: dict[str, Any]) -> dict[str, Any]:
+    """Public entry point for Grafana unified alerting webhook → normalized alert."""
+    return _from_grafana(payload)
+
+
+def _grafana_fingerprint(service: str, alert_name: str, labels: dict[str, Any]) -> str:
+    """Build a stable fingerprint from labels, excluding volatile fields."""
+    import hashlib
+    import json
+    # Fields to exclude from fingerprint (volatile, source-specific, or UI-related).
+    _EXCLUDE_LABELS = {
+        "dashboardurl", "panelurl", "ruleuid", "generatorurl",
+        "alert_format", "internal_marker", "fingerprint",
+    }
+    stable = {
+        k: v for k, v in sorted(labels.items())
+        if k.lower() not in _EXCLUDE_LABELS
+    }
+    core = f"grafana:{service}:{alert_name}:{json.dumps(stable, sort_keys=True)}"
+    return hashlib.sha256(core.encode()).hexdigest()[:16]
 
 
 def _from_datadog(payload: dict[str, Any]) -> dict[str, Any]:

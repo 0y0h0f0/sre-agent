@@ -198,6 +198,10 @@ class Settings(BaseSettings):
     runbook_web_search_cache_ttl_seconds: int = Field(default=86400, gt=0)
     runbook_web_search_max_redirects: int = Field(default=3, ge=0, le=10)
 
+    # --- M9: Grafana Webhook Settings (PR 9.7) ---
+    grafana_webhook_secret_ref: str = ""
+    grafana_webhook_max_bytes: int = Field(default=256_000, gt=0)
+
     # M9 sub-feature gates — each default-off.
     # LLM-based runbook draft generation (PR 9.2).
     # (runbook_llm_generation_enabled already declared above, preserved for M8 compat)

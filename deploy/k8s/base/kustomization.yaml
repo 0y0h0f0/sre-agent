@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sre-agent
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: sre-incident-response-agent
+      app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - configmap.yaml
+  - postgres.yaml
+  - redis.yaml
+  - bge-zh.yaml
+  - api.yaml
+  - worker.yaml
+  - beat.yaml
+  - web.yaml
+  - ingress.yaml
+
+# Secret 由 secretGenerator 从 .env.secret 文件生成，不签入 git。
+# secret.yaml 仅作为字段参考文档保留。
+secretGenerator:
+  - name: sre-agent-secret
+    namespace: sre-agent
+    envs:
+      - .env.secret
+    options:
+      disableNameSuffixHash: true
+
+# 以下可选组件（Prometheus/Loki/Grafana），如集群已有可注释掉:
+# - prometheus.yaml
+# - loki.yaml
+# - grafana.yaml

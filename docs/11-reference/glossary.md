@@ -1,81 +1,177 @@
-# 术语表
+# Glossary
 
-## Agent run
+**Last updated:** 2026-06-14
 
-一次 LangGraph 诊断运行。一个 incident 可以有多个 agent run。
+This glossary defines terms used across the SRE Incident Response Agent documentation and codebase. Prefer these names in docs, comments, API descriptions, and PR notes.
 
-## App cache
+## Core System Terms
 
-应用内部缓存，例如 request-local tool cache 或 prompt segment cache。不能等同 provider prompt cache。
+| Term | Meaning |
+|------|---------|
+| Agent | The LangGraph diagnosis workflow that collects evidence, diagnoses, plans actions, applies guardrails, handles approval, executes, verifies, reports, and persists memory. |
+| Incident | A normalized alert instance persisted in `incidents`, identified by `inc_`. |
+| Alert | Incoming provider payload or normalized request that can create or deduplicate an incident. |
+| Fingerprint | Stable deduplication key. Open incidents with the same fingerprint are deduplicated. |
+| Agent run | One diagnosis workflow execution for an incident, identified by `run_`. |
+| Node trace | Per-node execution record stored in `agent_run_nodes`, identified by `nd_`. |
+| Tool call | Auditable record of a tool invocation, identified by `tool_`. |
+| Evidence item | Traceable evidence used by diagnosis, identified by `evi_`. |
+| Report | Versioned incident report, identified by `rpt_`. Report regeneration creates a new version. |
+| Request ID | `X-Request-Id` value or generated `req_` ID used in responses/errors/audit correlation. |
 
-## Approval
+## Architecture Terms
 
-人工审批记录。L2/L3 动作需要审批，L3 还需要二次确认。
+| Term | Meaning |
+|------|---------|
+| Router | Thin FastAPI endpoint layer under `apps/api/routers`. |
+| Service | Business logic layer under `apps/api/services`. |
+| Repository | Database access layer under `packages/db/repositories`. |
+| Schema | Pydantic request/response model under `apps/api/schemas`. |
+| ORM model | SQLAlchemy table mapping in `packages/db/models.py`. |
+| Worker | Celery process that executes diagnosis, resume, discovery, polling, notification, and eval tasks. |
+| Beat | Celery Beat scheduler for periodic tasks. |
+| EffectiveConfig | Merged runtime backend config used by workers. Priority: env > active override > profile > published config > safe default. |
+| Published config | `EffectiveConfigVersion(status=published)`, identified by `ecv_`. Workers select only published records. |
+| Override | Time-bounded operator backend override, identified by `dov_`. Secret/auth/executor/live fields are forbidden in the general override API. |
+| Discovery | Backend/service/topology/capability detection subsystem. Discovery runs use `dr_`; proposals use `dp_`. |
 
-## Checkpointer
+## Agent Workflow Terms
 
-LangGraph checkpoint persistence。真实 PostgreSQL 下使用 `PostgresSaver`，用于 human approval interrupt 和 resume。
+| Term | Meaning |
+|------|---------|
+| LangGraph | Graph orchestration framework used for the Agent workflow. Do not replace it with another orchestration framework. |
+| Checkpoint | LangGraph persisted execution state. Current runtime uses `thread_id=agent_run_id` and `checkpoint_ns=""`. |
+| GraphInterrupt | LangGraph interruption used when human approval is required. |
+| Resume | Continuing the same checkpointed run after approval/rejection. Resume must not re-run completed dangerous actions. |
+| Replan | Planning another action after rejection or unsatisfactory verification, bounded by caps. |
+| Verification loop | Post-action check that classifies result as resolved/improving/unchanged/degraded/unknown and may replan. |
+| Snapshot | Evidence captured before execution to support audit and rollback reasoning. |
+| FakeLLM | Deterministic local LLM provider used by tests, CI smoke eval, and default local demo. |
+| Reasoning mode | Optional deeper LLM rationale path controlled by `LLM_REASONING_ENABLED`. |
+| Multi-perspective diagnosis | Optional mode that runs specialist perspectives before synthesis; default off. |
 
-## Evidence
+## Tool Terms
 
-诊断证据，来源可以是 metrics、logs、traces、deployment、k8s、db、runbook、memory 等。根因必须引用 evidence ID 或 Runbook chunk ID。
+| Term | Meaning |
+|------|---------|
+| Tool | Testable adapter with query/result schemas, timeout, degradation, cache key, and audit-friendly summary. |
+| Metrics tool | Prometheus-backed or degraded metrics collector. |
+| Logs tool | Loki-backed or degraded logs collector. |
+| Trace tool | Fixture/Jaeger/Tempo/degraded trace collector. |
+| Git change tool | Fixture/GitHub/Argo CD deployment-change collector. |
+| K8s diagnostics tool | Fixture or live read-only Kubernetes diagnostic collector. |
+| DB diagnostics tool | Fixture or live read-only PostgreSQL diagnostic collector. |
+| Executor backend | Action execution adapter. Default is `fixture`; live backend is explicit opt-in and limited to supported K8s mutations. |
+| Degraded result | Structured fallback result that lets diagnosis continue with partial/missing evidence. |
+| Cache bucket | UTC time-bucketed cache key component used to normalize tool queries. |
 
-## BGE-ZH
+## Guardrail and Approval Terms
 
-`BAAI/bge-small-zh` embedding 模型，通过 Docker Compose 中的 `bge-zh` 服务提供 HTTP API（端口 8083），输出 512 维向量。配置 `EMBEDDING_PROVIDER=bge_zh` 启用。
+| Term | Meaning |
+|------|---------|
+| Guardrail | Deterministic risk classifier and policy gate. The model does not decide final execution permission. |
+| L0 | Read-only automatic action. |
+| L1 | Low-risk automatic local/system action. |
+| L2 | Operational action requiring human approval. |
+| L3 | Higher-risk action requiring approval plus second confirmation fields. |
+| L4 | Destructive action directly rejected and never sent to approval. |
+| Approval | Human decision record identified by `apv_`. |
+| Second confirmation | L3 approval fields: `risk_ack=true`, `confirm_action_type`, and `confirm_target`. |
+| Batch approval | API path for deciding multiple approvals. L3 still requires exact second-confirmation fields. |
+| Stale auto-approve | Optional approval automation controlled by `APPROVAL_AUTO_APPROVE_MINUTES`; default is disabled. |
 
-## Cascading failure（级联故障）
+## RAG and Runbook Terms
 
-由服务依赖图推导的故障传播分析。`packages/agent/topology.py` 基于 `SERVICE_TOPOLOGY_PATH` 配置识别传播链和根服务，结果写入 `state["cascade_analysis"]`。
+| Term | Meaning |
+|------|---------|
+| Runbook | Markdown operational document with metadata, detection, evidence, decision, action, and rollback content. |
+| Chunk | Searchable runbook section, identified by `chk_`. |
+| Embedding | Vector representation stored for retrieval. Current core runbook/memory schema uses 512-dimensional vectors. |
+| Hybrid search | Weighted keyword + vector search controlled by `RUNBOOK_HYBRID_SEARCH_ENABLED` and alpha settings. |
+| Reranker | Optional second-stage ranking provider; default is deterministic fake. |
+| Draft | Reviewable runbook proposal, identified by `drf_`. |
+| Version | Published runbook version, identified by `ver_`. |
+| Amendment | Reviewable proposed change to an existing runbook, identified by `amd_`. |
+| Template draft | Deterministic generated runbook draft. |
+| LLM draft | M9 LLM-generated runbook draft; it must start `pending_review`. |
+| Incident diff | M9 LLM analysis comparing an incident to an approved runbook and producing amendments only. |
 
-## Evidence cross-validation（证据交叉验证）
+## Memory and Context Terms
 
-`diagnose` 节点将 metrics、logs、traces、deployment 等多源信号按权重融合（Trace > Metrics > Logs > Git），计算 corroboration score。信号冲突时设置 `_needs_human_review`。
+| Term | Meaning |
+|------|---------|
+| Memory item | Persisted memory record identified by `mem_`. |
+| L0 memory | Run-local state and run-scoped memory. |
+| L1 memory | Incident-scoped memory. |
+| L2 memory | Service-scoped memory. |
+| L3 memory | Global/procedural memory for successful lower-risk action patterns. |
+| Context budget | Token budget for evidence, runbook context, prompts, and report generation. |
+| Compression event | Recorded reduction of large evidence/context. |
+| App prompt segment cache | Redis/application-level cache for prompt segments. |
+| Provider prompt cache | LLM provider-side cache behavior. Do not treat Redis hits as provider cache hits. |
 
-## FakeEmbedding
+## M9 Terms
 
-本地 deterministic embedding 实现，当前 FakeEmbeddingProvider 输出 512 维归一化向量。BGE-ZH 同样输出 512 维；内置 text2vec provider 输出 1024 维，需要配套 schema/migration 后才能写入 PostgreSQL vector 列。
+| Term | Meaning |
+|------|---------|
+| M9 | Controlled enhancement set adding AI drafts, Web context, Tempo, Grafana helper, semantic search, and external embeddings behind explicit gates. |
+| Global M9 gate | `M9_EXTENSIONS_ENABLED`; when false, M9 sub-feature flags resolve disabled. |
+| Sub-feature flag | Individual M9 toggle such as `RUNBOOK_WEB_SEARCH_ENABLED` or `LLM_INCIDENT_DIFF_ENABLED`. |
+| Feature flag conflict | A state where a sub-feature is set true while global M9 is false, or Tempo is selected while M9 is disabled. Logged and counted by metrics. |
+| Web context | Redacted, URL-validated Web search result used as review evidence for runbook enrichment. |
+| Native Tempo backend | `TRACE_BACKEND=tempo` using Tempo HTTP APIs. Treat as M9 rollout. |
+| Tempo discovery | M9 discovery of Tempo services from K8s service data. Production status is at most `requires_review`. |
+| Grafana webhook helper | Gated helper path `AlertService.ingest_grafana_alert()`. The generic alert endpoint can still normalize Grafana-shaped payloads. |
+| Semantic search | M9/hybrid runbook search mode using embeddings when enabled and available. |
+| External embedding provider | Optional HTTP embedding provider that must redact input and degrade to keyword fallback on failure. |
+| External LLM allow | `LLM_EXTERNAL_PROVIDER_ALLOWED`, the second opt-in for cloud LLM providers. |
+| Full M9 rollback | Disabling global/sub-feature flags and restoring trace settings from `PRE_M9_TRACE_BACKEND` / `PRE_M9_TRACE_ENABLED`. |
 
-## FakeLLM
+## Security Terms
 
-本地 deterministic LLM adapter，用于测试、CI smoke eval 和本地 demo。
+| Term | Meaning |
+|------|---------|
+| Safe-by-default | Default local/demo/CI posture uses FakeLLM, fixture executor, fixture diagnostics, and no real external mutation. |
+| Read-only diagnostics | Live K8s/DB diagnostic modes may read only predefined safe data and must not mutate external systems. |
+| Live executor | Explicit opt-in executor that can perform only narrow approved K8s restart/scale/rollback mutations. |
+| Secret reference | A pointer such as `env:VAR_NAME` used instead of storing raw secret values. |
+| Redaction | Deterministic removal of tokens, passwords, private keys, internal URLs, private IPs, and similar sensitive strings. |
+| SSRF protection | Backend URL validation that blocks unsafe schemes, metadata endpoints, and production localhost/private IPs unless allowlisted. |
+| Audit log | Immutable record of who did what and when, identified by `adt_` for API/repository audit paths. |
+| NFA | Not Actionable Alert. Repeated NFA marks create false-positive patterns identified by `nfp_`. |
+| High-risk action block rate | Eval metric requiring destructive/high-risk actions to be blocked. CI smoke requires 100%. |
 
-## Guardrail
+## Evaluation and Testing Terms
 
-确定性风险策略。负责把动作分类为 L0-L4，并决定是否允许、是否审批、是否直接拒绝。
+| Term | Meaning |
+|------|---------|
+| Smoke eval | Deterministic CI-friendly eval suite using FakeLLM. |
+| Full eval | Larger manual eval suite; may use real LLM only outside stable CI gates. |
+| Shadow eval | Comparative evaluation path that does not affect production diagnosis. |
+| Replay | Re-running stored/eval incidents through a model/prompt path. |
+| Contract test | Test that enforces API/error/schema compatibility. |
+| E2E smoke | Browser or API-level flow that validates the integrated stack. |
+| Coverage gate | Backend and frontend coverage thresholds documented in testing strategy. |
 
-## Incident
+## Operations Terms
 
-事故记录，由 alert 创建。open fingerprint 去重。
+| Term | Meaning |
+|------|---------|
+| Local demo | Docker Compose stack with deterministic fixtures and demo-service. |
+| Fixture backend | Default deterministic backend that reads local fixture data or returns mock execution. |
+| Production checklist | Required pre-flight checks before enabling production-like operation. |
+| Rollback switch | Environment/config flag that disables a capability without code rollback. |
+| Degraded startup | Starting with a capability unavailable while preserving core diagnosis where safe. |
+| Orphaned task | Agent run stuck in running state beyond `TASK_ORPHAN_TIMEOUT_SECONDS`. |
+| Alert poll cursor | Alertmanager polling dedup/resolved-inference record keyed by filter hash and fingerprint. |
 
-## L4
+## Naming Rules
 
-禁止级风险。包括 delete data、truncate table、flush cache、modify database 等，直接拒绝。
+Use these names consistently:
 
-## LLM Reasoning
-
-通过 `LLM_REASONING_ENABLED` 在 `LLM_REASONING_NODES`（默认 `diagnose`）上启用深度推理。输出 `diagnosis_rationale` 和 LLM 调用元数据，不持久化原始 chain-of-thought。
-
-## Mock executor
-
-MVP 动作执行器。只返回固定 mock 结果，不调用真实系统。
-
-## NFA
-
-Not Actionable Alert。用户可把事故标记为 NFA，用于反馈和后续自动降级。
-
-## Provider prompt cache
-
-LLM provider 的 prefix caching 行为。只有 provider 返回或 adapter 可判断时才可统计。
-
-## RAG
-
-Retrieval-Augmented Generation。这里指 Runbook chunk 的 embedding/BM25/rerank 检索，并将结果带入诊断上下文。
-
-## Runbook chunk
-
-Runbook Markdown 被切分后的检索单元，包含 `chunk_id`、source path、title、excerpt/content、metadata 和 embedding。
-
-## Shadow mode
-
-无副作用的平行评测模式。当前完成口径是只写 eval 表、记录 shadow model/prompt 元信息，不修改真实 incident/action/approval，也不执行真实动作。
+- `fixture executor`, not mock executor, when referring to the default `EXECUTOR_BACKEND=fixture` path.
+- `FakeLLM`, not fake model, when referring to the deterministic provider.
+- `EffectiveConfigVersion`, not runtime config row, when referring to published worker config snapshots.
+- `RunbookDraft` and `AmendmentDraft`, not generated runbook, for unreviewed AI output.
+- `provider cache` and `app cache` separately; do not merge those metrics.
+- `M9 sub-feature`, not plugin, for controlled enhancement flags.

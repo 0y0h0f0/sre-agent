@@ -1,69 +1,75 @@
 # 项目概览
 
+**最后更新：** 2026-06-13
+
 ## 目标
 
-SRE Incident Response Agent 用于本地 demo 环境中的事故响应自动化。系统接收告警后创建事故记录，异步运行 LangGraph 诊断流程，汇总可追溯证据，输出根因、处置建议、风险分类、审批请求和事故报告。
+SRE Incident Response Agent 是一个面向本地演示和受控生产化切片的 incident 诊断与响应系统。它接收告警，创建 incident 和 agent run，通过 Celery 异步运行 LangGraph 诊断流程，收集可追溯证据，输出根因、建议动作、审批请求、执行结果和事故报告。
 
-## 使用场景
+系统的默认路径是安全的：本地和 CI 使用 FakeLLM、fixture 工具数据和 fixture executor。真实外部读后端和 live Kubernetes executor 只在显式配置后启用，并受确定性 guardrail 与人工审批约束。
 
-- 演示一个 SRE Agent 如何从告警进入诊断、审批和报告闭环。
-- 验证 Runbook RAG、上下文压缩、多级记忆和工具审计的工程边界。
-- 使用 FakeLLM 和 fixture 数据稳定测试事故诊断链路。
-- 在本地环境中演示人工审批如何阻断高风险动作。
+## 当前状态
 
-## 固定技术栈
+- **M0-M8 已完成**：真实后端集成、确定性诊断、安全发布、配置合并、审计、回滚、runbook 审查、Alertmanager 轮询、服务发现、证据验证、级联故障分析、K8s executor、评估、Agent 编排和 ReAct 验证循环。
+- **M9 受控增强默认关闭**：LLM runbook 草稿、incident diff、web 搜索安全、Tempo trace 后端、Grafana webhook 摄取、语义 runbook 搜索和外部 embedding provider 均在显式 feature gate 后使用。生产环境默认关闭。
+- **文档源关系**：`docs/` 描述当前行为；`plans/` 和 `plans/11-roadmap/` 是历史背景和 roadmap，不覆盖当前代码和安全边界。
 
-| 层 | 技术 |
-| --- | --- |
-| API | Python 3.11+、FastAPI、Pydantic |
-| 数据库 | PostgreSQL、SQLAlchemy、Alembic、pgvector |
-| 异步任务 | Celery、Redis broker/result backend |
-| Agent | LangGraph、PostgreSQL checkpointer |
-| 观测数据 | Prometheus、Loki、OpenTelemetry demo/fixture |
-| RAG | Runbook chunk、FakeEmbedding / BGE-ZH / text2vec、pgvector、BM25、reranker |
-| 前端 | React、TypeScript、Vite、TanStack Query |
-| 测试 | pytest、pytest-cov、Vitest、React Testing Library、Playwright |
+## 当前仓库快照
 
-## MVP 支持的事故类型
+以下统计来自 2026-06-13 的当前仓库结构、路由装饰器、SQLAlchemy 模型和 Docker Compose 配置。
 
-1. database connection exhaustion
-2. high 5xx after deploy
-3. Redis cache avalanche
-4. Pod restart loop with mock Kubernetes events
+| 维度 | 当前值 | 说明 |
+|------|--------|------|
+| API | 14 个 router，76 个 HTTP route，1 个 WebSocket | 详细契约见 [API 参考](../01-backend/api-reference.md) |
+| 数据模型 | 32 个 SQLAlchemy 模型，15 个 Alembic 迁移 | 当前 embedding 字段为 512 维 |
+| Agent 图 | 18 个 LangGraph 节点 | 含 collect-gap 与 verify/replan 两个有界循环 |
+| 代码布局 | `apps/` 约 60 个 Python 文件，`packages/` 约 161 个 Python 文件 | 不计 `__pycache__`、构建产物和依赖目录 |
+| 测试布局 | `tests/` 约 102 个 Python 测试文件 | 另有前端 Vitest 和 Playwright 配置 |
+| 本地服务 | 默认 Compose 13 个服务；`mailpit` 为 `dev` profile 可选服务 | `docker compose --profile dev up mailpit` 可启用本地邮件 UI |
+| Demo 数据 | 4 个告警 fixture、4 个故障 fixture、12 个 runbook | 位于 `demo/` |
 
-这些类型的 alert fixture 位于 `demo/alerts/`，对应 Runbook 位于 `demo/runbooks/checkout-api/`。
+## 核心能力
 
-## 已完成的扩展能力
+| 能力 | 当前行为 |
+|------|----------|
+| 告警摄取 | `POST /api/alerts` webhook 与 Alertmanager 轮询；按 fingerprint 去重开放 incident |
+| 异步诊断 | API 创建 `Incident` 和 `AgentRun` 后只入队 Celery；LangGraph 不在请求线程中运行 |
+| 证据收集 | Metrics、logs、traces、deployment、K8s、DB、runbook、memory、cross-incident context |
+| 根因分析 | FakeLLM/真实 provider 适配器 + 确定性回退；诊断结果保留 evidence/runbook chunk 引用 |
+| 动作治理 | Deterministic guardrail 将动作分类为 L0-L4；模型输出不能绕过最终权限判断 |
+| 审批 | L2/L3 需要人工审批；L3 需要 `risk_ack`、`confirm_action_type`、`confirm_target` |
+| 执行 | 默认 fixture executor；`EXECUTOR_BACKEND=live` 仅允许受限 Kubernetes restart/scale/rollback |
+| 验证与报告 | 执行前快照、执行后 verify/replan、版本化 incident report、记忆持久化 |
+| 前端 | React 控制台展示 incidents、runs、node traces、approvals、reports 和配置/发现相关信息 |
+| M9 | AI/Web/Tempo/Grafana/semantic search 能力均在 `M9_EXTENSIONS_ENABLED` 和子开关后面 |
 
-按当前项目收口口径，MVP 主链路和已纳入仓库的 post-MVP roadmap 能力均已完成。扩展能力包括：
+## 主链路
 
-- LLM provider factory：`fake`、`openai`、`deepseek`、`anthropic`、`vllm` 等适配入口。
-- LLM reasoning：可配置的深度推理节点（`LLM_REASONING_ENABLED` / `LLM_REASONING_NODES`），输出 `diagnosis_rationale` 和 LLM 调用元数据。
-- 证据交叉验证：metrics/logs/traces/deployment 信号融合，corroboration 提高置信度，冲突触发人工审查。
-- 级联故障分析：基于服务依赖图的故障传播分析、根服务识别、关联事故聚类。
-- 更完整的工具后端：Trace、Git/deployment、K8s、DB diagnostics 支持 fixture 或可选真实读后端。
-- 邮件通知：事故完成、审批请求、报告、每日摘要。
-- Runbook 增强：BM25 混合检索、reranker、多语言 embedding 配置（BGE-ZH / text2vec）、草稿和版本。
-- 记忆与学习：NFA 标记、跨事故关联、反馈数据。
-- 协作：评论、证据标注、审批组、审计日志。
-- Ops：API key 鉴权、Prometheus metrics、WebSocket 节点事件、shadow eval、Celery beat 周期任务。
+```text
+Alert Webhook / Alertmanager Poll
+  -> FastAPI: 标准化告警、fingerprint 去重、创建 Incident + AgentRun
+  -> Redis/Celery: 异步调度诊断任务
+  -> Worker: 读取已发布配置、构建 AgentDeps、初始化 LangGraph checkpoint
+  -> LangGraph: 收集证据、检索 runbook/memory、诊断、压缩、排序、规划动作
+  -> Guardrail: L0/L1 自动，L2/L3 审批，L4 拒绝
+  -> Executor: 默认 fixture；显式 live K8s 仅执行允许的 Kubernetes mutation
+  -> Verify/Report: 验证效果、必要时重新规划、生成报告、持久化记忆
+  -> React Console: 展示状态、审批、节点轨迹、报告和实时事件
+```
 
-这些扩展默认保持本地 demo 可复现，不突破 mock executor 和安全边界。真实 provider 或真实只读后端需要显式配置，不能成为 CI 稳定门禁。
+## 读者应先记住的边界
 
-## 主要输出
+- 默认 executor 是 `fixture`；真实 Kubernetes 写操作必须显式选择 `EXECUTOR_BACKEND=live`。
+- Live executor 只允许 Deployment rolling restart、Deployment scale/scale back、Deployment rollback subresource。
+- Live K8s diagnostics 与 live DB diagnostics 是只读诊断能力，不等于写入权限。
+- L4 destructive action 直接拒绝，不进入审批。
+- CI、unit tests 和 smoke eval 使用 FakeLLM，不依赖真实 LLM provider。
+- M9 外部调用必须有 feature flag、超时、脱敏、审计/指标、错误降级和回滚开关。
 
-- `incidents`：事故列表和详情。
-- `agent_runs`：诊断运行记录、节点轨迹、token/cache 指标。
-- `evidence_items`：指标、日志、trace、部署、Runbook、记忆等证据。
-- `actions`：推荐动作和执行结果。
-- `approvals`：L2/L3 审批请求和决策。
-- `incident_reports`：可版本化的事故报告。
-- `tool_calls`：工具调用审计记录。
+## 相关入口
 
-## 非目标
-
-- 不做生产级 Kubernetes 写操作。
-- 不执行真实云资源变更。
-- 不删除数据、truncate table、flush 真实缓存或修改真实数据库。
-- 不把真实 LLM 作为 CI 稳定门禁。
-- 不把 roadmap 中的 RBAC/SSO、模型微调、真实自动化执行当成 MVP 范围。
+- [开发者全景指南](developer-guide.md) — 阅读顺序和改动入口。
+- [系统架构](architecture.md) — 分层、数据流和运行时依赖。
+- [范围与安全边界](scope-and-boundaries.md) — 哪些能力可用、哪些动作禁止。
+- [仓库地图](repository-map.md) — 代码和文档目录职责。
+- [M9 上线计划](../m9-rollout.md) — M9 feature gate、验证和回滚。

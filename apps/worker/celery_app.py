@@ -41,8 +41,26 @@ celery_app.conf.update(
             "task": "apps.worker.tasks.poll_alertmanager",
             "schedule": settings.alert_poll_interval_seconds,
         },
+        "periodic-discovery": {
+            "task": "apps.worker.tasks.auto_discovery_rerun",
+            "schedule": crontab(minute="*/30"),  # every 30 minutes
+        },
     },
 )
+
+# Trigger auto-discovery on worker startup (initial scan, then Beat handles periodic).
+@celery_app.on_after_finalize.connect
+def _trigger_startup_discovery(sender: Any, **kwargs: Any) -> None:
+    """Enqueue an auto-discovery run when the worker first starts."""
+    try:
+        from apps.worker.tasks import auto_discovery_rerun
+        auto_discovery_rerun.delay()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to enqueue startup discovery", exc_info=True
+        )
+
 
 # Start Prometheus metrics HTTP server for worker scraping (Phase 7.2)
 if (

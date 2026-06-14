@@ -89,7 +89,7 @@ class LiveK8sBackend:
             msg = "kubernetes client not installed; use k8s_backend=fixture"
             raise RuntimeError(msg) from exc
 
-        config.load_kube_config()  # pragma: no cover - requires a real cluster
+        _load_kubernetes_config(config)  # pragma: no cover - requires a real cluster
         core = client.CoreV1Api()  # pragma: no cover
         ns = query.namespace or self.namespace  # pragma: no cover
         timeout = self.timeout_seconds  # pragma: no cover
@@ -268,3 +268,11 @@ def build_k8s_backend(settings: Settings) -> K8sBackend:
         )
     msg = f"unknown k8s_backend '{settings.k8s_backend}'"
     raise ValueError(msg)
+
+
+def _load_kubernetes_config(config_module: Any) -> None:
+    """Load Kubernetes client config for both in-cluster and local execution."""
+    try:
+        config_module.load_incluster_config()
+    except Exception:
+        config_module.load_kube_config()

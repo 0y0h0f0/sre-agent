@@ -33,6 +33,10 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.10",
 ]
+k8s = [
+  "kubernetes>=30",
+  "requests>=2.32",
+]
 
 [tool.setuptools.packages.find]
 include = ["apps*", "packages*"]

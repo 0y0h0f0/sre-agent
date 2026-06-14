@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from math import ceil, isfinite
@@ -94,14 +95,31 @@ class MetricsTool:
         if cached is not None:
             return cached.model_copy(update={"duration_ms": elapsed_ms(started_at)})
 
-        promql = _promql(metrics_query.metric_type, metrics_query.service, self.service_label)
+        promql_candidates = _promql_candidates(
+            metrics_query.metric_type,
+            metrics_query.service,
+            self.service_label,
+        )
+        promql = promql_candidates[0]
+        attempted_queries: list[str] = []
         try:
-            payload = self._query_range(metrics_query, promql)
-            values = _extract_values(payload)
+            values: list[float] = []
+            for candidate in promql_candidates:
+                attempted_queries.append(candidate)
+                payload = self._query_range(metrics_query, candidate)
+                values = _extract_values(payload)
+                promql = candidate
+                if values:
+                    break
             if not values:
                 result = ToolResult(
                     status="degraded",
-                    data={"query": promql, "stats": None, "sample_count": 0},
+                    data={
+                        "query": promql,
+                        "queries": attempted_queries,
+                        "stats": None,
+                        "sample_count": 0,
+                    },
                     summary=(
                         "no Prometheus samples for "
                         f"{metrics_query.service} {metrics_query.metric_type}"
@@ -115,7 +133,12 @@ class MetricsTool:
                 stats = _series_stats(values)
                 result = ToolResult(
                     status="succeeded",
-                    data={"query": promql, "stats": stats, "sample_count": len(values)},
+                    data={
+                        "query": promql,
+                        "queries": attempted_queries,
+                        "stats": stats,
+                        "sample_count": len(values),
+                    },
                     summary=compact_summary(
                         {
                             "service": metrics_query.service,
@@ -139,7 +162,7 @@ class MetricsTool:
         except httpx.TimeoutException as exc:
             result = ToolResult(
                 status="timeout",
-                data={"query": promql},
+                data={"query": promql, "queries": attempted_queries},
                 summary=f"Prometheus query timed out for {metrics_query.service}",
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
@@ -148,7 +171,7 @@ class MetricsTool:
         except (httpx.HTTPError, KeyError, TypeError, ValueError, IndexError) as exc:
             result = ToolResult(
                 status="degraded",
-                data={"query": promql},
+                data={"query": promql, "queries": attempted_queries},
                 summary=(
                     f"Prometheus unavailable for {metrics_query.service}; "
                     "continuing with degraded metrics"
@@ -268,6 +291,130 @@ def _promql(metric_type: MetricType, service: str, service_label: str = "service
         ),
     }
     return templates[metric_type]
+
+
+def _promql_candidates(
+    metric_type: MetricType, service: str, service_label: str = "service"
+) -> list[str]:
+    candidates = [_promql(metric_type, service, service_label)]
+    for selector in _service_selector_candidates(service, service_label):
+        candidates.extend(_promql_templates_for_selector(metric_type, selector))
+    return _dedupe(candidates)
+
+
+def _promql_templates_for_selector(metric_type: MetricType, selector: str) -> list[str]:
+    templates: dict[str, list[str]] = {
+        "latency": [
+            (
+                "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket"
+                f"{{{selector}}}[5m])) by (le))"
+            ),
+            (
+                "histogram_quantile(0.95, sum(rate(grpc_server_request_duration_seconds_bucket"
+                f"{{{selector}}}[5m])) by (le))"
+            ),
+        ],
+        "error_rate": [
+            (
+                f'sum(rate(http_requests_total{{{selector},status=~"5.."}}[5m])) '
+                f"/ clamp_min(sum(rate(http_requests_total{{{selector}}}[5m])), 1)"
+            ),
+            (
+                f'sum(rate(http_server_requests_seconds_count{{{selector},status=~"5.."}}[5m])) '
+                f"/ clamp_min(sum(rate(http_server_requests_seconds_count{{{selector}}}[5m])), 1)"
+            ),
+            f"clamp_min(1 - avg(up{{{selector}}}), 0)",
+        ],
+        "qps": [
+            f"sum(rate(http_requests_total{{{selector}}}[5m]))",
+            f"sum(rate(http_server_requests_seconds_count{{{selector}}}[5m]))",
+            f"sum(rate(grpc_server_requests_total{{{selector}}}[5m]))",
+        ],
+        "cpu": [
+            f"sum(rate(process_cpu_seconds_total{{{selector}}}[5m]))",
+            f"sum(rate(container_cpu_usage_seconds_total{{{selector}}}[5m]))",
+        ],
+        "memory": [
+            f"demo_process_resident_memory_bytes{{{selector}}}",
+            f"process_resident_memory_bytes{{{selector}}}",
+            f"container_memory_working_set_bytes{{{selector}}}",
+        ],
+        "db_connections": [
+            f"db_connections_active{{{selector}}}",
+            f"db_pool_in_use{{{selector}}}",
+            f"db_pool_open_connections{{{selector}}}",
+            f"hikaricp_connections_active{{{selector}}}",
+        ],
+        "cache_hit_rate": [
+            f"redis_cache_hit_rate{{{selector}}}",
+            f"cache_hit_rate{{{selector}}}",
+        ],
+        "cpu_throttle": [
+            (
+                f"sum(rate(container_cpu_cfs_throttled_periods_total{{{selector}}}[5m])) "
+                f"/ clamp_min(sum(rate(container_cpu_cfs_periods_total{{{selector}}}[5m])), 1)"
+            ),
+        ],
+        "disk_avail": [
+            (
+                f"min(node_filesystem_avail_bytes{{{selector}}}) "
+                f"/ clamp_min(min(node_filesystem_size_bytes{{{selector}}}), 1)"
+            ),
+        ],
+        "cert_expiry_days": [f"min(tls_cert_expiry_seconds{{{selector}}}) / 86400"],
+        "dns_error_rate": [
+            (
+                f'sum(rate(coredns_dns_responses_total{{{selector},rcode!="NOERROR"}}[5m])) '
+                f"/ clamp_min(sum(rate(coredns_dns_responses_total{{{selector}}}[5m])), 1)"
+            ),
+        ],
+        "queue_lag": [f"max(kafka_consumergroup_lag{{{selector}}})"],
+        "rate_limit_hits": [f"sum(rate(rate_limit_hits_total{{{selector}}}[5m]))"],
+        "slo_burn_rate": [
+            (
+                f'sum(rate(http_requests_total{{{selector},status=~"5.."}}[1h])) '
+                f"/ clamp_min(sum(rate(http_requests_total{{{selector}}}[1h])), 1) / 0.001"
+            ),
+        ],
+    }
+    return templates[metric_type]
+
+
+def _service_selector_candidates(service: str, service_label: str) -> list[str]:
+    labels = [
+        service_label,
+        "service",
+        "app",
+        "job",
+        "container",
+        "deployment",
+        "app_kubernetes_io_name",
+        "kubernetes_pod_name",
+        "pod",
+    ]
+    escaped = service.replace("\\", "\\\\").replace('"', '\\"')
+    regex = _service_alias_regex(service)
+    selectors: list[str] = []
+    for label in _dedupe(labels):
+        selectors.append(f'{label}="{escaped}"')
+        selectors.append(f'{label}=~"{regex}"')
+    return _dedupe(selectors)
+
+
+def _service_alias_regex(service: str) -> str:
+    escaped = re.escape(service).replace("\\-", "-")
+    return f"{escaped}($|[-_].*)"
+
+
+def _dedupe(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
 
 
 def _extract_values(payload: dict[str, Any]) -> list[float]:

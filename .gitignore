@@ -16,10 +16,22 @@ apps/web/dist/
 apps/web/playwright-report/
 apps/web/test-results/
 
+# Local root npm metadata
+/package.json
+/package-lock.json
+
 # Local env
 .env
-plan.md
-tzplan.md
+.env.*
+!.env.example
+!.env.*.example
+
+# K8s Secret 生成源文件（包含真实密钥，严禁提交）
+deploy/k8s/base/.env.secret
+deploy/k8s/overlays/**/.env.secret
+
+# Local key exports
+newkey.txt
 
 # Generated eval reports
 reports/
@@ -34,6 +46,12 @@ models/
 
 # Build artifacts
 *.egg-info/
+*.tsbuildinfo
+
+# Local agent state
+.claude/
+.codex/
+.agents/
 
 # Editor backup files
 *.orig
@@ -42,5 +60,7 @@ models/
 .hypothesis/
 
 # Internal planning/research docs
+plan.md
+tzplan.md
 realplan.md
 study.md

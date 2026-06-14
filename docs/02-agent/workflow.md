@@ -1,40 +1,29 @@
 # Agent 工作流
 
-## 入口
+**最后更新：** 2026-06-14
 
-Agent 由 Celery worker 调用，不由 FastAPI inline 执行。
+## 概述
 
-Worker 中的主要入口：
+Agent 工作流由 `packages/agent/graph.py` 构建，是一个 18 节点 LangGraph `StateGraph`。API 不内联运行诊断；`POST /api/alerts` 创建 incident 和 agent run 后入队 Celery，worker 再构造 `AgentDeps`、编译图并执行。
 
-- `run_incident_diagnosis_logic(db, incident_id, agent_run_id)`
-- `AgentRunner.run(incident_id, agent_run_id, alert_payload)`
-- `AgentRunner.resume(agent_run_id, decision)`
+当前图把六类证据采集收敛到一个并行节点 `collect_all_evidence`。单项采集函数仍保留在 `packages/agent/nodes/collect_*.py`，但图上的节点是并行编排器。
 
-LangGraph config 固定为：
+## 代码入口
 
-```python
-{
-    "configurable": {
-        "thread_id": agent_run_id,
-        "checkpoint_ns": "",
-    }
-}
-```
+| 入口 | 职责 |
+|------|------|
+| `packages/agent/graph.py` | LangGraph 节点、边和条件路由 |
+| `packages/agent/runner.py` | 初始 state、checkpoint config、interrupt/resume |
+| `packages/agent/state.py` | `IncidentState` 字段定义 |
+| `packages/agent/schemas.py` | 诊断、动作、护栏和依赖注入 schema |
+| `packages/agent/nodes/` | 普通 Python 节点函数 |
+| `apps/worker/tasks.py` | Celery 任务、依赖构造、run 状态同步 |
 
-`thread_id` 必须等于 `agent_run_id`。审批恢复必须使用同一个 config。
-
-## 当前节点顺序
-
-当前实现的图位于 `packages/agent/graph.py`：
+## 图结构
 
 ```text
 parse_alert
-  -> collect_metrics
-  -> collect_logs
-  -> collect_traces
-  -> collect_deployment
-  -> collect_k8s
-  -> collect_db
+  -> collect_all_evidence
   -> retrieve_memory
   -> cross_incident
   -> retrieve_runbook
@@ -42,176 +31,123 @@ parse_alert
   -> diagnose
   -> compress_context
   -> conditional:
-       missing evidence and cycle budget remains -> collect_gap -> build_context
+       missing_evidence and collect_gap cycle budget remains -> collect_gap -> build_context
        otherwise -> rank_hypotheses
   -> rank_hypotheses
   -> plan_actions
   -> guardrail_check
   -> conditional:
-       L0/L1 -> take_snapshot -> execute_action
-       L2/L3 -> human_approval
-       L4    -> generate_report
+       L0/L1 or already-approved executable action -> take_snapshot -> execute_action
+       L2/L3 waiting for decision -> human_approval interrupt
+       all L4 -> generate_report
   -> conditional after approval:
        approved -> take_snapshot -> execute_action
-       rejected -> plan_actions, bounded by replan cap
+       rejected and replan budget remains -> plan_actions
        otherwise -> generate_report
   -> verify
   -> conditional:
-       resolved/unknown/max cycles -> generate_report
-       improving/unchanged/degraded -> plan_actions
+       resolved / skipped / unknown / error / max cycles -> generate_report
+       improving / unchanged / degraded -> plan_actions
   -> generate_report
   -> persist_memory
   -> END
 ```
 
-相对 MVP 规划，当前实现增加了：
+## 节点职责
 
-- `collect_k8s`
-- `collect_db`
-- `cross_incident`
-- `compress_context`
-- `persist_memory`
+| 节点 | 主要输入 | 主要输出 | 说明 |
+|------|----------|----------|------|
+| `parse_alert` | `alert_payload` | `service_name`、`alert_name`、`severity`、`time_window` | 标准化告警字段 |
+| `collect_all_evidence` | service、time window、tool deps | 六类 evidence | 使用 `ThreadPoolExecutor` 并行调用 metrics/logs/traces/deployment/k8s/db，主线程统一记录 trace 和持久化 evidence |
+| `retrieve_memory` | incident/run/service/alert | `memory_context` | 读取 L0 run、L1 incident、L2 service、L3 global procedural memory |
+| `cross_incident` | service/fingerprint | `cross_incident_context` | 查找相似历史 incident |
+| `retrieve_runbook` | alert/service/root query | `runbook_context` | 通过 `RunbookSearchTool` 返回带 chunk ID/source path 的上下文 |
+| `build_context` | evidence、runbook、memory、cross incident | `_built_messages`、`token_budget`、`compression_events` | 调用 `ContextBuilder`，不直接调用 LLM |
+| `diagnose` | `_built_messages` 和 state evidence | `hypotheses`、`root_cause`、`diagnosis_rationale`、`llm_calls` | 支持单次诊断或 multi-perspective 诊断，失败时可规则回退 |
+| `compress_context` | `compression_events` | L2 compressed memory | 将超预算上下文摘要写入 service scope memory |
+| `collect_gap` | `diagnosis_rationale.missing_evidence` | 追加 gap evidence | 按关键词选择工具，扩大窗口 5 分钟，最多 1 轮 |
+| `rank_hypotheses` | hypotheses、evidence | ranked hypotheses | 按证据数量、来源多样性、部署相关性、runbook/memory 匹配排序 |
+| `plan_actions` | root cause、反馈、snapshot | `recommended_actions` | 只建议动作，不决定最终执行权限 |
+| `guardrail_check` | recommended actions | `risk_level`、`allowed`、`requires_approval` | 确定性风险分类，绝不信任模型决定权限 |
+| `human_approval` | L2/L3 actions | action/approval records、GraphInterrupt | 创建审批记录并暂停图；resume 时读取 DB 中每个 approval 的真实状态 |
+| `take_snapshot` | pending executable actions | `pre_action_snapshot` | 执行前抓取 evidence count 和 K8s deployment 状态，供回滚/降级处理使用 |
+| `execute_action` | allowed 且无需审批的 actions | `execution_results` | 通过注入的 executor backend 执行；默认 fixture |
+| `verify` | execution results | `verify_result`、`verify_evidence` | 对 L2/L3 执行动作重新查 metrics/logs，最多 2 轮验证/重规划 |
+| `generate_report` | run trajectory | `incident_report` | 生成结构化 incident report |
+| `persist_memory` | diagnosis/report/actions | L0-L3 memory writes | best-effort 写入，失败不终止主流程 |
 
-这些节点是只读诊断、上下文控制和记忆写回能力，不改变 mock executor 的安全边界。
+## 条件路由和循环上限
 
-## `IncidentState`
+| 路由 | 条件 | 上限 |
+|------|------|------|
+| `compress_context -> collect_gap` | `diagnosis_rationale.missing_evidence` 非空 | `MAX_DIAGNOSE_CYCLES = 1` |
+| `human_approval -> plan_actions` | 本批审批全拒绝 | `MAX_REPLAN_CYCLES = 3` |
+| `verify -> plan_actions` | `verify_result` 为 `improving`、`unchanged`、`degraded` | `MAX_VERIFY_CYCLES = 2` |
+| `verify -> generate_report` | `resolved`、`skipped`、`unknown`、`error` 或达到上限 | 终止循环 |
 
-`IncidentState` 是流经图的 TypedDict。关键字段：
+## Checkpoint 与恢复
+
+运行配置固定为：
+
+```python
+config = {
+    "configurable": {
+        "thread_id": agent_run_id,
+        "checkpoint_ns": "",
+    }
+}
+```
+
+规则：
+
+- `thread_id` 始终是 `agent_run_id`。
+- MVP 的 `checkpoint_ns` 为空字符串。
+- worker 路径应使用 PostgreSQL checkpointer，业务表只保存 checkpoint 指针和展示快照。
+- `human_approval` 通过 `interrupt()` 暂停；API 先写入 approval/action 决策，再入队 resume 任务。
+- resume 使用同一个 config，并用 `Command(resume={"decision": ...}, update={...})` 继续执行。
+- resume 后不会把一个批次决策盲目应用到所有动作；节点逐个读取 DB 中 approval 的状态，仍为 `waiting` 的动作不会执行。
+
+无 checkpointer 的 dev/test 便捷路径会自动批准 L2 批次以便单元测试推进；L3 永远不会通过该路径自动批准。
+
+## `IncidentState` 关键字段
 
 | 字段 | 含义 |
-| --- | --- |
-| `incident_id`、`agent_run_id` | public ID |
-| `alert_payload` | 归一化后的告警 payload |
-| `service_name`、`severity`、`alert_name`、`time_window` | 从告警解析出的上下文 |
-| `metrics_evidence`、`logs_evidence`、`traces_evidence` | 观测证据 |
-| `deployment_evidence` | 部署/Git 证据 |
-| `k8s_evidence`、`db_evidence` | 只读扩展诊断证据 |
-| `runbook_context` | Runbook RAG 结果 |
-| `memory_context` | 记忆检索结果 |
-| `cross_incident_context` | 相关事故上下文 |
-| `hypotheses` | 候选根因 |
-| `root_cause` | 最终根因 |
-| `diagnosis_rationale` | 诊断推理摘要（reasoning 启用时有内容） |
-| `cascade_analysis` | 级联故障分析结果（`is_cascade`、根服务、传播链） |
-| `llm_calls` | LLM 调用和 token/cache 信息 |
-| `recommended_actions` | 推荐动作 |
-| `approval_status` | 审批状态 |
-| `execution_results` | fixture/live executor 执行结果 |
-| `pre_action_snapshot` | 动作执行前的证据与 K8s 部署快照，用于 verify 和 degraded 回滚 |
-| `verify_result`、`verify_evidence` | 动作后验证结果和新鲜证据 |
-| `incident_report` | 报告内容 |
-| `token_budget` | token 预算和估算 |
-| `compression_events` | 压缩事件 |
-| `errors` | 节点错误 |
-| `phase` | 当前阶段 |
-| `_needs_approval`、`_all_l4`、`_needs_human_review` | guardrail 和证据路由内部字段 |
+|------|------|
+| `incident_id` / `agent_run_id` | 业务 ID 和 graph checkpoint thread ID |
+| `alert_payload`、`service_name`、`severity`、`alert_name`、`time_window` | 标准化告警上下文 |
+| `metrics_evidence`、`logs_evidence`、`traces_evidence`、`deployment_evidence`、`k8s_evidence`、`db_evidence` | 六类证据，持久化后带 evidence ID |
+| `runbook_context`、`memory_context`、`cross_incident_context` | RAG、记忆和相似 incident 上下文 |
+| `hypotheses`、`root_cause`、`diagnosis_rationale` | 诊断输出和可审计依据 |
+| `cross_validation`、`needs_human_review`、`cascade_analysis` | 证据交叉验证和级联故障分析 |
+| `recommended_actions` | planner 输出，经 guardrail 后补充风险字段 |
+| `approval_status`、`approval_decision`、`rejection_feedback`、`_replan_count` | 审批与拒绝重规划状态 |
+| `pre_action_snapshot`、`execution_results`、`verify_result`、`verify_evidence`、`_verify_cycles` | 执行、验证和回滚参考 |
+| `token_budget`、`compression_events`、`llm_calls` | token 使用、压缩事件和 LLM 元数据 |
+| `_built_messages`、`_needs_approval`、`_all_l4`、`_collect_gap_cycles`、`_interrupts_enabled` | 图内部字段，不应作为外部 API 契约 |
 
-写入 `agent_runs.state` 前会移除 `_` 开头的内部字段，并将 datetime 转为 ISO 字符串。
+## 证据与审计
 
-## 依赖注入
+- 每个节点应通过 `deps.node_tracer` 写入 node trace，包含状态、耗时、输入摘要、输出摘要和错误。
+- 工具调用通过 `deps.tool_call_recorder` 记录 query、result、cache key、cache hit 和摘要。
+- `collect_all_evidence` 在线程中只捕获 trace 参数，不共享 DB session；主线程统一 replay 和批量写 evidence。
+- 大日志不直接塞入 prompt。`ContextBuilder` 与 `Compressor` 会根据预算压缩，并保留 retained/omitted evidence ID。
+- 诊断结论和 root cause 必须引用 evidence ID 或 runbook chunk ID；缺失证据时写入 `missing_evidence`，由 `collect_gap` 受限补采。
 
-所有节点接收 `AgentDeps`，包含：
+## 新增节点的规则
 
-- DB session。
-- settings。
-- request-local tool cache。
-- metrics/logs/traces/git/k8s/db/runbook tools。
-- memory store。
-- context builder。
-- LLM adapter。
-- node tracer。
-- tool call recorder。
+1. 节点是普通函数：`def node(state: IncidentState, deps: AgentDeps) -> IncidentState`。
+2. 依赖通过 `AgentDeps` 注入，不在节点内创建 DB session 或外部 client。
+3. 节点必须记录 node trace；失败时追加 `errors` 并返回 state，不吞异常原因。
+4. 不把大块原始日志、secret、token、auth header 写入 state、prompt、DB 或 audit。
+5. 新节点如改变图路由，必须更新 `graph.py`、本文件、相关单元测试和必要的集成测试。
+6. 新执行类动作仍必须经过 `guardrail_check`，不得绕过审批和 executor backend。
 
-节点不得自行创建 DB session，也不应直接构造真实外部 client。
+## 常用测试入口
 
-## 节点追踪
-
-每个节点应调用 `deps.node_tracer()` 写入：
-
-- `agent_run_id`
-- `name`
-- `status`
-- `started_at`
-- `finished_at`
-- `duration_ms`
-- `input_summary`
-- `output_summary`
-- `error_message`
-
-Worker 的 node tracer 还会通过 Redis 发布 WebSocket 节点事件。
-
-## 工具调用审计
-
-工具节点应通过 `deps.tool_call_recorder()` 写 `tool_calls`。记录字段包括：
-
-- tool name。
-- node name。
-- input JSON 和 summary。
-- ToolResult。
-- cache key 和 cache hit。
-- duration 和 error。
-
-## 诊断与证据
-
-`diagnose` 节点执行以下融合分析：
-
-### 证据交叉验证
-
-`packages/agent/evidence_validation.py` 将 metrics、logs、traces、deployment 信号按权重融合（Trace > Metrics > Logs > Git），计算 corroboration score：
-
-- 多源一致：提高根因置信度。
-- 信号冲突：设置 `state["_needs_human_review"]=True`。
-- 缺失来源：降级但不阻断，deployment 缺失为中性信号。
-
-### 级联故障分析
-
-`packages/agent/topology.py` 基于服务依赖图（`SERVICE_TOPOLOGY_PATH` 配置或 trace 推导）进行分析：
-
-- `analyze_propagation`：识别故障传播链，找到根服务。
-- `correlate_incidents`：聚类同时发生的关联事故。
-- 结果写入 `state["cascade_analysis"]`，单服务事故 `is_cascade=False`。
-
-### LLM Reasoning
-
-`packages/agent/llm/reasoning.py` 在 `LLM_REASONING_ENABLED=true` 时激活：
-
-- 对 `LLM_REASONING_NODES` 中列出的节点启用深度推理（默认仅 `diagnose`）。
-- 输出 `diagnosis_rationale` 摘要和 LLM 调用元数据。
-- 不持久化原始 chain-of-thought 到数据库。
-
-诊断输出必须引用 evidence ID 或 Runbook chunk ID。即使使用 FakeLLM，也应在后处理或证据验证阶段保留可追溯 ID。
-
-大块原始日志不能直接进入 prompt。`build_context` 和 `compress_context` 需要控制 token 预算并记录压缩事件。
-
-## 条件路由
-
-`compress_context` 后路由：
-
-- `missing_evidence` 非空且 collect-gap cycle 未超限：进入 `collect_gap` 后回到 `build_context`。
-- 其他：进入 `rank_hypotheses`。
-
-`guardrail_check` 后路由：
-
-- `_all_l4=True`：直接进入 `generate_report`。
-- `_needs_approval=True`：进入 `human_approval`。
-- 其他：进入 `take_snapshot` 后再 `execute_action`。
-
-`human_approval` 后路由：
-
-- `phase == "approval_approved"`：进入 `take_snapshot` 后再 `execute_action`。
-- `phase == "approval_rejected"`：最多 replan 3 次，超过后进入 report。
-- 其他：进入 report。
-
-`verify` 后路由：
-
-- `resolved`、`unknown` 或 verify cycle 超限：进入 `generate_report`。
-- `improving`、`unchanged`、`degraded`：回到 `plan_actions`。`degraded` 时 planner 只接收裁剪后的 `pre_action_snapshot` 摘要，执行回滚类动作时 executor 使用该快照补具体参数。
-
-## 结束条件
-
-结束前会生成报告并持久化记忆。Worker 根据 graph 结果更新 run 和 incident：
-
-- 有执行结果：incident -> `mitigated`。
-- 无执行结果：incident -> `resolved`。
-- 失败：agent run -> `failed`，记录错误。
-- 等待审批：agent run -> `waiting_approval`，incident 保留诊断上下文。
+- `tests/unit/test_agent_nodes.py`
+- `tests/unit/test_agent_graph.py`
+- `tests/unit/test_agent_runner.py`
+- `tests/unit/test_checkpoint_resume.py`
+- `tests/unit/test_react_loops.py`
+- `tests/integration/test_worker_tasks.py`
+- `tests/e2e/` 中的端到端诊断和审批用例

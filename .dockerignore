@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Tests & coverage
+tests/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# CI & IDE
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docs & plans
+docs/
+plans/
+
+# Node
+apps/web/node_modules/
+apps/web/dist/
+
+# Docker
+docker-compose.yml
+.env
+.env.*
+
+# Misc
+*.md
+LICENSE

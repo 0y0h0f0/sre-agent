@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from datetime import datetime
 from typing import Any
@@ -135,47 +136,102 @@ class LogsTool:
         keywords: list[str | None] = [k if isinstance(k, str) else None for k in kw]
         collected: dict[tuple[Any, ...], dict[str, Any]] = {}
         for keyword in keywords:
-            logql = _logql(query.service, keyword, self.service_label)
-            params: dict[str, str | int] = {
-                "query": logql,
-                "start": int(query.start.timestamp() * 1_000_000_000),
-                "end": int(query.end.timestamp() * 1_000_000_000),
-                "limit": query.limit,
-                "direction": "backward",
-            }
-            if self.client is not None:
-                response = self.client.get(
-                    "/loki/api/v1/query_range",
-                    params=params,
-                    timeout=self.timeout_seconds,
-                )
-            else:
-                with httpx.Client(base_url=self.base_url, timeout=self.timeout_seconds) as client:
-                    response = client.get("/loki/api/v1/query_range", params=params)
-            response.raise_for_status()
-            payload: dict[str, Any] = response.json()
-            if payload.get("status") != "success":
-                msg = f"loki status={payload.get('status')}"
-                raise ValueError(msg)
-            for stream in payload["data"].get("result", []):
-                labels = stream.get("stream", {})
-                for timestamp, line in stream.get("values", []):
-                    labels_key = tuple(sorted(labels.items()))
-                    collected[(str(timestamp), str(line), labels_key)] = {
-                        "timestamp": str(timestamp),
-                        "line": str(line),
-                        "labels": labels,
-                    }
+            before_count = len(collected)
+            for logql in _logql_candidates(query.service, keyword, self.service_label):
+                params: dict[str, str | int] = {
+                    "query": logql,
+                    "start": int(query.start.timestamp() * 1_000_000_000),
+                    "end": int(query.end.timestamp() * 1_000_000_000),
+                    "limit": query.limit,
+                    "direction": "backward",
+                }
+                if self.client is not None:
+                    response = self.client.get(
+                        "/loki/api/v1/query_range",
+                        params=params,
+                        timeout=self.timeout_seconds,
+                    )
+                else:
+                    with httpx.Client(
+                        base_url=self.base_url, timeout=self.timeout_seconds
+                    ) as client:
+                        response = client.get("/loki/api/v1/query_range", params=params)
+                response.raise_for_status()
+                payload: dict[str, Any] = response.json()
+                if payload.get("status") != "success":
+                    msg = f"loki status={payload.get('status')}"
+                    raise ValueError(msg)
+                for stream in payload["data"].get("result", []):
+                    labels = stream.get("stream", {})
+                    for timestamp, line in stream.get("values", []):
+                        labels_key = tuple(sorted(labels.items()))
+                        collected[(str(timestamp), str(line), labels_key)] = {
+                            "timestamp": str(timestamp),
+                            "line": str(line),
+                            "labels": labels,
+                        }
+                if len(collected) > before_count:
+                    break
         return list(collected.values())[: query.limit]
+
+
+def _logql_candidates(
+    service: str, keyword: str | None, service_label: str = "service"
+) -> list[str]:
+    return [
+        _logql_from_selector(selector, keyword)
+        for selector in _selector_candidates(service, service_label)
+    ]
 
 
 def _logql(service: str, keyword: str | None, service_label: str = "service") -> str:
     escaped_service = service.replace("\\", "\\\\").replace('"', '\\"')
-    query = f'{{{service_label}="{escaped_service}"}}'
+    return _logql_from_selector(f'{service_label}="{escaped_service}"', keyword)
+
+
+def _logql_from_selector(selector: str, keyword: str | None) -> str:
+    query = f"{{{selector}}}"
     if keyword:
         escaped_keyword = keyword.replace("\\", "\\\\").replace('"', '\\"')
         query = f'{query} |= "{escaped_keyword}"'
     return query
+
+
+def _selector_candidates(service: str, service_label: str) -> list[str]:
+    labels = [
+        service_label,
+        "service",
+        "app",
+        "job",
+        "container",
+        "deployment",
+        "app_kubernetes_io_name",
+        "kubernetes_pod_name",
+        "pod",
+    ]
+    escaped = service.replace("\\", "\\\\").replace('"', '\\"')
+    regex = _service_alias_regex(service)
+    selectors: list[str] = []
+    for label in _dedupe(labels):
+        selectors.append(f'{label}="{escaped}"')
+        selectors.append(f'{label}=~"{regex}"')
+    return _dedupe(selectors)
+
+
+def _service_alias_regex(service: str) -> str:
+    escaped = re.escape(service).replace("\\-", "-")
+    return f"{escaped}($|[-_].*)"
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
 
 
 def _aggregate_logs(lines: list[dict[str, Any]]) -> dict[str, Any]:

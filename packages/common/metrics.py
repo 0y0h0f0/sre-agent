@@ -149,11 +149,75 @@ grafana_webhook_ignored_total = Counter(
     ["reason"],
 )
 
+# --- M9 LLM Runbook Draft ---
+
+llm_runbook_draft_total = Counter(
+    "agentp_llm_runbook_draft_total",
+    "LLM runbook draft generation outcomes",
+    ["status"],
+)
+
+# --- M9 Web Search ---
+
+web_search_requests_total = Counter(
+    "agentp_web_search_requests_total",
+    "Web search requests made for runbook enrichment",
+    ["status", "reason"],
+)
+
+web_search_blocked_total = Counter(
+    "agentp_web_search_blocked_total",
+    "Web search requests blocked by safety rules",
+    ["reason"],
+)
+
+# --- M9 Tempo Trace ---
+
+tempo_trace_queries_total = Counter(
+    "agentp_tempo_trace_queries_total",
+    "Tempo trace queries",
+    ["status", "mode"],
+)
+
+tempo_capability_detected = Gauge(
+    "agentp_tempo_capability_detected",
+    "Tempo capability detection result (1=supported, 0=unsupported)",
+    ["capability"],
+)
+
+# --- M9 Semantic Search ---
+
+semantic_search_queries_total = Counter(
+    "agentp_semantic_search_queries_total",
+    "Semantic runbook search queries",
+    ["mode", "status"],
+)
+
+embedding_jobs_total = Counter(
+    "agentp_embedding_jobs_total",
+    "Embedding job outcomes",
+    ["provider", "status"],
+)
+
+# --- M9 Secret Redaction ---
+
+m9_secret_redaction_failures_total = Counter(
+    "agentp_m9_secret_redaction_failures_total",
+    "M9 secret redaction failures (blocks external call)",
+    ["component"],
+)
+
 # --- Gauges ---
 
 active_diagnoses = Gauge(
     "agentp_active_diagnoses",
     "Currently in-flight diagnosis runs",
+)
+
+m9_feature_enabled = Gauge(
+    "agentp_m9_feature_enabled",
+    "M9 feature enabled state (1=enabled, 0=disabled)",
+    ["feature"],
 )
 
 
@@ -262,3 +326,52 @@ class AgentMetricsCollector:
         email_send_duration_seconds.labels(
             notification_type=notification_type
         ).observe(duration_seconds)
+
+    # --- M9-specific recording methods ---
+
+    @staticmethod
+    def record_m9_feature_enabled(*, feature: str, enabled: bool) -> None:
+        """Set the M9 feature enabled gauge for a specific feature."""
+        m9_feature_enabled.labels(feature=feature).set(1 if enabled else 0)
+
+    @staticmethod
+    def record_llm_runbook_draft(*, status: str) -> None:
+        """Record an LLM runbook draft generation outcome."""
+        llm_runbook_draft_total.labels(status=status).inc()
+
+    @staticmethod
+    def record_web_search_request(*, status: str, reason: str = "") -> None:
+        """Record a web search request outcome."""
+        web_search_requests_total.labels(status=status, reason=reason).inc()
+
+    @staticmethod
+    def record_web_search_blocked(*, reason: str) -> None:
+        """Record a web search request blocked by safety rules."""
+        web_search_blocked_total.labels(reason=reason).inc()
+
+    @staticmethod
+    def record_tempo_trace_query(*, status: str, mode: str) -> None:
+        """Record a Tempo trace query outcome."""
+        tempo_trace_queries_total.labels(status=status, mode=mode).inc()
+
+    @staticmethod
+    def record_tempo_capability(*, capability: str, supported: bool) -> None:
+        """Set Tempo capability detection gauge."""
+        tempo_capability_detected.labels(capability=capability).set(
+            1 if supported else 0
+        )
+
+    @staticmethod
+    def record_semantic_search_query(*, mode: str, status: str) -> None:
+        """Record a semantic search query outcome."""
+        semantic_search_queries_total.labels(mode=mode, status=status).inc()
+
+    @staticmethod
+    def record_embedding_job(*, provider: str, status: str) -> None:
+        """Record an embedding job outcome."""
+        embedding_jobs_total.labels(provider=provider, status=status).inc()
+
+    @staticmethod
+    def record_secret_redaction_failure(*, component: str) -> None:
+        """Record a secret redaction failure that blocks an external call."""
+        m9_secret_redaction_failures_total.labels(component=component).inc()

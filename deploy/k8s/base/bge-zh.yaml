@@ -1,0 +1,116 @@
+# =============================================================================
+# BGE-ZH Embedding Service
+# Uses hostPath for model storage on minikube node.
+# Model is downloaded by a one-time Job (see bge-zh-model-downloader below).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bge-zh
+  namespace: sre-agent
+  labels:
+    app: bge-zh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bge-zh
+  template:
+    metadata:
+      labels:
+        app: bge-zh
+    spec:
+      containers:
+        - name: bge-zh
+          image: sre-agent-bge-zh:latest
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8083
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+            limits:
+              cpu: 4000m
+              memory: 4Gi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8083
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8083
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: model
+              mountPath: /models/bge-small-zh
+              readOnly: true
+      volumes:
+        - name: model
+          hostPath:
+            path: /data/models/bge-small-zh
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bge-zh
+  namespace: sre-agent
+  labels:
+    app: bge-zh
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8083
+      targetPort: 8083
+  selector:
+    app: bge-zh
+---
+# One-time Job: download BGE-ZH model to hostPath
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bge-zh-model-downloader
+  namespace: sre-agent
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: download
+          image: python:3.13-slim
+          command: ["sh", "-c"]
+          args:
+            - |
+              pip install -q huggingface_hub
+              python -c "
+              from huggingface_hub import snapshot_download
+              import os
+              os.makedirs('/models/bge-small-zh', exist_ok=True)
+              snapshot_download('BAAI/bge-small-zh', local_dir='/models/bge-small-zh')
+              print('Done:', os.listdir('/models/bge-small-zh'))
+              "
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+          volumeMounts:
+            - name: model
+              mountPath: /models/bge-small-zh
+      volumes:
+        - name: model
+          hostPath:
+            path: /data/models/bge-small-zh
+            type: DirectoryOrCreate

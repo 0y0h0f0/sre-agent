@@ -915,6 +915,83 @@ def run_discovery_rerun(
         raise
 
 
+@celery_app.task(  # type: ignore[untyped-decorator]
+    bind=True,
+    max_retries=0,
+)
+def auto_discovery_rerun(self: Any) -> dict[str, Any]:
+    """Periodic auto-discovery — runs silently without requiring manual trigger.
+
+    Scheduled by Celery Beat (every 30 min by default).
+    Skips if discovery is disabled or K8s backend is not live.
+    Returns immediately if another discovery run is already in progress.
+    """
+    import redis as redis_lib
+
+    from packages.common.redis_lock import RedisLock
+    from packages.db.repositories.audit_logs import AuditLogRepository
+    from packages.discovery.store import DiscoveryStore
+
+    settings = get_settings()
+
+    if not settings.discovery_enabled:
+        return {"status": "skipped", "reason": "discovery_disabled"}
+    if settings.k8s_backend != "live":
+        return {"status": "skipped", "reason": "k8s_backend_not_live"}
+
+    # Lightweight lock to prevent concurrent auto-discovery runs.
+    r = redis_lib.Redis.from_url(settings.redis_url)
+    lock_key = "lock:discovery:auto"
+    lock = RedisLock(r, lock_key, ttl=60)
+    if not lock.acquire():
+        return {"status": "skipped", "reason": "discovery_lock_held"}
+
+    try:
+        with SessionLocal() as db:
+            store = DiscoveryStore(db)
+            run = store.create_run(
+                source="auto_periodic",
+                trigger_type="periodic",
+            )
+            discovery_run_id = run.discovery_run_id
+            db.commit()
+
+        runner = _build_discovery_runner(settings)
+        result = runner.run(run_id=discovery_run_id)
+
+        with SessionLocal() as db:
+            store = DiscoveryStore(db)
+            run = store.get_run(discovery_run_id)
+            if run:
+                store.finish_run(run, result, status=result.status)
+            audit_repo = AuditLogRepository(db)
+            audit_repo.create_discovery_audit(
+                action="discovery.auto_complete",
+                resource_type="discovery_run",
+                resource_id=discovery_run_id,
+                actor="auto_discovery",
+                details={
+                    "status": result.status,
+                    "services_discovered": result.total_services_discovered,
+                    "warnings": result.warnings,
+                },
+            )
+            db.commit()
+
+        return {
+            "discovery_run_id": discovery_run_id,
+            "status": result.status,
+            "services_discovered": result.total_services_discovered,
+        }
+    except Exception as exc:
+        return {"status": "failed", "reason": str(exc)}
+    finally:
+        try:
+            lock.release()
+        except Exception:
+            pass
+
+
 def _build_discovery_runner(settings: Any) -> Any:
     """Build a DiscoveryRunner from current settings.
 
@@ -941,12 +1018,11 @@ def _build_discovery_runner(settings: Any) -> Any:
         loki_client = LokiClient(settings.loki_url)
 
     # Build K8s discovery if enabled.
-    if settings.discovery_enabled:
+    if settings.discovery_enabled and settings.k8s_backend == "live":
         try:
-            k8s = K8sDiscovery(
-                namespace_allowlist=settings.k8s_namespace_allowlist,
-                service_allowlist=settings.k8s_service_allowlist,
-            )
+            # K8sDiscovery internally parses settings.k8s_namespace as a
+            # comma-separated allowlist when no explicit allowlist is given.
+            k8s = K8sDiscovery()
         except Exception:
             pass
 

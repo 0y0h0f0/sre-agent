@@ -1,8 +1,36 @@
 # 工具层
 
-## 通用接口
+**最后更新：** 2026-06-14
 
-所有工具遵循 `BaseTool` 协议：
+## 概述
+
+工具层位于 `packages/tools/`，负责把 Prometheus、Loki、Trace、Deployment、Kubernetes、Database、Runbook RAG 和 executor backend 封装成可测试、可降级的接口。Agent 节点只依赖 `BaseTool.run(query)` 或 `ExecutorBackend` 协议，不直接操作外部系统。
+
+默认本地/CI 路径使用 fixture 或 unavailable backend，避免真实外部写入。只有显式配置的 live/read backend 才会访问真实系统。
+
+## 模块地图（15 个模块）
+
+| 模块 | 职责 |
+|------|------|
+| `base.py` | `BaseTool` 协议、`ToolResult`、计时和摘要 helper |
+| `cache.py` | request-local 工具缓存、稳定 cache key、UTC 时间桶 |
+| `metrics.py` | Prometheus range query、PromQL 模板、统计聚合 |
+| `logs.py` | Loki query_range、LogQL selector fallback、日志聚合 |
+| `traces.py` | TraceTool 通用分析路径，提取慢 span、错误 span、下游服务 |
+| `trace_backends.py` | fixture、disabled、Jaeger、Tempo trace backend |
+| `git_changes.py` | deployment change 工具，统一 GitHub/Argo/fixture 输出 |
+| `deployment_backends.py` | fixture、GitHub、Argo CD 只读 deployment backend |
+| `k8s.py` | Kubernetes read-only diagnostics tool 和 backend |
+| `db_diagnostics.py` | PostgreSQL read-only diagnostics tool 和 backend |
+| `runbook_search.py` | Runbook RAG 的 tool wrapper |
+| `executor_backends.py` | fixture executor 和 opt-in live K8s executor |
+| `mock_executor.py` | legacy mock result map，供兼容路径使用 |
+| `unavailable.py` | backend 未配置时返回 degraded 的占位工具 |
+| `__init__.py` | 工厂函数导出 |
+
+## Tool 协议
+
+所有普通工具实现同步协议：
 
 ```python
 class BaseTool(Protocol):
@@ -15,152 +43,161 @@ class BaseTool(Protocol):
 
 `ToolResult` 字段：
 
-- `status`：`succeeded`、`failed`、`degraded`、`timeout`。
-- `data`：结构化结果。
-- `summary`：审计友好的摘要。
-- `evidence`：可写入 `evidence_items` 的证据列表。
-- `cache_key`。
-- `cache_hit`。
-- `duration_ms`。
-- `error_message`。
+| 字段 | 含义 |
+|------|------|
+| `status` | `succeeded`、`failed`、`degraded`、`timeout` |
+| `data` | 工具结构化数据，用于节点逻辑 |
+| `summary` | 审计友好的简短摘要 |
+| `evidence` | 可持久化证据列表，后续会获得 evidence ID |
+| `cache_key` | 命中的稳定 key |
+| `cache_hit` | 是否来自 request-local cache |
+| `duration_ms` | 调用耗时 |
+| `error_message` | 降级、失败或超时原因 |
 
-工具失败时不应静默吞异常。可返回 timeout/degraded/failed，但关键安全 gate 不在工具层放行。
+新增工具必须有 Pydantic query schema、结构化 result、timeout、降级行为、cache key 策略、审计摘要和 mocked tests。
+
+## 缓存规则
+
+`RequestLocalToolCache` 是单次 agent run 内的内存缓存，最多 200 条，线程安全，供 `collect_all_evidence` 并行调用共享。
+
+| 工具 | 时间桶 | datasource 是否入 key | 说明 |
+|------|--------|-----------------------|------|
+| metrics | 60 秒 | 否 | query schema 标准化后 hash |
+| logs | 60 秒 | 否 | 空 keywords 不参与 hash |
+| traces | 300 秒 | 是 | `fixture`、`jaeger`、`tempo` 不共享缓存 |
+| deployment/git changes | 600 秒 | 是 | `fixture`、`github`、`argocd` 不共享缓存 |
+| runbook_search | 无时间桶 | 不适用 | query/service/incident_type/top_k hash |
+
+cache key 统一使用 UTC bucket。工具缓存命中率是应用层/tool cache 指标，不是 provider prompt cache 指标。
 
 ## 工具清单
 
-| 工具 | 文件 | Query | 默认后端 | Cache bucket |
-| --- | --- | --- | --- | --- |
-| MetricsTool | `packages/tools/metrics.py` | `MetricsQuery` | Prometheus HTTP | 60 秒 |
-| LogsTool | `packages/tools/logs.py` | `LogsQuery` | Loki HTTP | 60 秒 |
-| TraceTool | `packages/tools/traces.py` | `TraceQuery` | fixture | 300 秒 |
-| GitChangeTool | `packages/tools/git_changes.py` | `GitChangeQuery` | fixture | 600 秒 |
-| K8sDiagnosticsTool | `packages/tools/k8s.py` | `K8sQuery` | fixture | 无 request cache |
-| DbDiagnosticsTool | `packages/tools/db_diagnostics.py` | `DbDiagnosticsQuery` | fixture | 无 request cache |
-| RunbookSearchTool | `packages/tools/runbook_search.py` | Runbook search query | RAG retriever | tool cache |
-| Executor backend | `packages/tools/executor_backends.py` | action dict | fixture | 不适用 |
+### MetricsTool
 
-## Cache key
+- 文件：`metrics.py`
+- Query：`MetricsQuery(service, metric_type, start, end)`
+- Backend：Prometheus HTTP API
+- 失败行为：timeout 返回 `timeout`；HTTP/解析错误返回 `degraded`
+- 安全策略：按窗口 shard，限制 `max_window_seconds`、`max_shards` 和 step
+- metric types：`latency`、`error_rate`、`qps`、`cpu`、`memory`、`db_connections`、`cache_hit_rate`、`cpu_throttle`、`disk_avail`、`cert_expiry_days`、`dns_error_rate`、`queue_lag`、`rate_limit_hits`、`slo_burn_rate`
 
-`build_cache_key()` 会：
+### LogsTool
 
-- 对 Pydantic query 做 JSON 归一化。
-- 移除 `service`、`start`、`end`。
-- 将 datasource 纳入 hash，避免 fixture/jaeger/tempo 等后端冲突。
-- 按 UTC 时间 bucket 规整 start/end。
+- 文件：`logs.py`
+- Query：`LogsQuery(service, start, end, keywords, limit)`
+- Backend：Loki HTTP API
+- 失败行为：timeout 返回 `timeout`；HTTP/解析错误返回 `degraded`
+- 安全策略：limit 限制为 1 到 1000；keywords 最多取前 10 个；LogQL selector 尝试 service/app/job/container/deployment/pod 等 label fallback
+- 输出：error type counts、top stack signature、最多 5 条 samples
 
-格式：
+### TraceTool
 
-```text
-tool:{tool_name}:{service}:{query_hash}:{start_bucket}:{end_bucket}
+- 文件：`traces.py`、`trace_backends.py`
+- Query：`TraceQuery(service, start, end, min_duration_ms=500)`
+- Backend：`disabled`、`fixture`、`jaeger`、`tempo`
+- 失败行为：backend 空结果为 `degraded`；timeout 为 `timeout`；HTTP/解析错误为 `degraded`
+- 输出：span count、slow spans、error spans、downstream services、duration p95
+
+Trace backend 选择：
+
+| 配置 | 行为 |
+|------|------|
+| `TRACE_ENABLED=false` | `DegradedTraceBackend`，TraceTool 降级 |
+| `TRACE_BACKEND=disabled` | 同上 |
+| `TRACE_BACKEND=fixture` | 读取 `demo/faults/traces.json` |
+| `TRACE_BACKEND=jaeger` | Jaeger-compatible `/api/traces` |
+| `TRACE_BACKEND=tempo` | Native Tempo API，带 capability flags |
+
+### GitChangeTool
+
+- 文件：`git_changes.py`、`deployment_backends.py`
+- Query：`GitChangeQuery(service, start, end)`
+- Backend：`fixture`、`github`、`argocd`
+- 失败行为：空结果为 `degraded`；timeout 为 `timeout`；HTTP/解析错误为 `degraded`
+- 输出：最多 10 条部署变更，字段统一为 service、deployed_at、commit_sha、author、summary、files
+
+GitHub backend 先读 deployments API；如果没有 deployment records，再按时间窗口查 commits 并过滤与 service 相关的文件。Argo CD backend 只读 application sync history。
+
+### K8sDiagnosticsTool
+
+- 文件：`k8s.py`
+- Query：`K8sQuery(service, operation, namespace, pod)`
+- Backend：`fixture`、`live`
+- 允许操作：`describe_pod`、`logs`、`events`、`rollout_status`、`get_deployment`
+- 禁止行为：任何非 read-only operation 直接返回 `failed`
+
+live backend 只调用 Kubernetes read API。它不执行 restart、scale、rollback、cordon、drain 等写操作。`build_remediation_suggestions()` 只生成 dry-run command suggestion，不执行。
+
+### DbDiagnosticsTool
+
+- 文件：`db_diagnostics.py`
+- Query：`DbDiagnosticsQuery(operation, limit)`
+- Backend：`fixture`、`live`
+- 允许操作：`connection_pool`、`locks`、`slow_queries`
+- SQL：固定 SELECT 模板，用户输入只选择 operation 和 limit
+- live 安全策略：专用连接、`conn.read_only = True`、`statement_timeout`、`_assert_read_only()` 二次校验
+
+live DB diagnostics 只能读取 PostgreSQL 诊断视图，不允许任何 DDL/DML。
+
+### RunbookSearchTool
+
+- 文件：`runbook_search.py`
+- Query：`RunbookSearchQuery(query, service, incident_type, top_k)`
+- Backend：`RunbookRetriever`
+- 输出：tool evidence type 为 `runbook`，包含 `chunk_id`、`source_path`、metadata 和 score
+- 失败行为：任何 retriever 异常返回 `degraded`，不阻塞诊断
+
+### Executor Backends
+
+Executor 不是普通 `BaseTool`，而是 `ExecutorBackend` 协议：
+
+```python
+class ExecutorBackend(Protocol):
+    name: str
+    def execute(self, action: dict, context: ExecutionContext) -> ExecutionResult: ...
+    def rollback(self, action: dict, snapshot: dict, context: ExecutionContext) -> ExecutionResult: ...
 ```
 
-`RequestLocalToolCache` 是单次 agent run 内的内存缓存，记录 hit/miss 数并写入 agent run 的 app cache metrics。
+| Backend | 默认 | 行为 |
+|---------|------|------|
+| `FixtureExecutorBackend` | 是 | 返回确定性 mock result，供测试、本地 demo、CI 使用 |
+| `LiveK8sExecutorBackend` | 否 | `EXECUTOR_BACKEND=live` 显式 opt-in，只支持 restart/scale/rollback 类 Kubernetes mutation |
 
-## MetricsTool
+live executor 当前支持：`restart_pod`、`restart_service`、`scale_deployment`、`scale_back`、`rollback_release`。其它动作失败关闭。
 
-`MetricsQuery`：
+## Worker 中的依赖构造
 
-- `service`
-- `metric_type`
-- `start`
-- `end`
+`apps/worker/tasks.py` 的 `_build_deps()` 会：
 
-支持 metric type：
+1. 读取已发布 EffectiveConfig 和 settings。
+2. 构造 `RequestLocalToolCache`。
+3. 根据 backend 配置构造 trace、deployment、k8s、db diagnostics、executor backend。
+4. 如果 metrics/logs URL 不可用，使用 `UnavailableTool` 返回 degraded，而不是传入 `None`。
+5. 构造 `RunbookRetriever(use_hybrid=settings.runbook_hybrid_search_enabled)` 和 `RunbookSearchTool`。
+6. 把所有依赖注入 `AgentDeps`。
 
-- `latency`
-- `error_rate`
-- `qps`
-- `cpu`
-- `memory`
-- `db_connections`
-- `cache_hit_rate`
-- `cpu_throttle`
-- `disk_avail`
-- `cert_expiry_days`
-- `dns_error_rate`
-- `queue_lag`
-- `rate_limit_hits`
-- `slo_burn_rate`
+节点不得绕过 `_build_deps()` 直接创建 live client。
 
-工具通过 Prometheus range query 查询数据，输出 stats、sample_count 和 metric evidence。大时间窗会按配置 sharding。
+## 新增工具 checklist
 
-## LogsTool
+1. 新建 Pydantic query schema，并验证必填字段、时间窗口、limit。
+2. 返回 `ToolResult`，不要返回裸 dict。
+3. 给每个外部调用设置 timeout。
+4. 明确 degraded/timeout/failure 的返回行为。
+5. 设计稳定 cache key，包含 datasource 或 backend 名称，避免跨 backend 污染。
+6. evidence 中只放摘要和可追溯 ID，不放 raw secret 或大块 raw logs。
+7. 所有 live/read backend 都要有 fixture 或 mock 测试。
+8. 如果工具可能产生写入能力，不应放在普通 diagnostics tool 中；必须走 executor backend、guardrail 和 approval。
+9. 更新本文件、相关配置参考和测试策略。
 
-`LogsQuery`：
+## 常用测试入口
 
-- `service`
-- `start`
-- `end`
-- `keywords`
-- `limit`
-
-工具查询 Loki，聚合错误类型、样本、行数和摘要。返回 log evidence。若日志过多，后续 context compressor 会保留样本和错误聚合。
-
-## TraceTool
-
-`TraceQuery`：
-
-- `service`
-- `start`
-- `end`
-- `min_duration_ms`
-
-默认 fixture 后端，也可配置 Jaeger/Tempo 读后端。工具提取：
-
-- span count。
-- slow spans。
-- error spans。
-- downstream services。
-- duration p95。
-
-Cache bucket 为 5 分钟。
-
-## GitChangeTool
-
-`GitChangeQuery`：
-
-- `service`
-- `start`
-- `end`
-
-默认 fixture 后端，也可配置 GitHub/Argo CD 读后端。用于定位事故窗口内的部署变更。Cache bucket 为 10 分钟。
-
-## K8sDiagnosticsTool
-
-`K8sQuery`：
-
-- `service`
-- `operation`
-- `namespace`
-- `pod`
-
-只允许 read-only operation：
-
-- `describe_pod`
-- `logs`
-- `events`
-- `rollout_status`
-
-任何非只读 operation 返回 failed，不执行真实写操作。Live backend 仅调用 Kubernetes read API。
-
-## DbDiagnosticsTool
-
-`DbDiagnosticsQuery`：
-
-- `operation`：`connection_pool`、`locks`、`slow_queries`。
-- `limit`。
-
-Live backend 使用固定 SELECT 模板，不拼接用户 SQL。它会：
-
-- 使用 dedicated connection。
-- 设置 read only。
-- 设置 statement timeout。
-- 拒绝包含写关键字的 SQL。
-
-## Executor backend
-
-默认执行后端是 `FixtureExecutorBackend`，用于测试、本地 demo 和 CI，返回固定的确定性执行结果。`EXECUTOR_BACKEND=live` 是显式 operator opt-in，只允许在 guardrail、审批和 L3 二次确认之后执行窄范围 Kubernetes 变更：Deployment rolling restart、Deployment scale/scale_back、Deployment rollback。
-
-`execute_action` 会把 `EXECUTOR_K8S_NAMESPACE` 传入执行上下文。`take_snapshot` 在动作前读取同一 namespace 的 Deployment 状态；如果 verify 判定动作导致 `degraded`，后续回滚类动作会保留原始 `pre_action_snapshot`，executor 使用其中的 revision、replicas 等具体值补齐 rollback 参数。
-
-真实 executor 不能成为默认路径，不能增加云资源写入、数据库写入、数据删除、真实缓存 flush 等能力。未实现的 live action 必须 fail closed。
+- `tests/unit/test_tools.py`
+- `tests/unit/test_tool_cache.py`
+- `tests/unit/test_trace_backends.py`
+- `tests/unit/test_deployment_backends.py`
+- `tests/unit/test_k8s_diagnostics_tool.py`
+- `tests/unit/test_db_diagnostics_tool.py`
+- `tests/unit/test_live_executor_backend.py`
+- `tests/unit/test_runbook_search_tool.py`
+- `tests/unit/test_build_deps_integration.py`

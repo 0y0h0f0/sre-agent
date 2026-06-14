@@ -1,0 +1,22 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies for psycopg (PostgreSQL client library)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /app
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip install --no-cache-dir ".[k8s]" \
+    && python -m pip uninstall -y setuptools pip
+
+# Run as non-root
+RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
+USER app
+
+# Default entrypoint: API server. Override command for worker/beat.
+CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

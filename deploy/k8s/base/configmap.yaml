@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sre-agent-config
+  namespace: sre-agent
+data:
+  # === Environment ===
+  APP_ENV: "local"
+  AUTOMATION_LEVEL: "autopilot"
+  APPROVAL_AUTO_APPROVE_MINUTES: "0"
+  APPROVAL_AUTO_APPROVE_MAX_RISK: "L3"
+
+  # === Observability Backends ===
+  PROMETHEUS_URL: "http://prometheus.task-platform.svc.cluster.local:9090"
+  LOKI_URL: "http://loki.task-platform.svc.cluster.local:3100"
+  OTEL_COLLECTOR_URL: "http://otel-collector.task-platform.svc.cluster.local:4318"
+  METRICS_SERVICE_LABEL: "job"
+  LOGS_SERVICE_LABEL: "service"
+
+  # === LLM: DeepSeek 全开 ===
+  LLM_PROVIDER: "deepseek"
+  LLM_MODEL: "deepseek-v4-pro"
+  LLM_BASE_URL: "https://api.deepseek.com"
+  LLM_MAX_TOKENS: "4096"
+  LLM_TEMPERATURE: "0.1"
+  LLM_TIMEOUT_SECONDS: "120"
+  LLM_REASONING_ENABLED: "true"
+  LLM_REASONING_EFFORT: "high"
+  LLM_REASONING_NODES: "diagnose,diagnose_synthesize,synthesize_report,execute_action"
+  LLM_MULTI_PERSPECTIVE_ENABLED: "true"
+
+  # === Embedding & RAG ===
+  EMBEDDING_PROVIDER: "bge_zh"
+  EMBEDDING_BGE_ZH_URL: "http://bge-zh.sre-agent.svc.cluster.local:8083"
+  RERANKER_PROVIDER: "bge"
+  RERANKER_BGE_BASE_URL: "http://bge-reranker.sre-agent.svc.cluster.local:8082"
+
+  # === 诊断工具全部 live ===
+  TRACE_ENABLED: "true"
+  TRACE_BACKEND: "jaeger"
+  JAEGER_URL: "http://jaeger.task-platform.svc.cluster.local:16686"
+  TEMPO_URL: "http://tempo.task-platform.svc.cluster.local:3200"
+  DEPLOYMENT_BACKEND: "github"
+  GITHUB_API_URL: "https://api.github.com"
+  GITHUB_REPO: "0y0h0f0/platform"
+  K8S_BACKEND: "live"
+  DB_DIAGNOSTICS_BACKEND: "fixture"
+  EXECUTOR_BACKEND: "live"
+  TOOL_TIMEOUT_SECONDS: "30"
+  EXECUTOR_TIMEOUT_SECONDS: "120"
+
+  # === 服务发现: 激进自动应用 ===
+  DISCOVERY_ENABLED: "true"
+  DISCOVERY_APPLY_MODE: "autopilot"
+  DISCOVERY_MANUAL_RERUN_ENABLED: "true"
+  BACKEND_URL_ALLOWLIST: "*.svc.cluster.local,*.svc,kubernetes.default.svc"
+
+  # === Tempo 自动发现 ===
+  TEMPO_DISCOVERY_ENABLED: "true"
+
+  # === K8s (comma-separated for multi-namespace) ===
+  K8S_NAMESPACE: "task-platform"
+  K8S_FIXTURE_PATH: "demo/faults/k8s.json"
+  EXECUTOR_K8S_NAMESPACE: "task-platform"
+
+  # === 告警: Webhook + Poll 双开 ===
+  ALERT_SOURCE: "both"
+  ALERTMANAGER_URL: "http://alertmanager.task-platform.svc.cluster.local:9093"
+  ALERT_POLL_INTERVAL_SECONDS: "15"
+  ALERT_POLL_LOCK_TTL_SECONDS: "60"
+  ALERT_POLL_TIMEOUT_SECONDS: "20"
+  ALERT_POLL_RESOLVED_GRACE_PERIOD_SECONDS: "120"
+  ALERT_POLL_RESOLVED_MISSING_ROUNDS: "3"
+  ALERT_POLL_RECEIVER_FILTER: ""
+  ALERT_POLL_FILTER_MATCHERS: 'job=~"api-gateway|task-service-admin|user-service-admin"'
+
+  # === Runbook ===
+  RUNBOOK_TEMPLATE_GENERATION_ENABLED: "true"
+  RUNBOOK_LLM_GENERATION_ENABLED: "true"
+  RUNBOOK_WEB_SEARCH_ENABLED: "true"
+  RUNBOOK_WEB_SEARCH_PROVIDER: "fake"
+  RUNBOOK_WEB_SEARCH_TIMEOUT_SECONDS: "15"
+  RUNBOOK_WEB_SEARCH_MAX_RESULTS: "10"
+  RUNBOOK_WEB_SEARCH_REQUIRE_HTTPS: "false"
+
+  # === M9: 全部开启 ===
+  M9_EXTENSIONS_ENABLED: "true"
+  LLM_INCIDENT_DIFF_ENABLED: "true"
+  SEMANTIC_RUNBOOK_SEARCH_ENABLED: "true"
+  EXTERNAL_EMBEDDING_PROVIDER_ENABLED: "false"
+  LLM_EXTERNAL_PROVIDER_ALLOWED: "true"
+  GRAFANA_ALERT_INGEST_ENABLED: "true"
+  GRAFANA_WEBHOOK_SECRET_REF: ""
+
+  # === SMTP ===
+  SMTP_HOST: ""
+  SMTP_PORT: "587"
+  SMTP_TLS_MODE: "auto"
+  SMTP_TIMEOUT_SECONDS: "30"
+  SMTP_FROM: "sre-agent@example.local"
+  SRE_EMAIL_LIST: "1554092292@qq.com"
+  WEB_BASE_URL: "http://web.sre-agent.svc.cluster.local"
+  NOTIFICATION_TIMEZONE: "UTC"
+
+  # === Auth (调试关闭) ===
+  API_KEY_AUTH_ENABLED: "false"
+  CORS_ALLOW_ORIGINS: "*"
+
+  # === 影子模式 ===
+  SHADOW_MODE_ENABLED: "true"
+
+  # === 限流 ===
+  RATE_LIMIT_MAX_REQUESTS: "1000"
+  RATE_LIMIT_WINDOW_SECONDS: "60"
+
+  # === 内存 & 学习 ===
+  TOKEN_BUDGET_TOTAL: "64000"
+  TOKEN_BUDGET_PROMPT: "24000"
+  TOKEN_CACHE_ENABLED: "true"
+  CROSS_INCIDENT_SIMILARITY_THRESHOLD: "0.5"
+  NFA_AUTO_SUPPRESS_THRESHOLD: "10"
+
+  # === Celery ===
+  CELERY_TASK_ALWAYS_EAGER: "false"
+
+  # === Metrics & HA ===
+  PROMETHEUS_METRICS_ENABLED: "true"
+  DB_POOL_SIZE: "5"
+  DB_MAX_OVERFLOW: "10"
+  DB_POOL_RECYCLE_SECONDS: "3600"
+  DB_CONNECT_TIMEOUT_SECONDS: "5"
+  REDIS_SOCKET_CONNECT_TIMEOUT: "1.0"
+  REDIS_SOCKET_TIMEOUT: "2.0"
+  REDIS_RETRY_ON_TIMEOUT: "true"

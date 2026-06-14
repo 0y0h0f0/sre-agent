@@ -1,158 +1,223 @@
 # Runbook RAG
 
-## 目标
+**最后更新：** 2026-06-14
 
-Runbook RAG 用于把静态运维知识带入诊断上下文，并让根因和处置建议能引用具体来源。RAG 结果必须包含 chunk ID 和 source path。
+## 概述
 
-## Runbook 来源
+Runbook RAG 把 Markdown runbook、已发布草稿和历史知识引入诊断上下文。Agent 使用 `RunbookSearchTool` 调用 `RunbookRetriever`，返回的结果必须包含 `chunk_id`、`source_path`、`title`、`excerpt`、`score` 和 `metadata`，以便诊断结论可追溯。
 
-默认 Runbook 位于：
+RAG 不是执行层。runbook 中的动作描述会被分类和审查，但最终执行权限仍由 Agent guardrail、approval 和 executor backend 决定。
+
+## 模块地图（20 个模块）
+
+| 模块 | 用途 |
+|------|------|
+| `__init__.py` | 导出 RAG provider、retriever、ingestor 等公开入口 |
+| `metadata.py` | 解析 Markdown front matter 和 runbook 元数据 |
+| `splitter.py` | Markdown-aware 分块，按 H2 section 和 token 预算切分 |
+| `ingest.py` | 本地 Markdown runbook 摄取管道和 CLI |
+| `embeddings.py` | 旧 FakeEmbedding 兼容 shim，推荐使用 `embedding_factory.py` |
+| `embedding_factory.py` | `fake`、`bge_zh`、`text2vec` embedding provider 分发 |
+| `embedding_jobs.py` | M9 embedding job 去重和 search mode helper |
+| `external_embedding_provider.py` | M9 外部 embedding provider 组件，默认关闭 |
+| `bm25.py` | PostgreSQL tsvector 查询构造、BM25 归一化、自适应 alpha |
+| `retriever.py` | 主检索编排：vector/lexical recall、BM25 hybrid、rerank、format context |
+| `reranker.py` | 旧 rerank 兼容 shim |
+| `reranker_backends.py` | `fake`、`cohere`、`jina`、`bge` reranker backend |
+| `runbook_generator.py` | 确定性 runbook draft 生成 |
+| `llm_runbook_generator.py` | M9 LLM runbook 草稿生成，输出 pending_review |
+| `runbook_prompt_builder.py` | M9 runbook LLM prompt 构造和脱敏 metadata |
+| `runbook_web_context.py` | M9 Web 搜索上下文构建，证据只用于草稿审查 |
+| `web_search_provider.py` | `disabled`、`fake` Web search provider |
+| `incident_diff.py` | M9 incident vs approved runbook 差异分析，输出 amendment draft |
+| `runbook_action_classifier.py` | runbook 动作步骤安全分类 |
+| `template_extractor.py` | 从 incident cluster 提取模板变量 |
+
+## 数据模型
+
+Runbook 搜索主要读写：
+
+| 表/模型 | 用途 |
+|---------|------|
+| `runbook_chunks` | 已入库的 chunk，当前 embedding 字段是 `vector(512)` |
+| `runbook_chunk_embeddings` | embedding side table，按 provider/model/dimension 存储附加向量 |
+| `runbook_drafts` | 草稿，包括 deterministic、template、LLM generated |
+| `runbook_versions` | 发布版本记录，保留 version number 和来源 |
+| `amendment_drafts` | incident diff 或反馈生成的 amendment 草稿 |
+
+FakeEmbeddingProvider 和 BGE-ZH 都输出 512 维向量，匹配当前 `runbook_chunks.embedding`。`Text2VecEmbeddingProvider` 输出 1024 维，使用前需要确认目标存储路径和迁移是否匹配。
+
+## 摄取流程
 
 ```text
-demo/runbooks/
+Markdown path
+  -> parse_runbook_markdown
+  -> split_markdown_document
+  -> embed title + content
+  -> create runbook_chunks
 ```
 
-MVP 四类事故在 `demo/runbooks/checkout-api/` 下有对应目录。
+入口：
 
-## 入库流程
+- API：`POST /api/runbooks/ingest`
+- CLI：`python -m packages.rag.ingest --path demo/runbooks`
+- Service：`RunbookService.ingest()`
 
-`RunbookIngestor.ingest_path()`：
+`split_markdown_document()` 当前默认：
 
-1. 扫描 `.md` 文件。
-2. 解析 front matter 和正文。
-3. 使用 Markdown-aware splitter 切分。
-4. 使用当前配置的 embedding provider 生成向量，默认是 deterministic fake embedding。
-5. 按 `content_hash` 去重。
-6. 写入 `runbook_chunks`。
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `target_tokens` | `450` | 目标 chunk 大小 |
+| `max_tokens` | `900` | 单个 chunk 最大大小 |
+| `overlap_tokens` | `80` | 长 section 分块重叠 |
 
-API：
+chunk metadata 会保留 document title、parent title、chunk index、token count、content hash、service、incident type、language 等字段。
 
-```http
-POST /api/runbooks/ingest
-```
+## Embedding Provider
 
-请求：
+`build_embedding_provider(settings)` 当前支持：
 
-```json
-{
-  "path": "demo/runbooks",
-  "reingest": true
-}
-```
+| Provider | 维度 | 默认/用途 |
+|----------|------|-----------|
+| `fake` | 512 | 默认，本地/测试 deterministic，无网络 |
+| `bge_zh` | 512 | 本地 BAAI/bge-small-zh HTTP 服务，默认 URL `http://localhost:8083` |
+| `text2vec` | 1024 | text2vec-large-chinese HTTP 服务，默认 URL `http://localhost:8084` |
 
-## Chunk 规则
+`FakeEmbeddingProvider` 通过 SHA256 生成稳定归一化向量。测试不得使用随机向量。
 
-Splitter 规则：
-
-- target tokens：约 450。
-- max tokens：900。
-- overlap tokens：80。
-- 优先按 H2 section 切分。
-- 超长 section 按段落切分并保留 overlap。
-- 每个 chunk 保留 title、parent title、source path、metadata、content hash。
-
-`runbook_chunks.embedding` 当前 PostgreSQL 类型为 `vector(512)`。
-
-## Embedding
-
-### FakeEmbedding（默认）
-
-FakeEmbedding 是 deterministic：
-
-- 对规范化文本做 SHA-256 扩展。
-- 生成 512 维向量。
-- 向量归一化。
-- 同一文本总是得到同一 embedding。
-
-测试不得使用随机向量。
-
-### BGE-ZH（真实 embedding）
-
-配置 `EMBEDDING_PROVIDER=bge_zh` 后使用 `BAAI/bge-small-zh`（512 维）：
-
-- 模型文件位于 `models/bge-small-zh/`。
-- Docker Compose 中 `bge-zh` 服务提供 HTTP API（端口 `8083`）。
-- embedding 维度为 512，与当前 PostgreSQL schema 兼容。
-- 首次使用需要下载模型到 `models/` 目录。
-
-### text2vec（可选）
-
-`EMBEDDING_PROVIDER=text2vec` 支持其他兼容 text2vec API 的 embedding 服务。当前内置 text2vec provider 输出 1024 维向量；如需在 PostgreSQL `runbook_chunks.embedding` 中使用，需要配套 schema/migration 调整。
+`external_embedding_provider.py` 是 M9 受控组件，具有脱敏、timeout、retry、circuit breaker 和 secret ref 设计；它默认关闭，并受 `M9_EXTENSIONS_ENABLED`、`SEMANTIC_RUNBOOK_SEARCH_ENABLED`、`EXTERNAL_EMBEDDING_PROVIDER_ENABLED`、外部 provider 权限等条件约束。当前 worker 的 `RunbookRetriever` 构造仍走 `build_embedding_provider()`，不要把外部 embedding 写成默认路径。
 
 ## 检索流程
 
-`RunbookRetriever.search()`：
+`RunbookRetriever.search()` 的当前流程：
 
-1. 校验 `RunbookSearchQuery`。
-2. 构造 runbook search cache key。
-3. 计算 query embedding。
-4. 遍历 chunk，按 metadata 过滤 service 和 incident_type。
-5. 计算向量余弦分数和 lexical overlap。
-6. 可选执行 BM25 recall。
-7. 使用 adaptive alpha 做 hybrid score fusion。
-8. 召回 top 20。
-9. rerank。
-10. 返回 top_k。
+1. 标准化 `RunbookSearchQuery(query, service, incident_type, top_k)`。
+2. 计算 query embedding。
+3. 遍历 repository 中的 chunks，按 metadata 过滤。
+4. 对每个候选计算 vector cosine score 与 lexical overlap score，取较大值。
+5. 当 `use_hybrid=true` 时，执行 PostgreSQL BM25 recall，并融合 BM25 score 与 vector/lexical score。
+6. 截取前 20 个候选交给 reranker。
+7. 返回 top_k 个 `RunbookSearchResult`。
 
-响应项：
+`use_hybrid` 由 worker 中的 `settings.runbook_hybrid_search_enabled` 传入，默认 `true`。`SEMANTIC_RUNBOOK_SEARCH_ENABLED` 是 M9 feature gate/control-plane 标志，默认关闭；当前检索构造仍以 `runbook_hybrid_search_enabled` 和 embedding provider 为实际运行参数。
 
-```json
-{
-  "chunk_id": "chk_xxx",
-  "source_path": "demo/runbooks/checkout-api/high-5xx/triage.md",
-  "title": "Triage",
-  "excerpt": "...",
-  "score": 0.92,
-  "metadata": {}
-}
-```
+## 搜索结果契约
 
-## Hybrid Search
+API 和 tool 层应返回同一类字段：
 
-配置项：
+| 字段 | 含义 |
+|------|------|
+| `chunk_id` | `chk_` 前缀 chunk ID |
+| `source_path` | Markdown 文件或 `drafts/{draft_id}.md` |
+| `title` | chunk 标题 |
+| `excerpt` | 最多约 360 字符的相关片段 |
+| `score` | rerank 后得分 |
+| `metadata` | service、incident_type、token_count、content_hash 等 |
 
-- `RUNBOOK_HYBRID_SEARCH_ENABLED`
-- `RUNBOOK_HYBRID_ALPHA_KEYWORD`
-- `RUNBOOK_HYBRID_ALPHA_NL`
-
-BM25 通过 PostgreSQL text search helper 构造 tsquery。检索结果会与向量/词法分数融合。
+`format_runbook_context()` 会把结果格式化为包含 chunk ID 和 source path 的 prompt block。诊断输出引用 runbook 时应保留这些 ID。
 
 ## Reranker
 
-配置项：
+`build_reranker_backend(settings)` 支持：
 
-- `RERANKER_PROVIDER`
-- `RERANKER_COHERE_API_KEY`
-- `RERANKER_COHERE_MODEL`
-- `RERANKER_JINA_BASE_URL`
-- `RERANKER_JINA_MODEL`
-- `RERANKER_BGE_BASE_URL`
-- `RERANKER_BGE_MODEL`
+| Provider | 默认 | 说明 |
+|----------|------|------|
+| `fake` | 是 | 启发式得分：vector score、service match、incident type match、title keyword、freshness |
+| `cohere` | 否 | Cohere Rerank API，需要 API key |
+| `jina` | 否 | Jina reranker compatible HTTP API |
+| `bge` | 否 | BGE reranker HTTP API |
 
-默认 fake reranker，保持本地测试稳定。
+未知 reranker provider 会抛 `ValidationAppError`。
 
-## Runbook Search Tool
+## Draft、Version 与 Amendment
 
-Agent 通过 `RunbookSearchTool` 使用 RAG，不直接访问 retriever。工具层会返回 `ToolResult`，并记录 cache 和审计摘要。
+### 确定性 draft
 
-## 草稿与版本
+`RunbookGenerator`、`TemplateExtractor` 和 template engine 可基于 incident cluster 或模板生成 draft，不依赖真实 LLM。draft 需要 review 后才能发布。
 
-当前实现包含 Runbook draft/version 能力：
+### Draft review
 
-- `GET /api/runbooks/drafts`
-- `GET /api/runbooks/drafts/{draft_id}`
-- `POST /api/runbooks/drafts/generate`
-- `POST /api/runbooks/drafts/{draft_id}/review`
-- `GET /api/runbooks/versions/{document_id}`
+`RunbookService.review_draft(status="published")` 会：
 
-草稿用于把事故反馈和历史诊断转为待审核 Runbook。版本表记录 document 的内容 hash、版本号、diff 和关联事故。
+1. 更新 draft 状态。
+2. 创建 `RunbookVersion`。
+3. 将 draft content 解析、分块并写入 `runbook_chunks`。
 
-## 诊断引用要求
+发布 draft 的 chunk ingest 对 embedding provider/embedding 失败做降级：如果 provider 不可用或单个 chunk embedding 失败，会以空 embedding 和 `embedding_model="none"` 继续保存，关键词检索仍可用。
 
-诊断输出不能只说“根据 runbook”。应引用：
+本地 Markdown ingest 当前同步调用配置的 embedding provider。默认 fake provider 不会失败；切换到外部 HTTP provider 前应确保服务可用，并补充失败降级测试。
 
-- `chunk_id`
-- `source_path`
-- evidence ID
+### LLM runbook draft (M9)
 
-压缩和报告生成也应保留这些 ID。
+`LLMRunbookGenerator` 只返回草稿内容，service 层持久化为：
+
+```text
+RunbookDraft(status=pending_review, draft_type=llm_generated)
+```
+
+它不会自动发布，不会修改 approved runbook，不会执行 remediation。
+
+### Incident diff (M9)
+
+`IncidentDiffAnalyzer` 只生成 amendment proposals，service 层持久化为：
+
+```text
+AmendmentDraft(status=pending_review)
+```
+
+证据不足时返回 `skipped_insufficient_evidence`，不会调用 LLM。
+
+## Web 搜索 (M9)
+
+`RunbookWebContextBuilder` 默认关闭。启用需要：
+
+- `M9_EXTENSIONS_ENABLED=true`
+- `RUNBOOK_WEB_SEARCH_ENABLED=true`
+- `RUNBOOK_WEB_SEARCH_PROVIDER` 不是 `disabled`
+- 生产环境必须配置 allowed domains
+
+安全措施：
+
+- 搜索 query 脱敏。
+- 使用 `BackendUrlSafetyValidator` 校验结果 URL。
+- 结果带 original URL、final URL、content hash、provider、redaction version、retrieved_at。
+- 结果只作为 draft enrichment evidence，不自动发布。
+
+当前 provider：`disabled` 和 deterministic `fake`。`exa` 仍是未来 provider，占位时会回退到 disabled。
+
+## 动作分类
+
+`RunbookActionClassifier` 只用于审查 runbook 内容：
+
+| 分类 | 关键词示例 | 含义 |
+|------|------------|------|
+| `forbidden` | delete、drop、truncate、flush、modify_database、destroy、purge | 禁止草稿直接进入安全发布 |
+| `approval_required` | restart、scale、rollback、revert、drain、evict、enable_rate_limit、cancel_deployment | 需要人工确认的操作措辞 |
+| `diagnostic_only` | profile、dump、trace、debug、inspect | 诊断类动作 |
+| `read_only` | check、query、list、get、describe、show、fetch | 只读动作 |
+| `unknown` | 无匹配 | 需要人工审查 |
+
+该分类器不替代 Agent guardrail；实际 remediation 的最终权限仍由 `classify_risk_level()` 决定。
+
+## 新增检索能力 checklist
+
+1. 明确是否影响 ingest、retriever、reranker、tool wrapper 或 API。
+2. 保持 `RunbookSearchResult` 的 chunk ID 和 source path。
+3. 不使用随机 embedding；测试使用 fake provider。
+4. 新外部调用必须有 feature gate、timeout、脱敏、审计/指标和降级。
+5. 不让 LLM 自动发布 runbook 或 amendment。
+6. 若变更 embedding 维度，先同步数据库迁移、provider、测试和文档。
+7. 更新 `docs/03-tools/tool-layer.md`、本文件、测试策略和配置参考。
+
+## 常用测试入口
+
+- `tests/unit/test_rag_ingest.py`
+- `tests/unit/test_runbook_retriever.py`
+- `tests/unit/test_runbook_search_tool.py`
+- `tests/unit/test_runbook_drafts.py`
+- `tests/unit/test_runbook_versions.py`
+- `tests/unit/test_semantic_runbook_search.py`
+- `tests/unit/test_external_embedding_provider.py`
+- `tests/unit/test_m9_llm_runbook_generator.py`
+- `tests/unit/test_incident_diff_analyzer.py`
+- `tests/e2e/test_m9_semantic_search.py`

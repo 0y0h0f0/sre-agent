@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-agent
+  namespace: sre-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-agent-role
+rules:
+  # === Read-only diagnostics (collect_k8s node) ===
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "events", "namespaces", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+
+  # === Discovery (K8sDiscovery + BackendEndpointDetector) ===
+  # Included above: services, endpoints, namespaces, deployments, statefulsets, daemonsets
+
+  # === Executor (only needed when EXECUTOR_BACKEND=live) ===
+  # restart_pod / restart_service: patch Deployment annotation
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]
+    resourceNames: []  # will be restricted at the namespace level by RoleBinding if needed
+  # scale_deployment / scale_back: patch scale sub-resource
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch"]
+  # rollback_release: create rollback sub-resource
+  - apiGroups: ["apps"]
+    resources: ["deployments/rollback"]
+    verbs: ["create"]
+
+  # === L3: rollback via apps/v1 Deployment rollback (legacy approach) ===
+  - apiGroups: ["extensions"]
+    resources: ["deployments/rollback"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-agent-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sre-agent-role
+subjects:
+  - kind: ServiceAccount
+    name: sre-agent
+    namespace: sre-agent

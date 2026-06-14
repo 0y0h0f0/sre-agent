@@ -170,14 +170,7 @@ class DbDiagnosticsTool:
                 duration_ms=elapsed_ms(started_at),
                 error_message=None if has_data else "empty db diagnostics result",
             )
-        except (
-            OSError,
-            json.JSONDecodeError,
-            KeyError,
-            TypeError,
-            ValueError,
-            RuntimeError,
-        ) as exc:
+        except Exception as exc:
             return ToolResult(
                 status="degraded",
                 data={},

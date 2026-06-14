@@ -1,110 +1,153 @@
 # 系统架构
 
-## 主链路
+**最后更新：** 2026-06-13
+
+## 架构一览
 
 ```text
-Alertmanager / Mock Alert
+Alert Sources
+  - POST /api/alerts webhook
+  - Alertmanager poller
+  - Grafana webhook (M9, gated)
         |
         v
-FastAPI POST /api/alerts
+FastAPI (apps/api)
+  - request validation, auth, request_id, thin routers
+  - service layer creates Incident + AgentRun
+  - repository layer persists business records
         |
         v
-PostgreSQL: incidents + agent_runs
+Redis + Celery
+  - async diagnosis tasks
+  - approval resume tasks
+  - discovery/poll/eval tasks
         |
         v
-Celery: run_incident_diagnosis
+Worker (apps/worker)
+  - reads published EffectiveConfigVersion
+  - builds AgentDeps
+  - compiles LangGraph with PostgresSaver
         |
         v
-LangGraph workflow
+LangGraph (packages/agent)
+  parse_alert -> collect_all_evidence -> retrieve_memory -> cross_incident
+  -> retrieve_runbook -> build_context -> diagnose -> compress_context
+  -> rank_hypotheses -> plan_actions -> guardrail_check
+  -> approval/snapshot/execute/verify/replan/report/persist_memory
         |
-        +--> MetricsTool -> Prometheus
-        +--> LogsTool    -> Loki
-        +--> TraceTool   -> fixture / Jaeger / Tempo read backend
-        +--> GitTool     -> fixture / GitHub / Argo CD read backend
-        +--> K8sTool     -> fixture / read-only live diagnostics
-        +--> DbTool      -> fixture / read-only SQL diagnostics
-        +--> RAG         -> runbook chunks + pgvector + BM25
-        +--> Memory      -> run-local / incident / service / procedural memory
-        |
-        v
-Diagnosis + Evidence + Actions
-        |
-        +--> L0/L1 auto allowed
-        +--> L2/L3 human approval
-        +--> L4 direct reject
+        +--> packages/tools: Prometheus, Loki, traces, deployment, K8s, DB, executor
+        +--> packages/rag: runbook ingest/search/rerank/generation
+        +--> packages/memory: token budget, compression, memory store
         |
         v
-Mock execution + Incident report + UI + Eval metrics
+PostgreSQL + pgvector
+  - incidents, runs, evidence, actions, approvals, reports
+  - runbook chunks and memory embeddings
+  - LangGraph checkpoint persistence
+        |
+        v
+React Console (apps/web)
+  - incidents, agent runs, approvals, reports
+  - polling + WebSocket incident events
 ```
 
-## 模块边界
+## 分层架构
 
-| 模块 | 路径 | 责任 |
-| --- | --- | --- |
-| API | `apps/api` | HTTP 路由、请求校验、错误响应、鉴权、WebSocket |
-| Worker | `apps/worker` | Celery app、诊断任务、审批恢复、邮件任务、周期任务 |
-| Agent | `packages/agent` | LangGraph 图、节点、状态、LLM 适配、guardrail |
-| Tools | `packages/tools` | 工具 query/result schema、缓存、HTTP/fixture 后端、mock executor |
-| RAG | `packages/rag` | Runbook 切分、embedding（Fake/BGE-ZH/text2vec）、混合检索、rerank、草稿生成 |
-| Memory | `packages/memory` | token 预算、上下文构建、压缩、记忆存储 |
-| DB | `packages/db` | SQLAlchemy models、session、repositories |
-| Common | `packages/common` | 配置、ID、时间、错误、Prometheus metrics |
-| Evals | `packages/evals` | smoke/full/shadow eval 数据集与运行器 |
-| Web | `apps/web` | React 控制台、审批 UI、报告页、E2E |
-| Demo | `demo` | alert fixture、fault fixture、runbooks、demo service、topology |
-| Deploy | `deploy` | Prometheus、Loki、Promtail、Grafana、OTel、BGE-ZH 配置 |
+| 层 | 代码位置 | 职责 |
+|----|----------|------|
+| API | `apps/api/` | FastAPI app、middleware、14 个 router、Pydantic schema、service 编排 |
+| Worker | `apps/worker/` | Celery app、diagnosis/discovery/poll/eval 任务入口 |
+| Frontend | `apps/web/` | React + TypeScript + Vite 控制台，TanStack Query 管理 API 状态 |
+| Agent | `packages/agent/` | 18 节点 LangGraph、节点函数、FakeLLM/LLM adapter、guardrail、runner |
+| Common | `packages/common/` | Settings、错误结构、ID、时间、redaction、metrics、feature flags、URL 安全 |
+| DB | `packages/db/` | 32 个 SQLAlchemy 模型、repository、session 工厂 |
+| Discovery | `packages/discovery/` | Prometheus/Loki/Jaeger/K8s/Grafana/Tempo 发现、配置合并和发布 |
+| Tools | `packages/tools/` | Metrics/logs/traces/deployment/K8s/DB/runbook/executor 工具接口与后端 |
+| RAG | `packages/rag/` | Runbook split、metadata、embedding、BM25/vector/hybrid retrieval、rerank、draft/diff |
+| Memory | `packages/memory/` | Context budget、token count、compression plan、memory store |
+| Evals | `packages/evals/` | Smoke/full/shadow eval 数据集、runner、harness 和 replay |
 
-## 核心设计决定
+API 层遵循 `router -> service -> repository -> model`。Router 只处理 HTTP 形状和依赖注入；service 持有业务规则和事务边界；repository 是数据库读写入口。Agent 节点通过 `AgentDeps` 接收依赖，不直接创建数据库 session 或真实外部客户端。
 
-- API 只负责创建记录和入队，不直接运行 LangGraph。
-- Celery task 使用幂等逻辑处理重复投递和 worker 丢失。
-- LangGraph 节点通过 `AgentDeps` 注入依赖，不直接创建数据库 session。
-- PostgreSQL checkpointer 用于审批中断和恢复；真实数据库下 checkpointer 初始化失败会 fail closed。
-- `agent_runs.state` 只是调试快照，不是 checkpoint 的替代品。
-- 原始大量日志不直接进入 LLM prompt，必须通过 token 预算和压缩策略。
-- 诊断输出必须引用 evidence ID 或 Runbook chunk ID。
-- Guardrail 是确定性规则，不信任模型决定最终执行权限。
-- MVP 动作执行只使用 mock executor。
-- 证据交叉验证在 `diagnose` 节点融合 metrics/logs/traces/deployment 信号（权重 Trace > Metrics > Logs > Git）；corroboration 提高根因置信度，冲突设置 `_needs_human_review`。
-- 级联故障分析基于服务依赖图（`SERVICE_TOPOLOGY_PATH` 配置或 trace 推导）识别故障传播链和根服务，关联同时发生的相关事故。
-- LLM reasoning 可在 `diagnose` 节点启用（`LLM_REASONING_ENABLED`），输出 `diagnosis_rationale` 和 LLM 调用元数据，不持久化原始 chain-of-thought。
+## 运行时数据流
 
-## 数据流
+1. 告警通过 webhook、Alertmanager poller 或 gated Grafana webhook 到达。
+2. API 标准化 payload，计算 fingerprint；若已有未关闭 incident，则复用/去重。
+3. API 创建 `Incident` 和 `AgentRun`，写入 PostgreSQL，并把诊断任务放入 Celery。
+4. Worker 取任务，读取 settings 和已发布有效配置，构建工具、memory、RAG、LLM 和 executor 依赖。
+5. Worker 使用 LangGraph `PostgresSaver` 编译图；`thread_id` 固定为 `agent_run_id`。
+6. Agent 并行收集 metrics/logs/traces/deployment/K8s/DB 证据，检索 runbook、memory 和 cross-incident context。
+7. `build_context` 根据 token budget 组装上下文；超预算证据触发压缩，避免大日志直接进入 prompt。
+8. `diagnose` 生成根因和假设，随后进行证据交叉验证和级联故障分析。
+9. `plan_actions` 生成候选动作，`guardrail_check` 用确定性规则给出 L0-L4 风险和审批要求。
+10. L0/L1 进入 snapshot/execute；L2/L3 通过 LangGraph interrupt 等待审批；L4 直接生成报告。
+11. 审批通过后使用同一 checkpoint config 恢复；执行后 `verify` 重新查询证据，必要时回到 `plan_actions`。
+12. `generate_report` 写入版本化报告，`persist_memory` 写入 run/incident/service/procedural memory。
+13. API 和 worker 通过 Redis Pub/Sub 发布事件，前端轮询和 WebSocket 展示最新状态。
 
-1. `POST /api/alerts` 校验告警，按 open fingerprint 去重。
-2. Alert service 创建或复用 incident，并创建 agent run。
-3. API 调用 `enqueue_diagnosis_task` 发送 Celery 任务。
-4. Worker 锁定 agent run，标记 `running`，构造 tools、RAG、memory、LLM 和 node tracer。
-5. Worker 构造 LangGraph checkpointer，启动 `AgentRunner.run()`。
-6. 每个节点更新 `IncidentState`，同时持久化节点轨迹和工具调用。
-7. Guardrail 根据推荐动作生成风险决策。
-8. L2/L3 进入 human approval 中断；L4 直接拒绝并进入报告。
-9. 审批完成后，API 更新 approval/action，再入队 `resume_incident_after_approval`。
-10. Worker 使用同一 `thread_id=agent_run_id` 恢复 graph。
-11. 结束后生成 incident report、同步 incident root cause、发送通知。
+## 存储与状态
 
-## 运行时依赖
+| 存储 | 用途 |
+|------|------|
+| PostgreSQL | 业务记录：incident、agent_run、node trace、tool call、evidence、action、approval、report、audit、config、eval |
+| pgvector | Runbook chunk embedding 和 memory embedding；当前向量维度为 512 |
+| LangGraph PostgresSaver | Agent checkpoint；不能用 `agent_runs.state` 替代 |
+| Redis | Celery broker/result backend、工具/应用缓存、WebSocket Pub/Sub |
+| File fixtures | `demo/alerts`、`demo/faults`、`demo/runbooks` 提供确定性本地数据 |
 
-| 依赖 | 用途 | 默认端口 |
-| --- | --- | --- |
-| PostgreSQL + pgvector | 业务表、Runbook embedding、LangGraph checkpoint | `5433:5432` |
-| Redis | Celery broker/result backend、短期缓存、WebSocket 事件发布 | `6378:6379` |
-| Prometheus | 指标采集 | `9090` |
-| Loki | 日志查询 | `3100` |
-| OTel Collector | trace demo 数据入口 | `4317`、`4318` |
-| Grafana | 观测展示 | `3000` |
-| API | FastAPI | `8000` |
-| Web | Vite dev server | `5173` |
-| Demo service | 故障注入 demo service | `8080` |
-| BGE-ZH | Embedding 推理服务（BAAI/bge-small-zh, 512-dim） | `8083` |
-| Mailpit | 本地 SMTP 测试（dev profile） | `8025`（Web UI）、`1025`（SMTP） |
-| Celery beat | 周期任务调度（每日摘要、自动审批） | — |
+`agent_runs.state` 是展示和调试快照。恢复审批、避免重复危险动作和继续图执行都依赖 LangGraph checkpoint。
 
-## 可靠性策略
+## 本地服务拓扑
 
-- Celery 配置 `task_acks_late=True`、`task_reject_on_worker_lost=True`、`worker_prefetch_multiplier=1`。
-- Agent run row 使用数据库锁防止重复 worker 并发运行。
-- `task_orphan_timeout_seconds` 后可重新执行卡住的 running run。
-- Checkpointer 在真实数据库场景必须可用，否则不绕过审批。
-- 工具层使用 timeout、degraded result 和缓存，避免单个外部依赖阻断整个流程。
-- 邮件发送任务独立排队，可重试并记录 `email_log`。
+默认 `docker compose config --services` 包含 13 个服务：
+
+```text
+postgres redis prometheus loki promtail otel-collector bge-zh grafana
+api worker beat web demo-service
+```
+
+`mailpit` 是 `dev` profile 的第 14 个可选服务，用于本地邮件测试：
+
+```bash
+docker compose --profile dev up mailpit
+```
+
+Jaeger、Tempo、GitHub、Argo CD、live Kubernetes 和 live PostgreSQL 诊断是可配置后端或外部系统，不是默认 compose 必需服务。默认 trace 后端是 fixture。
+
+## 配置与安全控制面
+
+配置优先级按运行时合并逻辑理解为：
+
+```text
+env > active override > profile > published EffectiveConfigVersion > safe default
+```
+
+关键运行时规则：
+
+- `APP_ENV=production` 在未显式设置时把 `LLM_PROVIDER` 改为 `disabled`，并关闭 discovery 自动启用。
+- `EXECUTOR_BACKEND` 默认是 `fixture`；只有显式设置为 `live` 才会创建 live K8s executor。
+- Worker 仅读取已发布的 `EffectiveConfigVersion`，不会使用未审核 proposal 或 detected-only 后端。
+- 后端 URL 必须通过安全验证，生产环境拒绝 localhost、link-local 和 metadata 端点等危险目标。
+- 原始密钥使用 `env:VAR_NAME` 或 SecretStr 引用，不能进入 DB、审计、日志、Agent state 或 prompt。
+- M9 全局门 `M9_EXTENSIONS_ENABLED=false` 会强制关闭 M9 子能力；M8 已验证的 Jaeger trace 行为不因此禁用。
+
+## M9 增强位置
+
+M9 是增强层，不替代 M0-M8 确定性路径：
+
+| 能力 | 位置 | 默认行为 |
+|------|------|----------|
+| LLM runbook draft | `packages/rag/llm_runbook_generator.py`、runbook API | 仅生成 `pending_review` 草稿 |
+| Incident diff | `packages/rag/incident_diff.py` | 仅生成 `pending_review` amendment draft |
+| Web search | `packages/rag/web_search_provider.py`、`runbook_web_context.py` | gated、HTTPS/domain 控制、脱敏、缓存、降级 |
+| Tempo trace | `packages/tools/trace_backends.py` | `TRACE_BACKEND=tempo` 需要 M9 gate；否则 degraded |
+| Grafana webhook | API/router + discovery/config | HMAC/size limit/gate 后摄取 |
+| Semantic search | `packages/rag/retriever.py`、embedding provider | gated；embedding 失败不阻塞 runbook 入库 |
+
+## 设计约束
+
+- 不在 FastAPI 请求线程内运行 LangGraph。
+- 不让 LLM 决定最终执行权限。
+- 不把大日志直接放入 Agent state 或 prompt。
+- 不让 discovery 失败阻塞 agent 启动；失败转为 degraded/unavailable 工具结果。
+- 不新增未记录的真实写路径；真实云写入和 destructive DB/cache 操作不在范围内。

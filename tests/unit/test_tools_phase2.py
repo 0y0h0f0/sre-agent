@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from datetime import UTC, datetime
@@ -143,6 +144,57 @@ def test_logs_tool_uses_configurable_service_label() -> None:
     assert 'service="checkout"' not in seen[0]
 
 
+def test_metrics_tool_falls_back_to_backend_metric_and_job_alias() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = str(request.url.params["query"])
+        seen.append(query)
+        values = [[1, "7"]] if "db_pool_in_use" in query and "job=~" in query else []
+        return httpx.Response(
+            200,
+            json={"status": "success", "data": {"result": [{"values": values}]}},
+        )
+
+    client = httpx.Client(base_url="http://prom", transport=httpx.MockTransport(handler))
+    tool = MetricsTool(base_url="http://prom", client=client)
+    result = tool.run(
+        MetricsQuery(service="task-service", metric_type="db_connections", start=START, end=END)
+    )
+
+    assert result.status == "succeeded"
+    assert result.data["query"].startswith("db_pool_in_use")
+    assert "job=~" in result.data["query"]
+    assert "\\-" not in result.data["query"]
+    assert len(seen) > 1
+
+
+def test_logs_tool_falls_back_to_common_service_labels() -> None:
+    seen: list[str] = []
+    line = json.dumps({"level": "error", "message": "db pool wait"})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = str(request.url.params["query"])
+        seen.append(query)
+        result = []
+        if query.startswith('{app="task-service"}'):
+            result = [
+                {
+                    "stream": {"app": "task-service"},
+                    "values": [["1780272000000000000", line]],
+                }
+            ]
+        return httpx.Response(200, json={"status": "success", "data": {"result": result}})
+
+    client = httpx.Client(base_url="http://loki", transport=httpx.MockTransport(handler))
+    tool = LogsTool(base_url="http://loki", client=client)
+    result = tool.run(LogsQuery(service="task-service", start=START, end=END))
+
+    assert result.status == "succeeded"
+    assert result.data["samples"][0]["labels"] == {"app": "task-service"}
+    assert any(query.startswith('{app="task-service"}') for query in seen)
+
+
 # --- 2.1 Trace backend ---
 
 
@@ -209,6 +261,7 @@ def test_build_trace_backend_selects_by_setting() -> None:
     # invalid trace_backend values are now caught at Settings construction time
     # (pydantic model_validator) — not at build_trace_backend time.
     from pydantic import ValidationError
+
     with pytest.raises(ValidationError, match="TRACE_BACKEND"):
         Settings(trace_backend="nope")
     # TRACE_BACKEND=disabled returns degraded backend.
@@ -269,6 +322,71 @@ def test_argocd_deployment_backend_reverses_history() -> None:
     assert result.status == "succeeded"
     # Newest-first after reversal.
     assert result.data["changes"][0]["commit_sha"] == "new5678"
+
+
+def test_github_deployment_backend_falls_back_to_service_commits() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/repos/acme/app/deployments":
+            assert request.url.params["environment"] == "task-service"
+            return httpx.Response(200, json=[])
+        if request.url.path == "/repos/acme/app/commits":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "sha": "abcdef123456",
+                        "commit": {"committer": {"date": "2026-06-01T00:05:00Z"}},
+                    },
+                    {
+                        "sha": "999999999999",
+                        "commit": {"committer": {"date": "2026-06-01T00:06:00Z"}},
+                    },
+                ],
+            )
+        if request.url.path == "/repos/acme/app/commits/abcdef123456":
+            return httpx.Response(
+                200,
+                json={
+                    "sha": "abcdef123456",
+                    "author": {"login": "deployer"},
+                    "commit": {
+                        "message": "update task service",
+                        "committer": {"date": "2026-06-01T00:05:00Z"},
+                    },
+                    "files": [
+                        {"filename": "internal/task/biz/task.go"},
+                        {"filename": "configs/docker/task-service.yaml"},
+                    ],
+                },
+            )
+        if request.url.path == "/repos/acme/app/commits/999999999999":
+            return httpx.Response(
+                200,
+                json={
+                    "sha": "999999999999",
+                    "commit": {
+                        "message": "update user service",
+                        "committer": {"date": "2026-06-01T00:06:00Z"},
+                    },
+                    "files": [{"filename": "internal/user/biz/user.go"}],
+                },
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = httpx.Client(base_url="http://gh", transport=httpx.MockTransport(handler))
+    backend = GitHubDeploymentBackend(api_url="http://gh", repo="acme/app", client=client)
+    tool = GitChangeTool(backend=backend)
+    result = tool.run(GitChangeQuery(service="task-service", start=START, end=END))
+
+    assert result.status == "succeeded"
+    assert result.data["change_count"] == 1
+    assert result.data["changes"][0]["commit_sha"] == "abcdef1"
+    assert result.data["changes"][0]["author"] == "deployer"
+    assert "internal/task/biz/task.go" in result.data["changes"][0]["files"]
+    assert "/repos/acme/app/commits" in seen
 
 
 def test_deployment_backend_http_error_degrades() -> None:
@@ -364,6 +482,21 @@ def test_db_tool_degrades_on_unknown_operation_fixture() -> None:
     tool = DbDiagnosticsTool()
     result = tool.run(DbDiagnosticsQuery(operation="locks"))
     assert result.status == "succeeded"
+
+
+def test_db_tool_degrades_when_backend_query_fails() -> None:
+    class BrokenDbBackend:
+        name = "live"
+
+        def fetch(self, query: DbDiagnosticsQuery) -> list[dict[str, object]]:
+            raise RuntimeError("pg_stat_statements missing")
+
+    tool = DbDiagnosticsTool(backend=BrokenDbBackend())
+    result = tool.run(DbDiagnosticsQuery(operation="slow_queries"))
+
+    assert result.status == "degraded"
+    assert result.data == {}
+    assert result.error_message == "pg_stat_statements missing"
 
 
 def test_assert_read_only_rejects_writes() -> None:
@@ -469,9 +602,13 @@ def test_live_k8s_backend_maps_events(monkeypatch) -> None:
         def list_namespaced_event(self, ns: str, _request_timeout: float | None = None) -> _Events:
             return _Events()
 
+    calls: list[str] = []
     fake_kubernetes = types.ModuleType("kubernetes")
     fake_kubernetes.client = types.SimpleNamespace(CoreV1Api=lambda: _CoreV1Api())  # type: ignore[attr-defined]
-    fake_kubernetes.config = types.SimpleNamespace(load_kube_config=lambda: None)  # type: ignore[attr-defined]
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: calls.append("incluster"),
+        load_kube_config=lambda: calls.append("kubeconfig"),
+    )
     monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
 
     out = LiveK8sBackend(namespace="default").fetch(
@@ -479,6 +616,38 @@ def test_live_k8s_backend_maps_events(monkeypatch) -> None:
     )
     assert out["operation"] == "events"
     assert "OOMKilling" in out["payload"]
+    assert calls == ["incluster"]
+
+
+def test_live_k8s_backend_falls_back_to_kube_config(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _Events:
+        items: list[object] = []
+
+    class _CoreV1Api:
+        def list_namespaced_event(self, ns: str, _request_timeout: float | None = None) -> _Events:
+            return _Events()
+
+    calls: list[str] = []
+
+    def _raise_no_incluster() -> None:
+        calls.append("incluster")
+        raise RuntimeError("not running in a pod")
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(CoreV1Api=lambda: _CoreV1Api())  # type: ignore[attr-defined]
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=_raise_no_incluster,
+        load_kube_config=lambda: calls.append("kubeconfig"),
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="default").fetch(
+        K8sQuery(service="checkout", operation="events")
+    )
+    assert out["operation"] == "events"
+    assert calls == ["incluster", "kubeconfig"]
 
 
 # --- 2.2/2.3 cross-validation participation ---

@@ -151,6 +151,11 @@ class K8sDiscovery:
             names = [ns.metadata.name for ns in ns_list.items]
         except Exception as exc:
             if "403" in str(exc) or "Forbidden" in str(exc):
+                # Fall back to allowlist if cluster-wide namespace listing is
+                # forbidden by RBAC — the operator knows which namespaces to
+                # target and has configured them in K8S_NAMESPACE.
+                if self._namespace_allowlist:
+                    return self._namespace_allowlist
                 raise K8sUnavailableError("RBAC forbidden") from exc
             raise
         if self._namespace_allowlist:

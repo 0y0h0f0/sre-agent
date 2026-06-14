@@ -1,3 +1,12 @@
+> **⚠️ 历史文档 — 请勿依赖此文档了解当前状态**
+>
+> `plans/` 目录包含开发开始前（2026-06-07）编写的**原始**实现规划。这些文档描述的是**规划**的内容，而非**实际构建**的内容。
+>
+> 如需准确的当前状态文档，请参阅 `docs/` 目录。
+> 如需实际实现记录，请参阅 git 历史（M0–M8：41 个 PR，M9：10 个 PR）。
+>
+> 这些规划仅作为参考保留——用于了解原始设计意图及其在实现过程中的演变。
+
 # SRE Incident Response Agent 文档索引
 
 本文档集保留原始实现规划、代码生成约束和 roadmap 阶段记录。`plan.md` 是高层计划，`plans/` 是实现级规划来源，`docs/` 是当前读者文档；当三者出现细节差异时，以 `docs/` 和 `AGENTS.md` 的更具体约束为准。固定技术栈为 FastAPI、LangGraph、Celery、PostgreSQL、pgvector、Redis、Prometheus、Loki、OpenTelemetry、React + TypeScript + Vite。

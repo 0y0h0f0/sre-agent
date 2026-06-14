@@ -165,7 +165,7 @@ CI and deterministic tests must use FakeLLM. Real LLMs are for manual demos/eval
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `M9_EXTENSIONS_ENABLED` | `false` | Global M9 gate. Must be true for sub-features to resolve enabled. |
-| `RUNBOOK_WEB_SEARCH_PROVIDER` | `disabled` | `disabled` or `fake` in current implementation; unknown providers degrade to disabled. |
+| `RUNBOOK_WEB_SEARCH_PROVIDER` | `disabled` | `disabled` or `fake` in current implementation; unknown providers return `config_error` and do not fall back. |
 | `RUNBOOK_WEB_SEARCH_TIMEOUT_SECONDS` | `10` | Web search timeout. |
 | `RUNBOOK_WEB_SEARCH_MAX_RESULTS` | `5` | Max search results, capped by schema. |
 | `RUNBOOK_WEB_SEARCH_REQUIRE_HTTPS` | `true` | HTTPS policy for external Web results. |

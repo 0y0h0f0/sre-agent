@@ -301,7 +301,7 @@ Worker 仅读取 published config，不读取未发布 proposal。
 | POST | `/api/runbooks/drafts/{draft_id}/regenerate` | 全局 auth | 重新生成 draft，创建新版本。 |
 | POST | `/api/runbooks/template` | 全局 auth | 生成模板 draft。 |
 | POST | `/api/runbooks/llm-generate` | `runbook:review` 或 `runbook:llm_generate` | M9 LLM runbook draft。只生成待审草稿。 |
-| POST | `/api/runbooks/web-search` | `runbook:review` 或 `runbook:web_search` | M9 web search enrichment。 |
+| POST | `/api/runbooks/web-search` | `runbook:review` 且 `runbook:web_search` | M9 web search enrichment。 |
 | POST | `/api/runbooks/incident-diff` | `runbook:review` 且 `incident:llm_diff`；外部 LLM 还需 `llm:invoke` 或 `ai:external` | M9 incident/runbook diff，生成 amendment draft。 |
 | GET | `/api/runbooks/amendments` | 全局 auth | 列出 amendment drafts。 |
 | POST | `/api/runbooks/amendments/{amendment_id}/review` | 全局 auth | 审核 amendment。 |

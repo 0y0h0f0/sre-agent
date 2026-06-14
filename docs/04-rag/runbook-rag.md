@@ -181,11 +181,13 @@ Review 可以把 amendment 从 `pending_review` 置为 `approved` 或 `rejected`
 安全措施：
 
 - 搜索 query 脱敏。
-- 使用 `BackendUrlSafetyValidator` 校验结果 URL。
+- 使用 `BackendUrlSafetyValidator` 的 web-search 严格模式校验 original URL、redirect chain 和 final URL。
+- 默认要求 HTTPS，阻止 localhost、metadata endpoint、cluster 内域名、私网 IP，并对 DNS 解析结果再次校验。
+- `RUNBOOK_WEB_SEARCH_BLOCKED_DOMAINS` 优先于 allowed domains；生产环境 allowed domains 为空时返回 blocked/config error，不发起 provider 调用。
 - 结果带 original URL、final URL、content hash、provider、redaction version、retrieved_at。
 - 结果只作为 draft enrichment evidence，不自动发布。
 
-当前 provider：`disabled` 和 deterministic `fake`。`exa` 仍是未来 provider，占位时会回退到 disabled。
+当前 provider：`disabled` 和 deterministic `fake`。`exa` 仍是未来 provider；未知 provider 会返回 `config_error`，不会回退到默认搜索 provider。
 
 ## 动作分类
 

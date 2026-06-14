@@ -138,14 +138,32 @@ def llm_generate_runbook(
 # M9: Web Search for Runbook Enrichment (PR 9.4)
 # ---------------------------------------------------------------------------
 
-_require_web_search_scope = require_scope("runbook:review", "runbook:web_search")
+
+def _require_web_search_scopes(
+    request: Request,
+    settings: Settings = Depends(get_app_settings),
+) -> None:
+    if not settings.api_key_auth_enabled:
+        return
+    api_key: dict[str, object] = getattr(request.state, "api_key", {})
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    raw_scopes = api_key.get("scopes", [])
+    scopes = set(raw_scopes) if isinstance(raw_scopes, list) else set()
+    required = {"runbook:review", "runbook:web_search"}
+    missing = required.difference(scopes)
+    if missing:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Missing required scope(s): {', '.join(sorted(missing))}",
+        )
 
 
 @router.post("/web-search", response_model=WebSearchResponse)
 def web_search(
     payload: WebSearchRequest,
     settings: Settings = Depends(get_app_settings),
-    _scope: None = Depends(_require_web_search_scope),
+    _scope: None = Depends(_require_web_search_scopes),
 ) -> WebSearchResponse:
     from packages.rag.runbook_web_context import RunbookWebContextBuilder
 
@@ -159,9 +177,11 @@ def web_search(
                 "title": r.title,
                 "original_url": r.original_url,
                 "final_url": r.final_url,
+                "retrieved_at": r.retrieved_at,
                 "snippet": r.snippet,
                 "content_hash": r.content_hash,
                 "provider": r.provider,
+                "redaction_version": r.redaction_version,
             }
             for r in result.results
         ],

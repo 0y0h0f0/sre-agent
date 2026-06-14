@@ -251,15 +251,17 @@ class WebSearchResultItem(BaseModel):
     title: str
     original_url: str
     final_url: str
+    retrieved_at: str
     snippet: str
     content_hash: str
     provider: str
+    redaction_version: str
 
 
 class WebSearchResponse(BaseModel):
     """Response from a web search for runbook enrichment."""
 
-    status: str  # "ok" | "disabled" | "degraded" | "blocked"
+    status: str  # "ok" | "disabled" | "config_error" | "degraded" | "blocked"
     purpose: str = "draft_enrichment"
     results: list[WebSearchResultItem] = Field(default_factory=list)
     query_redacted: str = ""

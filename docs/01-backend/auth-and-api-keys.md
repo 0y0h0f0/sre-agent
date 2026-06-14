@@ -90,7 +90,7 @@ WebSocket endpoint：
 | `discovery:write` | discovery rerun；也可读 discovery | 触发手动发现 |
 | `runbook:review` | M9 runbook LLM/Web 能力；incident diff 还需 `incident:llm_diff` | 审核/高级 runbook 能力 |
 | `runbook:llm_generate` | `POST /api/runbooks/llm-generate` | LLM runbook draft |
-| `runbook:web_search` | `POST /api/runbooks/web-search` | Web search enrichment |
+| `runbook:web_search` | `POST /api/runbooks/web-search`，需同时具备 `runbook:review` | Web search enrichment |
 | `incident:llm_diff` | `POST /api/runbooks/incident-diff`，需同时具备 `runbook:review` | Incident/runbook diff |
 
 外部云 LLM 的 incident diff 还需要 `llm:invoke` 或 `ai:external`。定义但当前未直接在 router 中强制的 scope 常量包括 `runbook:read`、`embedding:external`。API key 管理 endpoints 当前没有 route-level `api_key:admin` dependency；它们只受全局 API key auth 保护。

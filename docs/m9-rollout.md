@@ -35,7 +35,7 @@ The safe default remains:
 | LLM runbook generation | `RUNBOOK_LLM_GENERATION_ENABLED` | `false` | Enables `POST /api/runbooks/llm-generate`; creates `drf_` draft with `pending_review`. |
 | LLM incident diff | `LLM_INCIDENT_DIFF_ENABLED` | `false` | Enables `POST /api/runbooks/incident-diff`; creates `amd_` amendments with `pending_review` after evidence threshold. |
 | Runbook Web search | `RUNBOOK_WEB_SEARCH_ENABLED` | `false` | Enables `POST /api/runbooks/web-search`; provider defaults to `disabled`. |
-| Web search provider | `RUNBOOK_WEB_SEARCH_PROVIDER` | `disabled` | `fake` is deterministic local/CI; unknown providers degrade to disabled. |
+| Web search provider | `RUNBOOK_WEB_SEARCH_PROVIDER` | `disabled` | `fake` is deterministic local/CI; unknown providers return `config_error` and do not fall back. |
 | Native Tempo backend | `TRACE_BACKEND=tempo` and `TRACE_ENABLED=true` | `fixture` / `true` | Uses `TempoTraceBackend`; treat as M9 rollout even though backend construction follows `TRACE_BACKEND`. |
 | Tempo discovery | `TEMPO_DISCOVERY_ENABLED` | `false` | Allows discovery to include Tempo service endpoints. |
 | Grafana alert ingest helper | `GRAFANA_ALERT_INGEST_ENABLED` | `false` | Enables `AlertService.ingest_grafana_alert()` helper. The generic `/api/alerts` schema can still normalize `source=grafana` payloads. |
@@ -152,15 +152,15 @@ Entry point: `POST /api/runbooks/web-search`
 
 Required scopes:
 
-- `runbook:review` or `runbook:web_search`
+- both `runbook:review` and `runbook:web_search`
 
 Behavior:
 
 - Query text is redacted before provider invocation.
-- `RUNBOOK_WEB_SEARCH_PROVIDER=disabled` returns degraded.
+- `RUNBOOK_WEB_SEARCH_PROVIDER=disabled` returns `config_error`; unknown providers do not fall back to a real default.
 - `RUNBOOK_WEB_SEARCH_PROVIDER=fake` returns deterministic local results.
 - Production blocks Web search unless `RUNBOOK_WEB_SEARCH_ALLOWED_DOMAINS` is set.
-- Returned URLs are validated and results include traceability metadata.
+- Original URLs, redirect chains, final URLs, and DNS results are validated; returned results include traceability metadata.
 
 Rollback:
 

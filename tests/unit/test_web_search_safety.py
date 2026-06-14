@@ -2,10 +2,57 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+from fastapi import HTTPException
 
 from packages.common.redaction import redact_text
 from packages.common.settings import Settings
+from packages.rag.web_search_provider import WebSearchResponse, WebSearchResultItem
+
+
+class StaticWebSearchProvider:
+    name = "static"
+
+    def __init__(self, results: list[WebSearchResultItem]) -> None:
+        self.results = results
+        self.queries: list[str] = []
+
+    def search(self, query: str) -> WebSearchResponse:
+        self.queries.append(query)
+        return WebSearchResponse(status="ok", results=self.results, query_redacted=query)
+
+
+def _enabled_settings(**overrides) -> Settings:
+    values = {
+        "m9_extensions_enabled": True,
+        "runbook_web_search_enabled": True,
+        "runbook_web_search_provider": "fake",
+        "api_key_auth_enabled": False,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def _item(
+    *,
+    original_url: str = "https://docs.example.com/start",
+    final_url: str = "https://docs.example.com/final",
+    snippet: str = "safe runbook guidance",
+    redirect_chain: list[str] | None = None,
+) -> WebSearchResultItem:
+    return WebSearchResultItem(
+        title="Runbook guidance",
+        original_url=original_url,
+        final_url=final_url,
+        snippet=snippet,
+        content_hash="sha256:test",
+        provider="static",
+        redaction_version="m9-9.4-1",
+        retrieved_at="2026-06-01T00:00:00+00:00",
+        redirect_chain=redirect_chain or [],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +85,17 @@ ABC123
         text = "API error Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
         result = redact_text(text)
         assert "eyJhbGci" not in result.redacted_text
+
+    def test_query_redacts_internal_url_namespace_and_service_name(self):
+        """External web search queries must not expose internal topology."""
+        text = (
+            "service=checkout namespace=prod "
+            "https://api.prod.svc.cluster.local/v1 failed"
+        )
+        result = redact_text(text)
+        assert "checkout" not in result.redacted_text
+        assert "namespace=prod" not in result.redacted_text
+        assert "svc.cluster.local" not in result.redacted_text
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +139,89 @@ class TestWebSearchUrlSafety:
         validator = BackendUrlSafetyValidator(app_env="production")
         result = validator.validate("https://docs.example.com/runbook")
         assert result.is_safe is True
+
+    def test_web_search_blocks_cluster_internal_domain(self):
+        """Cluster-internal DNS names must be blocked for web_search."""
+        from packages.common.backend_url_safety import BackendUrlSafetyValidator
+
+        validator = BackendUrlSafetyValidator(
+            app_env="local",
+            block_cluster_internal_domains=True,
+            strict_private_networks=True,
+        )
+        result = validator.validate("https://api.prod.svc.cluster.local/runbook")
+        assert result.is_safe is False
+
+    def test_web_search_requires_https(self):
+        """Web search safety mode requires HTTPS by default."""
+        from packages.common.backend_url_safety import BackendUrlSafetyValidator
+
+        validator = BackendUrlSafetyValidator(
+            app_env="local",
+            require_https=True,
+            strict_private_networks=True,
+        )
+        result = validator.validate("http://docs.example.com/runbook")
+        assert result.is_safe is False
+
+    def test_web_search_blocked_domains_override_allowed_domains(self):
+        """Blocked domains must win over allowlist entries."""
+        from packages.common.backend_url_safety import BackendUrlSafetyValidator
+
+        validator = BackendUrlSafetyValidator(
+            app_env="production",
+            allowed_domain_patterns=["*.example.com"],
+            blocked_domain_patterns=["docs.example.com"],
+            require_https=True,
+            strict_private_networks=True,
+            resolve_dns=True,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        )
+        result = validator.validate("https://docs.example.com/runbook")
+        assert result.is_safe is False
+
+    def test_web_search_dns_resolution_private_ip_blocked(self):
+        """DNS rebinding to private IPs must be blocked."""
+        from packages.common.backend_url_safety import BackendUrlSafetyValidator
+
+        validator = BackendUrlSafetyValidator(
+            app_env="production",
+            require_https=True,
+            strict_private_networks=True,
+            resolve_dns=True,
+            dns_resolver=lambda _host: ["10.0.0.8"],
+        )
+        result = validator.validate("https://docs.example.com/runbook")
+        assert result.is_safe is False
+
+    def test_web_search_dns_resolution_empty_result_blocked(self):
+        """DNS resolution must produce at least one public IP."""
+        from packages.common.backend_url_safety import BackendUrlSafetyValidator
+
+        validator = BackendUrlSafetyValidator(
+            app_env="production",
+            require_https=True,
+            strict_private_networks=True,
+            resolve_dns=True,
+            dns_resolver=lambda _host: [],
+        )
+        result = validator.validate("https://docs.example.com/runbook")
+        assert result.is_safe is False
+
+    def test_web_search_blocks_url_embedded_credentials(self):
+        """URLs with userinfo must be rejected before they can reach logs/state."""
+        from packages.common.backend_url_safety import BackendUrlSafetyValidator
+
+        validator = BackendUrlSafetyValidator(
+            app_env="production",
+            require_https=True,
+            strict_private_networks=True,
+            resolve_dns=True,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        )
+        result = validator.validate("https://user:s3cret@docs.example.com/runbook")
+        assert result.is_safe is False
+        assert result.reason == "URL credentials are not allowed"
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +289,8 @@ class TestWebSearchSourceTraceability:
 
     def test_result_has_retrieved_at(self):
         """Search results must include retrieved_at timestamp."""
-        from datetime import datetime, UTC
+        from datetime import UTC, datetime
+
         from packages.rag.runbook_web_context import WebSearchResult
 
         now = datetime.now(UTC)
@@ -184,7 +326,7 @@ class TestWebSearchSourceTraceability:
 # ---------------------------------------------------------------------------
 
 class TestWebSearchProviderDisabled:
-    def test_disabled_provider_returns_config_error(self):
+    def test_disabled_provider_returns_degraded(self):
         """When provider is disabled, search returns degraded, not fallback."""
         from packages.rag.web_search_provider import DisabledWebSearchProvider
 
@@ -199,6 +341,151 @@ class TestWebSearchProviderDisabled:
         provider = DisabledWebSearchProvider()
         result = provider.search("test query")
         assert result.results == []
+
+
+# ---------------------------------------------------------------------------
+# Builder safety behavior
+# ---------------------------------------------------------------------------
+
+
+class TestRunbookWebContextBuilder:
+    def test_web_search_requires_m9_enabled(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        settings = Settings(
+            m9_extensions_enabled=False,
+            runbook_web_search_enabled=True,
+            runbook_web_search_provider="fake",
+        )
+        result = RunbookWebContextBuilder(settings=settings).build_context(query="latency")
+        assert result.status == "disabled"
+
+    def test_web_search_enabled_with_provider_disabled_returns_config_error(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        settings = _enabled_settings(runbook_web_search_provider="disabled")
+        result = RunbookWebContextBuilder(settings=settings).build_context(query="latency")
+        assert result.status == "config_error"
+
+    def test_web_search_does_not_fallback_to_default_provider(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        settings = _enabled_settings(runbook_web_search_provider="unknown")
+        result = RunbookWebContextBuilder(settings=settings).build_context(query="latency")
+        assert result.status == "config_error"
+
+    def test_web_search_production_requires_allowed_domains(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        settings = _enabled_settings(app_env="production")
+        result = RunbookWebContextBuilder(settings=settings).build_context(query="latency")
+        assert result.status == "blocked"
+        assert "allowed domains" in (result.error_message or "")
+
+    def test_web_search_query_is_redacted_before_provider_call(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        provider = StaticWebSearchProvider([_item()])
+        builder = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        )
+        result = builder.build_context(
+            query="service=checkout password=s3cret token sk-abcdefghijklmnopqrstuvwxyz123456"
+        )
+        assert result.status == "ok"
+        assert provider.queries
+        assert "checkout" not in provider.queries[0]
+        assert "s3cret" not in provider.queries[0]
+        assert "sk-abcdefghijklmnopqrstuvwxyz" not in provider.queries[0]
+
+    def test_web_search_redirect_to_metadata_blocked(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        provider = StaticWebSearchProvider([
+            _item(redirect_chain=["http://169.254.169.254/latest/meta-data"])
+        ])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(query="metadata")
+        assert result.status == "blocked"
+
+    def test_web_search_redirect_revalidates_final_url(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        provider = StaticWebSearchProvider([_item(final_url="https://10.0.0.5/path")])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(query="private ip")
+        assert result.status == "blocked"
+
+    def test_web_search_response_size_limited(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        provider = StaticWebSearchProvider([_item(snippet="x" * 200)])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(runbook_web_search_max_content_bytes=12),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(query="latency")
+        assert result.status == "ok"
+        assert len(result.results[0].snippet.encode()) <= 12
+
+    def test_web_search_result_has_traceability_fields(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        provider = StaticWebSearchProvider([_item()])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(query="latency")
+        item = result.results[0]
+        assert item.original_url
+        assert item.final_url
+        assert item.retrieved_at
+        assert item.content_hash
+        assert item.redaction_version
+
+    def test_web_search_only_attaches_to_draft(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        provider = StaticWebSearchProvider([_item()])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(query="latency", purpose="approved_runbook")
+        assert result.status == "blocked"
+
+    def test_web_search_blocked_url_log_does_not_leak_credentials(self, caplog):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        caplog.set_level("WARNING", logger="packages.rag.runbook_web_context")
+        provider = StaticWebSearchProvider([
+            _item(final_url="https://user:s3cret@10.0.0.5/path?api_key=abc")
+        ])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(query="private ip")
+        assert result.status == "blocked"
+        assert "s3cret" not in caplog.text
+        assert "api_key" not in caplog.text
+        assert "user:s3cret" not in caplog.text
+
+    def test_web_search_metric_reason_uses_fixed_code(self):
+        from packages.rag.runbook_web_context import _metric_reason
+
+        reason = _metric_reason("Host 'token-secret.example.com' is blocked")
+        assert reason == "blocked_domain"
+        assert "token-secret" not in reason
 
 
 # ---------------------------------------------------------------------------
@@ -229,3 +516,37 @@ class TestWebSearchDraftOnly:
         )
         # The builder returns context for drafts — no publish path exists
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# API scope requirement
+# ---------------------------------------------------------------------------
+
+
+class TestWebSearchScopeRequirement:
+    def test_web_search_requires_runbook_review_and_web_search_scope(self):
+        from apps.api.routers.runbooks import _require_web_search_scopes
+
+        request = SimpleNamespace(
+            state=SimpleNamespace(api_key={"scopes": ["runbook:review"]})
+        )
+        with pytest.raises(HTTPException) as exc:
+            _require_web_search_scopes(
+                request,  # type: ignore[arg-type]
+                settings=Settings(api_key_auth_enabled=True),
+            )
+        assert exc.value.status_code == 403
+        assert "runbook:web_search" in exc.value.detail
+
+    def test_web_search_allows_both_required_scopes(self):
+        from apps.api.routers.runbooks import _require_web_search_scopes
+
+        request = SimpleNamespace(
+            state=SimpleNamespace(
+                api_key={"scopes": ["runbook:review", "runbook:web_search"]}
+            )
+        )
+        _require_web_search_scopes(
+            request,  # type: ignore[arg-type]
+            settings=Settings(api_key_auth_enabled=True),
+        )

@@ -141,7 +141,7 @@ Failure modes:
 POST /api/runbooks/web-search
         |
         v
-require scope: runbook:review OR runbook:web_search
+require scopes: runbook:review AND runbook:web_search
         |
         v
 RunbookWebContextBuilder.build_context()
@@ -151,7 +151,7 @@ RunbookWebContextBuilder.build_context()
         +--> production allowed-domain requirement
         +--> redact query
         +--> WebSearchProvider.search()
-        +--> validate final URLs
+        +--> validate original URLs, redirect chain, final URLs, and DNS results
         |
         v
 WebSearchResponse(status, redacted query, traceable results)

@@ -37,7 +37,7 @@ _PRIVATE_KEY_RE = re.compile(
 )
 # Internal URLs (localhost, 127.x, ::1, link-local, metadata endpoints)
 _INTERNAL_URL_RE = re.compile(
-    r"""https?://(?:localhost|127\.\d+\.\d+\.\d+|\[::1\]|169\.254\.\d+\.\d+|metadata\.google\.internal|100\.\d+\.\d+\.\d+)(?:[/:][^\s"')\]}>]*|)""",
+    r"""https?://(?:localhost|127\.\d+\.\d+\.\d+|\[::1\]|169\.254\.\d+\.\d+|metadata\.google\.internal|100\.\d+\.\d+\.\d+|[A-Za-z0-9.-]+(?:\.svc|\.svc\.cluster\.local|\.cluster\.local))(?:[/:][^\s"')\]}>]*|)""",
     re.IGNORECASE,
 )
 # Private IPs (10.x, 172.16-31.x, 192.168.x)
@@ -55,6 +55,12 @@ _URL_CREDENTIAL_RE = re.compile(
 # Kubernetes namespace references (for redaction in prompts)
 _NAMESPACE_RE = re.compile(
     r"""\bnamespace\s*[:=]\s*["']?[\w-]+["']?""",
+    re.IGNORECASE,
+)
+# Service/application names in external-search queries can identify internal
+# topology, so redact keyed references while preserving generic prose.
+_SERVICE_NAME_RE = re.compile(
+    r"""\b(?:service|service_name|app|application)\s*[:=]\s*["']?[\w.-]+["']?""",
     re.IGNORECASE,
 )
 
@@ -91,6 +97,7 @@ _REDACTION_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("private_ip", _PRIVATE_IP_RE),
     ("raw_token", _TOKEN_PATTERN_RE),
     ("namespace", _NAMESPACE_RE),
+    ("service_name", _SERVICE_NAME_RE),
 ]
 
 

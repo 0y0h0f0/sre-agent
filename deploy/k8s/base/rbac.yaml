@@ -11,17 +11,21 @@ metadata:
 rules:
   # === Read-only diagnostics (collect_k8s node) ===
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "events", "namespaces", "endpoints"]
+    resources: ["pods", "pods/log", "services", "events", "namespaces", "endpoints", "configmaps"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
     verbs: ["get", "list"]
 
   # === Discovery (K8sDiscovery + BackendEndpointDetector) ===
-  # Included above: services, endpoints, namespaces, deployments, statefulsets, daemonsets
+  # Included above: services, endpoints, configmaps, ingresses, namespaces,
+  # deployments, statefulsets, daemonsets
 
   # === Executor (only needed when EXECUTOR_BACKEND=live) ===
   # restart_pod / restart_service: patch Deployment annotation

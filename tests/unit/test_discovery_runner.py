@@ -6,8 +6,10 @@ from unittest.mock import MagicMock
 
 from packages.discovery.backend_endpoints import BackendEndpointDetector, BackendEndpoints
 from packages.discovery.k8s_discovery import (
+    K8sConfigMap,
     K8sDiscovery,
     K8sDiscoveryResult,
+    K8sPod,
     K8sService,
     K8sUnavailableError,
     K8sWorkload,
@@ -67,8 +69,28 @@ def _mock_k8s_discovery():
             K8sService(name="gateway", namespace="prod", selector={"app": "gateway"}),
         ],
         workloads=[
-            K8sWorkload(name="api", namespace="prod", kind="Deployment"),
+            K8sWorkload(
+                name="api",
+                namespace="prod",
+                kind="Deployment",
+                config_map_refs=["api-config"],
+            ),
             K8sWorkload(name="gateway", namespace="prod", kind="Deployment"),
+        ],
+        pods=[
+            K8sPod(
+                name="api-abc",
+                namespace="prod",
+                labels={"app": "api"},
+                owner_references=[{"kind": "Deployment", "name": "api"}],
+            ),
+        ],
+        config_maps=[
+            K8sConfigMap(
+                name="api-config",
+                namespace="prod",
+                service_refs=[{"key": "gateway_url", "target_service": "gateway.prod"}],
+            ),
         ],
         namespaces=["prod"],
     )
@@ -116,6 +138,10 @@ class TestRunnerSuccess:
         assert result.status == "succeeded"
         assert result.total_services_discovered >= 2
         assert len(result.metric_mappings) > 0
+        assert len(result.workload_bindings) == 1
+        assert result.workload_bindings[0].service_name == "api"
+        assert len(result.service_edges) == 1
+        assert result.service_edges[0].edge_type == "configmap"
         assert result.duration_seconds >= 0
 
     def test_runner_output_includes_warnings_list(self):
@@ -131,6 +157,27 @@ class TestRunnerSuccess:
         has_loki_warning = any("loki" in w.lower() for w in result.warnings)
         has_jaeger_warning = any("jaeger" in w.lower() for w in result.warnings)
         assert has_loki_warning or has_jaeger_warning
+
+    def test_runner_accepts_real_jaeger_client_list_services(self):
+        """Runner works with JaegerDiscoveryClient, not only discover_services mocks."""
+        from packages.discovery.jaeger_discovery import JaegerDiscoveryClient
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"data": ["api"]}
+        response.text = ""
+        http_client = MagicMock()
+        http_client.get.return_value = response
+        runner = DiscoveryRunner(
+            k8s=_mock_k8s_discovery(),
+            prom_client=_mock_prom_client(),
+            jaeger_client=JaegerDiscoveryClient(
+                "http://jaeger-query:16686",
+                client=http_client,
+            ),
+        )
+        result = runner.run()
+        assert any(service.name == "api" for service in result.services)
 
 
 # ---------------------------------------------------------------------------

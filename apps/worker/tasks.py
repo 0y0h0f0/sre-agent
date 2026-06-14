@@ -1034,12 +1034,12 @@ def _build_discovery_runner(settings: Any) -> Any:
         except Exception:
             pass
 
-    # Build backend endpoint detector from K8s results.
+    # Build backend endpoint detector; DiscoveryRunner passes the K8s result
+    # from the same run into detect().
     backend_detector = None
     if k8s is not None:
         try:
-            k8s_result = k8s.discover_all()
-            backend_detector = BackendEndpointDetector(k8s_result.services)
+            backend_detector = BackendEndpointDetector()
         except Exception:
             pass
 

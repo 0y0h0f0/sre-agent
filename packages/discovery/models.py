@@ -54,14 +54,43 @@ class CapabilityMatrix(BaseModel):
 class BackendEndpoint(BaseModel):
     """Discovered observability backend endpoint."""
 
-    backend_type: Literal["prometheus", "loki", "jaeger", "alertmanager"]
+    backend_type: Literal["prometheus", "loki", "jaeger", "alertmanager", "tempo"]
     url: str
     source: str
-    status: Literal["detected_only", "requires_review", "ready", "degraded", "unavailable"]
+    status: Literal[
+        "detected_only",
+        "requires_review",
+        "ready",
+        "degraded",
+        "unavailable",
+        "rejected",
+    ]
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     evidence: dict[str, Any] = Field(default_factory=dict)
     auth_required_unknown: bool = True
     degraded_reason: str | None = None
+
+
+class WorkloadBindingModel(BaseModel):
+    """A derived Service -> Workload binding."""
+
+    service_name: str
+    workload_name: str
+    workload_kind: str = ""
+    namespace: str | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class ServiceEdgeModel(BaseModel):
+    """A derived service-to-service dependency edge."""
+
+    source_service: str
+    target_service: str
+    edge_type: Literal["manual", "trace", "env", "configmap"]
+    protocol: str = "unknown"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class DiscoveryResult(BaseModel):
@@ -72,6 +101,8 @@ class DiscoveryResult(BaseModel):
     capability_matrix: list[CapabilityMatrix] = Field(default_factory=list)
     metric_mappings: list[MetricMapping] = Field(default_factory=list)
     backend_endpoints: list[BackendEndpoint] = Field(default_factory=list)
+    workload_bindings: list[WorkloadBindingModel] = Field(default_factory=list)
+    service_edges: list[ServiceEdgeModel] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     degraded_signals: list[str] = Field(default_factory=list)
     total_metrics_scanned: int = 0

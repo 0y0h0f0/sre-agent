@@ -27,6 +27,14 @@ class TestJaegerDiscoveryClient:
         assert result.status == "available"
         assert "checkout" in result.available_services
 
+    def test_discover_services_alias(self):
+        mock = MagicMock(spec=httpx.Client)
+        mock.get.return_value = _resp(200, {"data": ["checkout"]})
+        c = JaegerDiscoveryClient("http://localhost:16686", client=mock)
+        result = c.discover_services()
+        assert result.status == "available"
+        assert result.available_services == ["checkout"]
+
     def test_unavailable_degraded(self):
         mock = MagicMock(spec=httpx.Client)
         mock.get.side_effect = httpx.TimeoutException("timeout")

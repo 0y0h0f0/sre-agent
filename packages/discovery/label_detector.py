@@ -9,7 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 _CANDIDATE_LABEL_KEYS = [
-    "app", "app.kubernetes.io/name", "service", "name", "component",
+    "app",
+    "app.kubernetes.io/name",
+    "service",
+    "job",
+    "component",
+    "deployment",
+    "k8s-app",
+    "name",
 ]
 
 
@@ -43,6 +50,14 @@ def detect_k8s_service_label(
 
     best_key = max(scores, key=scores.get)  # type: ignore[arg-type]
     best_coverage = scores[best_key]
+    if best_coverage == 0.0:
+        return LabelConvention(
+            service_label_key=None,
+            confidence=0.0,
+            coverage=0.0,
+            evidence=scores,
+            requires_review=True,
+        )
 
     alternatives = sorted(
         [k for k in scores if k != best_key and scores[k] > 0.1],

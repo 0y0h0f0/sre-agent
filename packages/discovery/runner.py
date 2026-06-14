@@ -27,7 +27,9 @@ from packages.discovery.models import (
     DiscoveryCostControl,
     DiscoveryResult,
     MetricMapping,
+    ServiceEdgeModel,
     ServiceInfo,
+    WorkloadBindingModel,
 )
 from packages.discovery.prom_discovery import PrometheusClient, detect_metrics_service_label
 from packages.discovery.topology import (
@@ -114,8 +116,14 @@ class DiscoveryRunner:
         )
 
         # --- Phase 7: Derive topology (results enrich the capability matrix) ---
-        derive_workload_bindings(k8s_result)
-        derive_service_edges(k8s_result, trace_services=jaeger_services)
+        workload_bindings = [
+            _convert_workload_binding(binding)
+            for binding in derive_workload_bindings(k8s_result)
+        ]
+        service_edges = [
+            _convert_service_edge(edge)
+            for edge in derive_service_edges(k8s_result, trace_services=jaeger_services)
+        ]
 
         # --- Phase 8: Build capability matrix ---
         capability_matrix = self._build_capability_matrix(
@@ -141,6 +149,8 @@ class DiscoveryRunner:
             capability_matrix=capability_matrix,
             metric_mappings=list(metric_mappings.values()) if metric_mappings else [],
             backend_endpoints=backend_endpoints,
+            workload_bindings=workload_bindings,
+            service_edges=service_edges,
             warnings=warnings,
             degraded_signals=degraded_signals,
             total_metrics_scanned=len(metric_mappings) if metric_mappings else 0,
@@ -203,7 +213,7 @@ class DiscoveryRunner:
             degraded_signals.append("backend_endpoints_unavailable")
             return []
         try:
-            raw_endpoints = list(self._backend_detector.detect(k8s_result.services))
+            raw_endpoints = list(self._backend_detector.detect(k8s_result))
         except Exception as exc:
             warnings.append(f"BackendEndpointDetector error: {exc}")
             degraded_signals.append("backend_endpoints_unavailable")
@@ -306,7 +316,10 @@ class DiscoveryRunner:
             return []
 
         try:
-            result = self._jaeger_client.discover_services()
+            if hasattr(self._jaeger_client, "discover_services"):
+                result = self._jaeger_client.discover_services()
+            else:
+                result = self._jaeger_client.list_services()
             if result.status in ("degraded", "unavailable"):
                 warnings.append(
                     f"Jaeger discovery {result.status}: {result.degraded_reason}"
@@ -429,4 +442,28 @@ def _convert_backend_endpoint(ep: BackendEndpoints) -> BackendEndpoint:
         evidence=ep.evidence,
         auth_required_unknown=ep.auth_required_unknown,
         degraded_reason=ep.degraded_reason,
+    )
+
+
+def _convert_workload_binding(binding: Any) -> WorkloadBindingModel:
+    """Convert topology WorkloadBinding dataclass to DiscoveryResult model."""
+    return WorkloadBindingModel(
+        service_name=binding.service_name,
+        workload_name=binding.workload_name,
+        workload_kind=binding.workload_kind,
+        namespace=binding.namespace,
+        confidence=binding.confidence,
+        evidence=binding.evidence,
+    )
+
+
+def _convert_service_edge(edge: Any) -> ServiceEdgeModel:
+    """Convert topology ServiceEdge dataclass to DiscoveryResult model."""
+    return ServiceEdgeModel(
+        source_service=edge.source_service,
+        target_service=edge.target_service,
+        edge_type=edge.strategy,
+        protocol=edge.protocol,
+        confidence=edge.confidence,
+        evidence=edge.evidence,
     )

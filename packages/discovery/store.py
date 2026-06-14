@@ -78,6 +78,12 @@ class DiscoveryStore:
                 "warnings": result.warnings,
                 "degraded_signals": result.degraded_signals,
                 "backend_count": len(result.backend_endpoints),
+                "services": _dump_items(result.services),
+                "metric_mappings": _dump_items(result.metric_mappings),
+                "backend_endpoints": _dump_items(result.backend_endpoints),
+                "capability_matrix": _dump_items(result.capability_matrix),
+                "workload_bindings": _dump_items(result.workload_bindings),
+                "service_edges": _dump_items(result.service_edges),
             },
         )
         self._db.flush()
@@ -142,3 +148,15 @@ class DiscoveryStore:
             if proposal.status == "pending_review":
                 proposal.status = "superseded"
         self._db.flush()
+
+
+def _dump_items(items: list[Any]) -> list[dict[str, Any]]:
+    dumped: list[dict[str, Any]] = []
+    for item in items:
+        if hasattr(item, "model_dump"):
+            dumped.append(item.model_dump())
+        elif hasattr(item, "__dict__"):
+            dumped.append(dict(item.__dict__))
+        else:
+            dumped.append(dict(item))
+    return dumped

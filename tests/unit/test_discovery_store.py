@@ -5,7 +5,13 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from packages.db.models import DiscoveryProposal, DiscoveryRun
-from packages.discovery.models import DiscoveryResult
+from packages.discovery.models import (
+    DiscoveryResult,
+    MetricMapping,
+    ServiceEdgeModel,
+    ServiceInfo,
+    WorkloadBindingModel,
+)
 from packages.discovery.store import DiscoveryStore
 
 
@@ -40,6 +46,56 @@ class TestDiscoveryStore:
         assert run.status == "succeeded"
         assert run.finished_at is not None
         assert run.summary["total_services_discovered"] == 3
+
+    def test_finish_run_persists_discovery_detail_summary(self, db_session: Session):
+        """finish_run stores details consumed by discovery read APIs."""
+        store = DiscoveryStore(db_session)
+        run = store.create_run(source="manual_rerun")
+        db_session.flush()
+
+        result = DiscoveryResult(
+            run_id=run.discovery_run_id,
+            services=[
+                ServiceInfo(
+                    name="checkout",
+                    namespace="prod",
+                    labels={"app": "checkout"},
+                    sources=["k8s_service"],
+                )
+            ],
+            metric_mappings=[
+                MetricMapping(
+                    semantic_type="latency",
+                    metric_name="http_request_duration_seconds_bucket",
+                    status="available",
+                )
+            ],
+            workload_bindings=[
+                WorkloadBindingModel(
+                    service_name="checkout",
+                    workload_name="checkout",
+                    workload_kind="Deployment",
+                    namespace="prod",
+                )
+            ],
+            service_edges=[
+                ServiceEdgeModel(
+                    source_service="checkout",
+                    target_service="payments.prod",
+                    edge_type="configmap",
+                    confidence=0.5,
+                    evidence={"configmap": "checkout-config"},
+                )
+            ],
+            status="succeeded",
+        )
+        store.finish_run(run, result, status="succeeded")
+        db_session.flush()
+
+        assert run.summary["services"][0]["name"] == "checkout"
+        assert run.summary["metric_mappings"][0]["semantic_type"] == "latency"
+        assert run.summary["workload_bindings"][0]["service_name"] == "checkout"
+        assert run.summary["service_edges"][0]["edge_type"] == "configmap"
 
     def test_finish_run_degraded(self, db_session: Session):
         """finish_run records degraded status."""

@@ -139,6 +139,10 @@ class JaegerDiscoveryClient:
             evidence={"service_count": len(service_names)},
         )
 
+    def discover_services(self) -> TraceServiceDiscoveryResult:
+        """Compatibility wrapper used by DiscoveryRunner."""
+        return self.list_services()
+
     def cross_validate_with_k8s(
         self,
         jaeger_services: list[str],

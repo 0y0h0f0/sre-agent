@@ -26,6 +26,7 @@ class TestDetectK8sServiceLabel:
     def test_low_coverage_requires_review(self):
         labels = [{"other": "x"}]
         result = detect_k8s_service_label(labels)
+        assert result.service_label_key is None
         assert result.requires_review
 
     def test_alternatives_recorded(self):
@@ -51,3 +52,9 @@ class TestDetectK8sServiceLabel:
         result = detect_k8s_service_label([])
         assert result.service_label_key is None
         assert result.requires_review
+
+    def test_extended_candidate_keys(self):
+        labels = [{"k8s-app": "dns"}, {"k8s-app": "metrics"}]
+        result = detect_k8s_service_label(labels)
+        assert result.service_label_key == "k8s-app"
+        assert result.coverage == 1.0

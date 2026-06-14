@@ -207,6 +207,7 @@ class Settings(BaseSettings):
     # (runbook_llm_generation_enabled already declared above, preserved for M8 compat)
     # LLM incident vs runbook diff analysis (PR 9.3).
     llm_incident_diff_enabled: bool = False
+    min_incident_diff_evidence_refs: int = Field(default=5, ge=1)
     # M9 Tempo endpoint auto-discovery (PR 9.6). Production never auto-publishes.
     tempo_discovery_enabled: bool = False
     # M9 Grafana unified alerting webhook ingest (PR 9.7).

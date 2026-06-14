@@ -177,6 +177,7 @@ CI and deterministic tests must use FakeLLM. Real LLMs are for manual demos/eval
 | `GRAFANA_WEBHOOK_SECRET_REF` | empty | Secret reference for Grafana webhook integrations. |
 | `GRAFANA_WEBHOOK_MAX_BYTES` | `256000` | Grafana webhook payload size policy. |
 | `LLM_INCIDENT_DIFF_ENABLED` | `false` | M9 incident/runbook diff gate. |
+| `MIN_INCIDENT_DIFF_EVIDENCE_REFS` | `5` | Evidence ref threshold when no report/feedback/action/version evidence is present. |
 | `TEMPO_DISCOVERY_ENABLED` | `false` | M9 Tempo endpoint discovery gate. |
 | `GRAFANA_ALERT_INGEST_ENABLED` | `false` | M9 Grafana webhook helper gate. |
 | `SEMANTIC_RUNBOOK_SEARCH_ENABLED` | `false` | M9 semantic/hybrid runbook search gate. |

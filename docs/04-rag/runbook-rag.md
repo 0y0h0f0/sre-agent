@@ -166,6 +166,8 @@ AmendmentDraft(status=pending_review)
 ```
 
 证据不足时返回 `skipped_insufficient_evidence`，不会调用 LLM。
+Review 可以把 amendment 从 `pending_review` 置为 `approved` 或 `rejected`；
+`applied` 是独立状态，只有已批准、带 evidence refs 的 `proposed_patch` 才能应用到目标 draft/version。
 
 ## Web 搜索 (M9)
 

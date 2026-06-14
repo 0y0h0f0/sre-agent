@@ -2,18 +2,38 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 import pytest
 
 from packages.agent.llm.fake_adapter import FakeLLMAdapter
 from packages.common.feature_flags import is_m9_subfeature_enabled
-from packages.common.redaction import redact_text
 from packages.common.settings import Settings
 from packages.rag.incident_diff import (
-    IncidentDiffAnalyzer,
     AmendmentProposal,
     AmendmentType,
-    DiffResult,
+    IncidentDiffAnalyzer,
 )
+
+
+class StaticDiffLLM:
+    provider = "fake"
+
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+        self.calls = 0
+
+    def invoke(
+        self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
+    ) -> str:
+        self.calls += 1
+        return json.dumps(self.payload)
+
+    def generate_json(
+        self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
+    ) -> Any:
+        raise AssertionError("incident diff should call invoke(), not generate_json()")
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +90,9 @@ class TestEvidenceThreshold:
 
     def test_does_not_call_llm_when_skipped(self):
         """When evidence is insufficient, LLM is never invoked."""
-        analyzer = self._make_analyzer()
+        llm = StaticDiffLLM([])
+        settings = Settings(m9_extensions_enabled=True, llm_incident_diff_enabled=True)
+        analyzer = IncidentDiffAnalyzer(settings=settings, llm=llm)
         result = analyzer.analyze(
             service="checkout",
             fault_type="high_5xx",
@@ -78,6 +100,7 @@ class TestEvidenceThreshold:
         )
         assert result.status == "skipped_insufficient_evidence"
         assert result.proposals == []
+        assert llm.calls == 0
 
     def test_proceeds_with_diagnosis_report(self):
         analyzer = self._make_analyzer()
@@ -129,6 +152,23 @@ class TestEvidenceThreshold:
         )
         assert result.status != "skipped_insufficient_evidence"
 
+    def test_min_evidence_refs_is_configurable(self):
+        llm = StaticDiffLLM([])
+        settings = Settings(
+            m9_extensions_enabled=True,
+            llm_incident_diff_enabled=True,
+            min_incident_diff_evidence_refs=2,
+        )
+        analyzer = IncidentDiffAnalyzer(settings=settings, llm=llm)
+        result = analyzer.analyze(
+            service="checkout",
+            fault_type="high_5xx",
+            approved_runbook="## Detection\nCheck error rate.",
+            evidence_refs=["evd_001", "evd_002"],
+        )
+        assert result.status == "generated"
+        assert llm.calls == 1
+
 
 # ---------------------------------------------------------------------------
 # Diff result and proposals
@@ -160,7 +200,7 @@ class TestDiffResult:
         """The analyzer returns proposals — it never modifies the source runbook."""
         original = "## Detection\nCheck error rate.\n## Actions\n1. Restart"
         analyzer = self._make_analyzer()
-        result = analyzer.analyze(
+        analyzer.analyze(
             service="checkout",
             fault_type="high_5xx",
             approved_runbook=original,
@@ -194,7 +234,6 @@ class TestDiffResult:
             approved_runbook="## Detection\nCheck error rate.",
             diagnosis_report="Possible DB pool issue.",
         )
-        low_conf = [p for p in result.proposals if p.confidence == "low"]
         # Low confidence proposals are allowed even with minimal evidence
         for p in result.proposals:
             if p.confidence == "high" and not p.evidence_refs:
@@ -202,6 +241,90 @@ class TestDiffResult:
                     f"High-confidence proposal '{p.amendment_type.value}' "
                     "must have evidence refs"
                 )
+
+    def test_rejects_apply_item_without_evidence_refs(self):
+        llm = StaticDiffLLM([
+            {
+                "amendment_type": "missing_step",
+                "rationale": "The runbook missed the DB pool check.",
+                "proposed_content": "Check DB pool saturation before restart.",
+                "evidence_refs": [],
+                "confidence": "high",
+            }
+        ])
+        settings = Settings(m9_extensions_enabled=True, llm_incident_diff_enabled=True)
+        analyzer = IncidentDiffAnalyzer(settings=settings, llm=llm)
+        result = analyzer.analyze(
+            service="checkout",
+            fault_type="high_5xx",
+            approved_runbook="## Detection\nCheck error rate.",
+            diagnosis_report="DB pool saturation was confirmed in the incident.",
+        )
+        assert result.status == "generated"
+        assert result.proposals[0].confidence == "low"
+        assert result.proposals[0].proposal_kind == "low_confidence_note"
+        assert result.proposals[0].can_apply is False
+
+    def test_filters_untrusted_evidence_refs(self):
+        llm = StaticDiffLLM([
+            {
+                "amendment_type": "missing_rollback",
+                "rationale": "Rollback checks were missing.",
+                "proposed_content": "Verify the previous image before rollback.",
+                "evidence_refs": ["evd_missing"],
+                "confidence": "high",
+            }
+        ])
+        settings = Settings(m9_extensions_enabled=True, llm_incident_diff_enabled=True)
+        analyzer = IncidentDiffAnalyzer(settings=settings, llm=llm)
+        result = analyzer.analyze(
+            service="checkout",
+            fault_type="high_5xx",
+            approved_runbook="## Detection\nCheck error rate.",
+            diagnosis_report="Rollback was required during the incident.",
+            evidence_refs=["evd_001"],
+        )
+        assert result.proposals[0].evidence_refs == []
+        assert result.proposals[0].can_apply is False
+
+    def test_detects_required_amendment_types(self):
+        llm = StaticDiffLLM([
+            {
+                "amendment_type": "missing_step",
+                "rationale": "Add DB pool check.",
+                "proposed_content": "Check DB pool saturation.",
+                "evidence_refs": ["evd_001"],
+                "confidence": "high",
+            },
+            {
+                "amendment_type": "outdated_metric",
+                "rationale": "Metric name changed.",
+                "proposed_content": "Use http_requests_total instead.",
+                "evidence_refs": ["evd_002"],
+                "confidence": "high",
+            },
+            {
+                "amendment_type": "missing_rollback",
+                "rationale": "Rollback step was needed.",
+                "proposed_content": "Verify rollback target before applying.",
+                "evidence_refs": ["evd_003"],
+                "confidence": "high",
+            },
+        ])
+        settings = Settings(m9_extensions_enabled=True, llm_incident_diff_enabled=True)
+        analyzer = IncidentDiffAnalyzer(settings=settings, llm=llm)
+        result = analyzer.analyze(
+            service="checkout",
+            fault_type="high_5xx",
+            approved_runbook="## Detection\nCheck error rate.",
+            evidence_refs=["evd_001", "evd_002", "evd_003", "evd_004", "evd_005"],
+        )
+        assert {p.amendment_type for p in result.proposals} == {
+            AmendmentType.MISSING_STEP,
+            AmendmentType.OUTDATED_METRIC,
+            AmendmentType.MISSING_ROLLBACK,
+        }
+        assert all(p.can_apply for p in result.proposals)
 
     def test_external_provider_requires_allow(self):
         """External LLM requires LLM_EXTERNAL_PROVIDER_ALLOWED=true."""

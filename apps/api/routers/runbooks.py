@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from apps.api.dependencies import get_app_settings, get_db, require_scope
@@ -34,6 +34,7 @@ from packages.common.settings import Settings
 router = APIRouter(prefix="/api/runbooks", tags=["runbooks"])
 TopK = Annotated[int, Query(ge=1, le=20)]
 SearchQuery = Annotated[str, Query(alias="q", min_length=1)]
+_EXTERNAL_LLM_PROVIDERS = frozenset({"openai", "deepseek", "anthropic"})
 
 
 @router.post("/ingest", response_model=RunbookIngestResponse)
@@ -173,18 +174,57 @@ def web_search(
 # M9: LLM Incident Diff Analysis (PR 9.3)
 # ---------------------------------------------------------------------------
 
-_require_incident_diff = require_scope("runbook:review", "incident:llm_diff")
+
+def _require_incident_diff_scopes(
+    request: Request,
+    settings: Settings = Depends(get_app_settings),
+) -> None:
+    if not settings.api_key_auth_enabled:
+        return
+    api_key: dict[str, object] = getattr(request.state, "api_key", {})
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    raw_scopes = api_key.get("scopes", [])
+    scopes = set(raw_scopes) if isinstance(raw_scopes, list) else set()
+    required = {"runbook:review", "incident:llm_diff"}
+    missing = required.difference(scopes)
+    if missing:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Missing required scope(s): {', '.join(sorted(missing))}",
+        )
+    if (
+        settings.llm_provider.strip().lower() in _EXTERNAL_LLM_PROVIDERS
+        and not {"llm:invoke", "ai:external"}.intersection(scopes)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="External LLM incident diff requires llm:invoke or ai:external",
+        )
+
+
+def _request_actor(request: Request) -> str:
+    api_key: dict[str, object] = getattr(request.state, "api_key", {})
+    key_id = api_key.get("key_id") if isinstance(api_key, dict) else None
+    return str(key_id or "anonymous")
 
 
 @router.post("/incident-diff", response_model=IncidentDiffResponse)
 def incident_diff(
     payload: IncidentDiffRequest,
+    request: Request,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_app_settings),
-    _scope: None = Depends(_require_incident_diff),
+    _scope: None = Depends(_require_incident_diff_scopes),
 ) -> IncidentDiffResponse:
     llm = build_llm(settings)
-    return RunbookService(db).llm_incident_diff(payload, llm, settings)
+    return RunbookService(db).llm_incident_diff(
+        payload,
+        llm,
+        settings,
+        actor=_request_actor(request),
+        request_id=getattr(request.state, "request_id", None),
+    )
 
 
 @router.get("/amendments", response_model=list[AmendmentDraftItem])
@@ -200,9 +240,14 @@ def list_amendments(
 def review_amendment(
     amendment_id: str,
     payload: AmendmentReviewRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> AmendmentDraftItem:
-    return RunbookService(db).review_amendment(amendment_id, payload)
+    return RunbookService(db).review_amendment(
+        amendment_id,
+        payload,
+        request_id=getattr(request.state, "request_id", None),
+    )
 
 
 # ---------------------------------------------------------------------------

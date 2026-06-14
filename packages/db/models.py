@@ -887,14 +887,19 @@ class AmendmentDraft(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     amendment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    summary_id: Mapped[str] = mapped_column(
+    summary_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("runbook_feedback_summaries.summary_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     service: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     fault_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="runbook_feedback"
+    )
+    related_incident_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    runbook_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # The target runbook draft this amendment proposes to change
     target_draft_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Amendment content — proposed additions/changes to the runbook
@@ -912,6 +917,10 @@ class AmendmentDraft(Base):
     evidence_action_stats: Mapped[dict[str, Any]] = mapped_column(
         JSONType, nullable=False, default=dict
     )
+    confidence: Mapped[str] = mapped_column(String(16), nullable=False, default="high")
+    proposal_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="proposed_patch"
+    )
     # Review state — amendments always enter review queue
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending_review", index=True
@@ -919,6 +928,16 @@ class AmendmentDraft(Base):
     reviewer: Mapped[str | None] = mapped_column(String(128), nullable=True)
     review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    applied_to_draft_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    applied_to_runbook_version_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_by_amendment_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

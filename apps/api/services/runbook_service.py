@@ -31,6 +31,7 @@ from packages.common.settings import Settings
 from packages.common.time import utc_now
 from packages.db.models import AmendmentDraft as AmendmentDraftModel
 from packages.db.models import RunbookDraft
+from packages.db.repositories.audit_logs import AuditLogRepository
 from packages.db.repositories.incidents import IncidentRepository
 from packages.db.repositories.runbook_drafts import RunbookDraftRepository
 from packages.db.repositories.runbook_versions import RunbookVersionRepository
@@ -48,6 +49,9 @@ from packages.rag.splitter import split_markdown_document
 from packages.rag.template_extractor import TemplateExtractor
 
 logger = logging.getLogger(__name__)
+
+_AMENDMENT_REVIEW_STATUSES = {"approved", "rejected", "applied", "superseded"}
+_AMENDMENT_TERMINAL_STATUSES = {"rejected", "applied", "superseded"}
 
 
 class RunbookService:
@@ -324,6 +328,9 @@ class RunbookService:
         request: IncidentDiffRequest,
         llm: LLMProvider,
         settings: Settings,
+        *,
+        actor: str = "api",
+        request_id: str | None = None,
     ) -> IncidentDiffResponse:
         """Analyze incident vs approved runbook differences via LLM.
 
@@ -342,7 +349,10 @@ class RunbookService:
                 if request.action_execution_results
                 else None
             ),
-            linked_approved_runbook_version=request.linked_approved_runbook_version,
+            linked_approved_runbook_version=(
+                request.approved_runbook_version_id
+                or request.linked_approved_runbook_version
+            ),
             evidence_refs=request.evidence_refs,
         )
 
@@ -355,17 +365,28 @@ class RunbookService:
         # Persist each proposal as an AmendmentDraft.
         amendment_ids: list[str] = []
         proposal_items: list[dict[str, object]] = []
+        runbook_version_id = (
+            request.approved_runbook_version_id
+            or request.linked_approved_runbook_version
+        )
+        audit_incident_id = self._existing_incident_id(request.incident_id)
+        audit_repo = AuditLogRepository(self.db)
         for p in result.proposals:
             amendment = AmendmentDraftModel(
                 amendment_id=new_id("amd_"),
-                summary_id="",  # Not linked to M7 feedback summary
+                summary_id=None,  # M9 diff is not linked to an M7 feedback summary
                 service=request.service,
                 fault_type=request.fault_type,
+                source="llm_incident_diff",
+                related_incident_id=request.incident_id,
+                runbook_version_id=runbook_version_id,
                 target_draft_id=None,
                 amendment_type=p.amendment_type.value,
                 proposed_content=p.proposed_content,
                 rationale=p.rationale,
                 evidence_incident_ids=list(p.evidence_refs),
+                confidence=p.confidence,
+                proposal_kind=p.proposal_kind,
                 status="pending_review",
             )
             self.db.add(amendment)
@@ -373,11 +394,31 @@ class RunbookService:
             amendment_ids.append(amendment.amendment_id)
             proposal_items.append({
                 "amendment_type": p.amendment_type.value,
-                "rationale": p.rationale[:200],
-                "proposed_content": p.proposed_content[:200],
+                "rationale": p.rationale,
+                "proposed_content": p.proposed_content,
                 "evidence_refs": p.evidence_refs,
                 "confidence": p.confidence,
+                "proposal_kind": p.proposal_kind,
+                "can_apply": p.can_apply,
             })
+            audit_repo.create(
+                incident_id=audit_incident_id,
+                actor=actor,
+                action="runbook.amendment_draft.created",
+                resource_type="amendment_draft",
+                resource_id=amendment.amendment_id,
+                details={
+                    "source": "llm_incident_diff",
+                    "incident_id": request.incident_id,
+                    "runbook_version_id": runbook_version_id,
+                    "amendment_type": p.amendment_type.value,
+                    "evidence_refs": list(p.evidence_refs),
+                    "confidence": p.confidence,
+                    "proposal_kind": p.proposal_kind,
+                },
+                source="api",
+                request_id=request_id,
+            )
 
         self.db.commit()
 
@@ -401,13 +442,17 @@ class RunbookService:
         return [_amendment_to_item(r) for r in rows]
 
     def review_amendment(
-        self, amendment_id: str, request: AmendmentReviewRequest
+        self,
+        amendment_id: str,
+        request: AmendmentReviewRequest,
+        *,
+        request_id: str | None = None,
     ) -> AmendmentDraftItem:
         from sqlalchemy import select as _select
 
-        if request.status not in ("approved", "rejected"):
+        if request.status not in _AMENDMENT_REVIEW_STATUSES:
             raise ValidationAppError(
-                "status must be 'approved' or 'rejected'",
+                "status must be one of approved, rejected, applied, superseded",
                 details={"status": request.status},
             )
         stmt = _select(AmendmentDraftModel).where(
@@ -417,12 +462,136 @@ class RunbookService:
         if amendment is None:
             raise NotFoundError("amendment", amendment_id)
 
-        amendment.status = request.status
+        self._validate_amendment_transition(amendment, request)
+        previous_status = amendment.status
+
         amendment.reviewer = request.reviewer
         amendment.review_comment = request.comment
         amendment.reviewed_at = utc_now()
+        if request.status == "approved":
+            amendment.status = "approved"
+            amendment.approved_by = request.reviewer
+            amendment.approved_at = amendment.reviewed_at
+        elif request.status == "applied":
+            amendment.status = "applied"
+            amendment.applied_to_draft_id = request.applied_to_draft_id
+            amendment.applied_to_runbook_version_id = request.applied_to_runbook_version_id
+            amendment.applied_at = amendment.reviewed_at
+        elif request.status == "superseded":
+            amendment.status = "superseded"
+            amendment.superseded_by_amendment_id = request.superseded_by_amendment_id
+        else:
+            amendment.status = "rejected"
+
+        AuditLogRepository(self.db).create(
+            incident_id=self._existing_incident_id(amendment.related_incident_id),
+            actor=request.reviewer,
+            action=f"runbook.amendment.{request.status}",
+            resource_type="amendment_draft",
+            resource_id=amendment.amendment_id,
+            details={
+                "source": amendment.source,
+                "previous_status": previous_status,
+                "status": amendment.status,
+                "incident_id": amendment.related_incident_id,
+                "runbook_version_id": amendment.runbook_version_id,
+                "applied_to_draft_id": request.applied_to_draft_id,
+                "applied_to_runbook_version_id": request.applied_to_runbook_version_id,
+                "superseded_by_amendment_id": request.superseded_by_amendment_id,
+            },
+            source="api",
+            request_id=request_id,
+        )
         self.db.commit()
         return _amendment_to_item(amendment)
+
+    def _existing_incident_id(self, incident_id: str | None) -> str | None:
+        if not incident_id:
+            return None
+        if IncidentRepository(self.db).get_by_public_id(incident_id) is None:
+            return None
+        return incident_id
+
+    @staticmethod
+    def _validate_amendment_transition(
+        amendment: AmendmentDraftModel, request: AmendmentReviewRequest
+    ) -> None:
+        if amendment.status in _AMENDMENT_TERMINAL_STATUSES:
+            raise ValidationAppError(
+                "amendment is already in a terminal status",
+                details={"status": amendment.status},
+            )
+        if request.status == "approved":
+            if amendment.status != "pending_review":
+                raise ValidationAppError(
+                    "only pending_review amendments can be approved",
+                    details={"status": amendment.status},
+                )
+            if not amendment.evidence_incident_ids:
+                raise ValidationAppError(
+                    "approved amendments must include evidence refs",
+                    details={"amendment_id": amendment.amendment_id},
+                )
+            return
+        if request.status == "applied":
+            if amendment.status != "approved":
+                raise ValidationAppError(
+                    "only approved amendments can be applied",
+                    details={"status": amendment.status},
+                )
+            if not amendment.evidence_incident_ids:
+                raise ValidationAppError(
+                    "applied amendments must include evidence refs",
+                    details={"amendment_id": amendment.amendment_id},
+                )
+            if amendment.proposal_kind != "proposed_patch":
+                raise ValidationAppError(
+                    "only proposed_patch amendments can be applied",
+                    details={
+                        "amendment_id": amendment.amendment_id,
+                        "proposal_kind": amendment.proposal_kind,
+                    },
+                )
+            if not (
+                request.applied_to_draft_id
+                or request.applied_to_runbook_version_id
+            ):
+                raise ValidationAppError(
+                    "applied amendments require a target draft or runbook version",
+                    details={"amendment_id": amendment.amendment_id},
+                )
+            apply_targets = [
+                target
+                for target in (
+                    request.applied_to_draft_id,
+                    request.applied_to_runbook_version_id,
+                )
+                if target
+            ]
+            if len(apply_targets) != 1:
+                raise ValidationAppError(
+                    "applied amendments require exactly one target",
+                    details={
+                        "amendment_id": amendment.amendment_id,
+                        "applied_to_draft_id": request.applied_to_draft_id,
+                        "applied_to_runbook_version_id": (
+                            request.applied_to_runbook_version_id
+                        ),
+                    },
+                )
+            return
+        if request.status == "superseded":
+            if not request.superseded_by_amendment_id:
+                raise ValidationAppError(
+                    "superseded amendments require superseded_by_amendment_id",
+                    details={"amendment_id": amendment.amendment_id},
+                )
+            return
+        if request.status == "rejected" and amendment.status != "pending_review":
+            raise ValidationAppError(
+                "only pending_review amendments can be rejected",
+                details={"status": amendment.status},
+            )
 
     def _ingest_draft_chunks(self, draft: RunbookDraft) -> None:
         """Ingest an approved draft's content into runbook_chunks.
@@ -539,8 +708,19 @@ def _amendment_to_item(a: AmendmentDraftModel) -> AmendmentDraftItem:
         rationale=a.rationale,
         status=a.status,
         evidence_incident_ids=list(a.evidence_incident_ids or []),
+        confidence=a.confidence,
+        proposal_kind=a.proposal_kind,
+        source=a.source,
+        related_incident_id=a.related_incident_id,
+        runbook_version_id=a.runbook_version_id,
         reviewer=a.reviewer,
         review_comment=a.review_comment,
+        approved_by=a.approved_by,
+        approved_at=a.approved_at.isoformat() if a.approved_at else None,
+        applied_to_draft_id=a.applied_to_draft_id,
+        applied_to_runbook_version_id=a.applied_to_runbook_version_id,
+        applied_at=a.applied_at.isoformat() if a.applied_at else None,
+        superseded_by_amendment_id=a.superseded_by_amendment_id,
         created_at=a.created_at.isoformat(),
         updated_at=a.updated_at.isoformat(),
     )

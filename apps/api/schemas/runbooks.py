@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class RunbookIngestRequest(BaseModel):
@@ -151,6 +151,8 @@ class LLMRunbookGenerateResponse(BaseModel):
 class IncidentDiffRequest(BaseModel):
     """Request to analyze differences between an incident and an approved runbook."""
 
+    incident_id: str | None = None
+    approved_runbook_version_id: str | None = None
     service: str = Field(min_length=1, max_length=128)
     fault_type: str = Field(min_length=1, max_length=128)
     approved_runbook: str = Field(min_length=1)
@@ -169,6 +171,8 @@ class AmendmentProposalItem(BaseModel):
     proposed_content: str
     evidence_refs: list[str] = Field(default_factory=list)
     confidence: str = "low"
+    proposal_kind: str = "low_confidence_note"
+    can_apply: bool = False
 
 
 class IncidentDiffResponse(BaseModel):
@@ -184,9 +188,18 @@ class IncidentDiffResponse(BaseModel):
 class AmendmentReviewRequest(BaseModel):
     """Review an M9 amendment draft."""
 
-    status: str = Field(min_length=1)  # "approved" | "rejected"
-    reviewer: str = Field(min_length=1)
-    comment: str | None = None
+    model_config = ConfigDict(populate_by_name=True)
+
+    status: str = Field(min_length=1)
+    # "approved" | "rejected" | "applied" | "superseded"
+    reviewer: str = Field(default="operator", min_length=1)
+    comment: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("comment", "reviewer_notes"),
+    )
+    applied_to_draft_id: str | None = None
+    applied_to_runbook_version_id: str | None = None
+    superseded_by_amendment_id: str | None = None
 
 
 class AmendmentDraftItem(BaseModel):
@@ -200,8 +213,19 @@ class AmendmentDraftItem(BaseModel):
     rationale: str
     status: str
     evidence_incident_ids: list[str] = Field(default_factory=list)
+    confidence: str = "low"
+    proposal_kind: str = "low_confidence_note"
+    source: str = "runbook_feedback"
+    related_incident_id: str | None = None
+    runbook_version_id: str | None = None
     reviewer: str | None = None
     review_comment: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    applied_to_draft_id: str | None = None
+    applied_to_runbook_version_id: str | None = None
+    applied_at: str | None = None
+    superseded_by_amendment_id: str | None = None
     created_at: str
     updated_at: str
 

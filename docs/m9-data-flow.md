@@ -91,7 +91,8 @@ Failure modes:
 POST /api/runbooks/incident-diff
         |
         v
-require scope: runbook:review OR incident:llm_diff
+require scopes: runbook:review AND incident:llm_diff
+external LLM additionally requires llm:invoke OR ai:external
         |
         v
 RunbookService.llm_incident_diff()
@@ -116,13 +117,14 @@ Minimum evidence threshold:
 - operator feedback longer than 10 characters, or
 - at least one action execution result, or
 - linked approved runbook version, or
-- at least five evidence refs.
+- at least `MIN_INCIDENT_DIFF_EVIDENCE_REFS` evidence refs.
 
 Persistence:
 
 - Each generated proposal becomes one `AmendmentDraft`.
 - Review uses `POST /api/runbooks/amendments/{amendment_id}/review`.
 - Approved runbook versions are not modified by the diff call.
+- `approved` does not mean `applied`; applying requires an approved, evidence-backed `proposed_patch` and an apply target.
 
 Failure modes:
 

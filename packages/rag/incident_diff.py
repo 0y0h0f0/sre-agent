@@ -11,12 +11,13 @@ must be present before the LLM is invoked.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from packages.agent.llm.base import LLMProvider
+from packages.agent.llm.base import LLMProvider, extract_json
 from packages.common.feature_flags import is_m9_subfeature_enabled
 from packages.common.metrics import llm_incident_diff_total
 from packages.common.redaction import redact_text
@@ -24,7 +25,7 @@ from packages.common.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-_MIN_EVIDENCE_REFS = 5
+_MIN_EVIDENCE_REFS_DEFAULT = 5
 
 _DIFF_PROMPT_TEMPLATE = """\
 Analyze the differences between an SRE incident and an approved runbook.
@@ -72,6 +73,8 @@ class AmendmentProposal:
     proposed_content: str
     evidence_refs: list[str] = field(default_factory=list)
     confidence: str = "low"  # "high" | "low"
+    proposal_kind: str = "low_confidence_note"
+    can_apply: bool = False
 
 
 @dataclass
@@ -132,6 +135,7 @@ class IncidentDiffAnalyzer:
             action_results=action_execution_results,
             linked_version=linked_approved_runbook_version,
             evidence_refs=evidence_refs,
+            min_evidence_refs=self.settings.min_incident_diff_evidence_refs,
         ):
             llm_incident_diff_total.labels(status="skipped_insufficient_evidence").inc()
             return DiffResult(status="skipped_insufficient_evidence")
@@ -148,7 +152,7 @@ class IncidentDiffAnalyzer:
         prompt = _DIFF_PROMPT_TEMPLATE.format(
             service=redact_text(service).redacted_text,
             fault_type=redact_text(fault_type).redacted_text,
-            approved_runbook=approved_runbook,
+            approved_runbook=redact_text(approved_runbook).redacted_text,
             incident_context=redact_text(incident_context).redacted_text,
         )
 
@@ -163,7 +167,7 @@ class IncidentDiffAnalyzer:
             llm_incident_diff_total.labels(status="degraded").inc()
             return DiffResult(status="degraded", error_message="LLM invocation failed")
 
-        if not content or len(content.strip()) < 20:
+        if not content or not content.strip():
             llm_incident_diff_total.labels(status="degraded").inc()
             return DiffResult(status="degraded", error_message="LLM returned insufficient content")
 
@@ -194,6 +198,7 @@ class IncidentDiffAnalyzer:
         action_results: list[dict[str, Any]] | None = None,
         linked_version: str | None = None,
         evidence_refs: list[str] | None = None,
+        min_evidence_refs: int = _MIN_EVIDENCE_REFS_DEFAULT,
     ) -> bool:
         if diagnosis_report and len(diagnosis_report.strip()) > 20:
             return True
@@ -203,7 +208,7 @@ class IncidentDiffAnalyzer:
             return True
         if linked_version:
             return True
-        if evidence_refs and len(evidence_refs) >= _MIN_EVIDENCE_REFS:
+        if evidence_refs and len(evidence_refs) >= min_evidence_refs:
             return True
         return False
 
@@ -233,11 +238,9 @@ class IncidentDiffAnalyzer:
         Falls back to a single low-confidence note when JSON parsing fails
         (e.g. with FakeLLM in tests, or degraded LLM output).
         """
-        import json as _json
-
         try:
-            raw = _json.loads(content.strip())
-        except _json.JSONDecodeError:
+            raw = extract_json(content)
+        except (json.JSONDecodeError, ValueError):
             # Non-JSON output → synthesize a low-confidence reviewer note.
             logger.warning("Failed to parse LLM diff output as JSON — synthesizing note")
             return [_synthesize_note(content, available_evidence)]
@@ -251,24 +254,27 @@ class IncidentDiffAnalyzer:
                 continue
             try:
                 atype_str = str(item.get("amendment_type", ""))
-                if atype_str not in AmendmentType:
-                    continue
+                amendment_type = AmendmentType(atype_str)
                 refs = item.get("evidence_refs", [])
                 if not isinstance(refs, list):
                     refs = []
-                refs = [str(r) for r in refs]
+                refs = _trusted_evidence_refs(refs, available_evidence)
                 confidence = str(item.get("confidence", "low")).lower()
                 if confidence not in ("high", "low"):
                     confidence = "low"
                 # High confidence without evidence → downgrade to low
                 if confidence == "high" and not refs:
                     confidence = "low"
+                can_apply = bool(refs)
+                proposal_kind = "proposed_patch" if can_apply else "low_confidence_note"
                 proposals.append(AmendmentProposal(
-                    amendment_type=AmendmentType(atype_str),
+                    amendment_type=amendment_type,
                     rationale=str(item.get("rationale", ""))[:2000],
                     proposed_content=str(item.get("proposed_content", ""))[:5000],
                     evidence_refs=refs,
                     confidence=confidence,
+                    proposal_kind=proposal_kind,
+                    can_apply=can_apply,
                 ))
             except (ValueError, TypeError):
                 continue
@@ -291,6 +297,8 @@ def _synthesize_note(content: str, evidence_refs: list[str]) -> AmendmentProposa
         proposed_content=content[:1000],
         evidence_refs=evidence_refs,
         confidence="low",
+        proposal_kind="reviewer_note",
+        can_apply=False,
     )
 
 
@@ -299,3 +307,11 @@ def _format_list(items: list[dict[str, Any]]) -> str:
         f"- {item.get('action', 'unknown')}: {item.get('outcome', 'unknown')}"
         for item in items
     )
+
+
+def _trusted_evidence_refs(raw_refs: list[Any], available_evidence: list[str]) -> list[str]:
+    refs = [str(r) for r in raw_refs if str(r)]
+    if not available_evidence:
+        return []
+    allowed = set(available_evidence)
+    return [ref for ref in refs if ref in allowed]

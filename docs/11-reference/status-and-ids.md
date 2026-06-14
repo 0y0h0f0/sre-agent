@@ -177,7 +177,9 @@ Approving or rejecting a non-`waiting` approval returns conflict behavior. Appro
 | Runbook draft | `rejected` | Reviewer rejected the draft. |
 | Amendment draft | `pending_review` | Proposed change awaiting review. |
 | Amendment draft | `approved` | Reviewer approved the amendment draft. |
+| Amendment draft | `applied` | Approved amendment was merged into a target draft or runbook version. |
 | Amendment draft | `rejected` | Reviewer rejected the amendment draft. |
+| Amendment draft | `superseded` | Amendment was replaced by a newer amendment. |
 | Runbook chunk embedding | `available` | Provider embedding is usable. |
 | Runbook chunk embedding | `degraded` | Provider failed partially or fallback used. |
 | Runbook chunk embedding | `failed` | Embedding generation failed. |

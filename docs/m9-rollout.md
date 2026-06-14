@@ -125,19 +125,26 @@ Entry point: `POST /api/runbooks/incident-diff`
 
 Required scopes:
 
-- `runbook:review` or `incident:llm_diff`
+- `runbook:review` and `incident:llm_diff`
+- External cloud LLM providers additionally require `llm:invoke` or `ai:external`.
 
 Behavior:
 
-- Requires enough evidence before invoking LLM: diagnosis report, operator feedback, action results, linked approved version, or at least five evidence refs.
+- Requires enough evidence before invoking LLM: diagnosis report, operator feedback, action results, linked approved version, or at least `MIN_INCIDENT_DIFF_EVIDENCE_REFS` evidence refs.
 - Produces `AmendmentDraft(status=pending_review)` records.
 - Review uses `POST /api/runbooks/amendments/{amendment_id}/review`.
+- `approved` and `applied` are separate states; low-confidence notes without evidence cannot be applied.
+- `applied` review requests must name exactly one target: a reviewed draft or a runbook version.
 
 Rollback:
 
 ```bash
 LLM_INCIDENT_DIFF_ENABLED=false
 ```
+
+Database downgrade is not the normal rollback path for this capability. If an
+operator needs to downgrade the migration, M9 amendment rows with nullable
+`summary_id` must be handled first.
 
 ### Web Search for Runbook Enrichment
 

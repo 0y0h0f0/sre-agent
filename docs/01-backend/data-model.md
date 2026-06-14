@@ -44,7 +44,7 @@
 | `RunbookDraft` | `runbook_drafts` | `draft_id`、`fingerprint`、`incident_ids`、`service`、`incident_type`、`title`、`content`、`front_matter`、`status`、`draft_type`、`source`、`reviewer`、`source_chunk_ids`、`llm_model` | 待审 runbook 草稿；LLM 草稿不能自动发布 |
 | `RunbookVersion` | `runbook_versions` | `version_id`、`document_id`、`version_number`、`source_path`、`content_hash`、`change_reason`、`related_incident_id`、`related_draft_id`、`diff_from_previous`、`created_by` | 已发布 runbook 版本；唯一约束 `(document_id, version_number)` |
 | `RunbookFeedbackSummary` | `runbook_feedback_summaries` | `summary_id`、`service`、`fault_type`、incident/action 统计、top action 数据 | 确定性反馈聚合 |
-| `AmendmentDraft` | `amendment_drafts` | `amendment_id`、`summary_id`、`service`、`fault_type`、`target_draft_id`、`amendment_type`、`section_path`、`proposed_content`、`rationale`、evidence ids、`status` | runbook 修订草稿；M9 diff 输出也落到这里 |
+| `AmendmentDraft` | `amendment_drafts` | `amendment_id`、nullable `summary_id`、`service`、`fault_type`、`source`、related incident/version ids、`amendment_type`、`proposed_content`、`rationale`、evidence ids、`confidence`、`proposal_kind`、`status`、approve/apply metadata | runbook 修订草稿；M9 diff 输出也落到这里 |
 
 ### Memory 与 Eval
 
@@ -126,7 +126,7 @@ c3d4e5f6a7b8_alert_poll_cursor.py
 | EffectiveConfigVersion | `published -> superseded/rolled_back/revoked` |  |
 | DiscoveryOverride | active until `expires_at` or `revoked_at` |  |
 | RunbookDraft | `draft -> pending_review -> approved/rejected` |  |
-| AmendmentDraft | `pending_review -> approved/rejected` |  |
+| AmendmentDraft | `pending_review -> approved/rejected`，`approved -> applied/superseded` |  |
 
 ## Repository 边界
 

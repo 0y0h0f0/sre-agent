@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from typing import Any
 
 from packages.agent.llm.reasoning import (
@@ -33,9 +34,7 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
         verify_section = _format_verify_feedback(verify_result, verify_evidence)
         degraded_section = _format_degraded_feedback(verify_result, verify_evidence)
         snapshot = state.get("pre_action_snapshot", {})
-        snapshot_section = (
-            _format_snapshot_context(snapshot) if verify_result == "degraded" else ""
-        )
+        snapshot_section = _format_snapshot_context(snapshot) if verify_result == "degraded" else ""
         prompt = PLAN_ACTIONS_PROMPT_TEMPLATE.format(
             alert_name=state.get("alert_name", "unknown"),
             root_cause_summary=root_cause.get("summary", "unknown"),
@@ -57,9 +56,7 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
         # bookkeeping failure never discards real LLM output.
         meta: dict[str, object] = {}
         try:
-            models = deps.llm.generate_json(
-                prompt, list[PlannedAction], thinking=thinking
-            )
+            models = deps.llm.generate_json(prompt, list[PlannedAction], thinking=thinking)
             actions = [a.model_dump() for a in models]
         except Exception:
             logger.error(
@@ -71,14 +68,15 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
             fallback = _ACTIONS_MAP.get(
                 state.get("alert_name", ""), _ACTIONS_MAP["High5xxAfterDeploy"]
             )
-            actions = fallback
+            actions = deepcopy(fallback)
             meta = {"fallback": True}  # type: ignore[no-redef]
         else:
             try:
                 meta = capture_metadata(deps.llm)
             except Exception:
                 logger.warning(
-                    "plan_actions: capture_metadata failed", exc_info=True,
+                    "plan_actions: capture_metadata failed",
+                    exc_info=True,
                 )
                 meta = {}
 
@@ -99,7 +97,8 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
     except Exception as exc:
         logger.error(
             "plan_actions: node failed incident=%s",
-            state.get("incident_id"), exc_info=True,
+            state.get("incident_id"),
+            exc_info=True,
         )
         deps.node_tracer(
             node_id=node_id,
@@ -165,9 +164,7 @@ your plan:
 - Remember: the verify step will run again after this new plan executes."""
 
 
-def _format_verify_feedback(
-    verify_result: str, verify_evidence: list[dict[str, Any]]
-) -> str:
+def _format_verify_feedback(verify_result: str, verify_evidence: list[dict[str, Any]]) -> str:
     """Build the verify feedback section for the prompt."""
     if not verify_result:
         return ""
@@ -196,8 +193,8 @@ detected that error rates increased or new errors appeared after execution.
 
 IMMEDIATE PRIORITY: Rollback your previous actions. Each previous action
 carried a rollback_plan field - use those plans as the basis for rollback.
-- Propose scale_back, revert_config, or rollback_release to restore the
-  previous state.
+- Propose scale_back, revert_config, rollback_release, or rollback_deployment
+  to restore the previous state.
 - Use concrete values from the pre_action_snapshot (replica counts,
   revision numbers, config values) - do NOT guess.
 - Do NOT propose the same actions that caused the degradation.
@@ -206,9 +203,7 @@ carried a rollback_plan field - use those plans as the basis for rollback.
   why the original actions caused degradation."""
 
 
-def _format_degraded_feedback(
-    verify_result: str, verify_evidence: list[dict[str, Any]]
-) -> str:
+def _format_degraded_feedback(verify_result: str, verify_evidence: list[dict[str, Any]]) -> str:
     """Build the degraded feedback section for the prompt."""
     if verify_result != "degraded":
         return ""
@@ -240,9 +235,7 @@ def _format_snapshot_context(snapshot: dict[str, Any]) -> str:
 
     action_types = snapshot.get("action_types")
     if isinstance(action_types, list) and action_types:
-        lines.append(
-            "  previous_action_types=" + ",".join(str(a) for a in action_types)
-        )
+        lines.append("  previous_action_types=" + ",".join(str(a) for a in action_types))
 
     k8s = snapshot.get("k8s")
     if isinstance(k8s, dict):

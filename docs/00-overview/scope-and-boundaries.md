@@ -50,7 +50,7 @@
 
 - `restart_pod` / `restart_service`：通过 patch Deployment pod template 触发 rolling restart。
 - `scale_deployment` / `scale_back`：通过 Deployment scale patch 调整副本数。
-- `rollback_release`：调用 Deployment rollback subresource。
+- `rollback_release`：调用 Deployment rollback subresource；`rollback_deployment` 是兼容别名，会规范化为同一操作。
 
 这些写路径仍受 Kubernetes resource name 校验、namespace 限制、executor timeout、执行前 snapshot、执行后 verify/replan 和审计记录约束。
 
@@ -73,8 +73,8 @@
 |------|------|------|
 | L0 | `query_metrics`、`query_logs`、`query_traces`、`query_git` | 只读，自动执行 |
 | L1 | `create_ticket`、`generate_report`、`warmup_cache`、`adjust_connection_pool` | 低风险，自动执行 |
-| L2 | `restart_pod`、`scale_deployment`、`restart_service`、`scale_back`、`revert_config` | 需要人工审批 |
-| L3 | `enable_rate_limit`、`rollback_release`、`cancel_deployment` | 需要审批和二次确认 |
+| L2 | `restart_pod`、`scale_deployment`、`restart_service`、`increase_memory_limit`、`scale_back`、`revert_config` | 需要人工审批 |
+| L3 | `enable_rate_limit`、`raise_rate_limit`、`rollback_release`、`rollback_deployment`、`enable_circuit_breaker`、`switch_dns_resolver`、`failover`、`cancel_deployment` | 需要审批和二次确认 |
 | L4 | `delete_data`、`truncate_table`、`flush_cache`、`modify_database` | 直接拒绝，永不执行 |
 
 Unknown action 类型保守归类为 L2。动作类型、target 或 params 中出现 `delete`、`drop`、`truncate`、`modify_database`、`flush` 等禁止 token 时，直接升级为 L4。

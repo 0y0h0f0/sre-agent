@@ -63,7 +63,7 @@ Example structure (do not copy values — this is a format example only):
     }}
   ],
   "root_cause": {{
-    "summary": "DB connection pool exhausted due to slow query accumulation",
+    "summary": "DB connection pool exhausted near max connections due to slow query accumulation",
     "confidence": 0.88,
     "evidence_ids": ["evd_abc123", "evd_def456"]
   }},
@@ -208,8 +208,14 @@ _ALLOWED_ACTIONS = {
     "restart_pod": "L2",
     "scale_deployment": "L2",
     "restart_service": "L2",
+    "increase_memory_limit": "L2",
     "enable_rate_limit": "L3",
+    "raise_rate_limit": "L3",
     "rollback_release": "L3",
+    "rollback_deployment": "L3",
+    "enable_circuit_breaker": "L3",
+    "switch_dns_resolver": "L3",
+    "failover": "L3",
     "scale_back": "L2",
     "revert_config": "L2",
     "cancel_deployment": "L3",
@@ -235,7 +241,9 @@ For each action specify:
 
 Rules:
 - Prefer lower-risk actions first (L0/L1 before L2/L3)
-- L3 actions (enable_rate_limit, rollback_release, cancel_deployment) require secondary confirmation
+- scale_deployment means changing Deployment replicas only; params must include replicas
+- Use increase_memory_limit for memory limit changes; do not encode CPU or memory limits in scale_deployment
+- L3 actions require secondary confirmation
 - Never propose L4 actions (delete_data, truncate_table, flush_cache, modify_database)
 - Every action must have a rollback_plan unless it is read-only (L0)
 {rejection_feedback_rules}{verify_feedback_rules}{degraded_rules}

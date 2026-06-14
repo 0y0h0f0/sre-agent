@@ -5,6 +5,7 @@ from __future__ import annotations
 from packages.tools.executor_backends import (
     _LIVE_HANDLERS,
     _LIVE_ROLLBACK_HANDLERS,
+    ROLLBACK_ACTION_TYPES,
     ExecutionContext,
     ExecutionResult,
     LiveK8sExecutorBackend,
@@ -50,6 +51,49 @@ def test_live_executor_rollback_fills_params_from_snapshot(monkeypatch) -> None:
     assert result.status == "succeeded"
     assert captured["ns"] == "payments"
     assert captured["params"]["replicas"] == 2
+    assert captured["params"]["to_revision"] == "5"
+
+
+def test_rollback_deployment_is_a_rollback_alias_for_execute(monkeypatch) -> None:
+    captured = {}
+
+    def handler(atype, target, params, ns, timeout):
+        captured["atype"] = atype
+        captured["target"] = target
+        return ExecutionResult(status="succeeded", message="rollback")
+
+    assert "rollback_deployment" in ROLLBACK_ACTION_TYPES
+    monkeypatch.setitem(_LIVE_HANDLERS, "rollback_release", handler)
+
+    backend = LiveK8sExecutorBackend(namespace="payments")
+    result = backend.execute(
+        {"type": "rollback_deployment", "target": "checkout", "params": {}},
+        ExecutionContext(service="checkout", incident_id="inc", agent_run_id="run"),
+    )
+
+    assert result.status == "succeeded"
+    assert captured == {"atype": "rollback_release", "target": "checkout"}
+
+
+def test_rollback_deployment_is_a_rollback_alias_for_rollback(monkeypatch) -> None:
+    captured = {}
+
+    def handler(atype, target, params, ns, timeout):
+        captured["atype"] = atype
+        captured["params"] = dict(params)
+        return ExecutionResult(status="succeeded", message="rollback")
+
+    monkeypatch.setitem(_LIVE_ROLLBACK_HANDLERS, "rollback_release", handler)
+
+    backend = LiveK8sExecutorBackend(namespace="payments")
+    result = backend.rollback(
+        {"type": "rollback_deployment", "target": "checkout", "params": {}},
+        {"k8s": {"revision": "5"}},
+        ExecutionContext(service="checkout", incident_id="inc", agent_run_id="run"),
+    )
+
+    assert result.status == "succeeded"
+    assert captured["atype"] == "rollback_release"
     assert captured["params"]["to_revision"] == "5"
 
 
@@ -113,7 +157,9 @@ def test_k8s_name_validation_rejects_invalid_namespace() -> None:
     result = backend.execute(
         {"type": "restart_pod", "target": "checkout", "params": {}},
         ExecutionContext(
-            service="test", incident_id="inc", agent_run_id="run",
+            service="test",
+            incident_id="inc",
+            agent_run_id="run",
             namespace="_invalid_ns",
         ),
     )

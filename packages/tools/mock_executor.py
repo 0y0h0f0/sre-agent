@@ -15,4 +15,8 @@ MOCK_EXECUTOR_RESULTS: dict[str, dict[str, str]] = {
     "warmup_cache": {"status": "succeeded", "message": "mock cache warming completed"},
     "create_ticket": {"status": "succeeded", "message": "mock ticket created"},
     "adjust_connection_pool": {"status": "succeeded", "message": "mock pool adjusted"},
+    "increase_memory_limit": {
+        "status": "succeeded",
+        "message": "mock memory limit increase completed",
+    },
 }

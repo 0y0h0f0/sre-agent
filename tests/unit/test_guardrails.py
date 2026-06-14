@@ -29,13 +29,20 @@ _RISK_MATRIX = [
     ("restart_pod", "L2", True, True),
     ("scale_deployment", "L2", True, True),
     ("restart_service", "L2", True, True),
+    ("increase_memory_limit", "L2", True, True),
     # L3: approval + secondary confirmation
     ("enable_rate_limit", "L3", True, True),
+    ("raise_rate_limit", "L3", True, True),
     ("rollback_release", "L3", True, True),
+    ("rollback_deployment", "L3", True, True),
+    ("enable_circuit_breaker", "L3", True, True),
+    ("switch_dns_resolver", "L3", True, True),
+    ("failover", "L3", True, True),
     ("scale_back", "L2", True, True),
     ("revert_config", "L2", True, True),
     ("cancel_deployment", "L3", True, True),
     # L4: always blocked
+    ("kill_idle_transactions", "L4", False, False),
     ("delete_data", "L4", False, False),
     ("truncate_table", "L4", False, False),
     ("flush_cache", "L4", False, False),
@@ -107,9 +114,7 @@ def test_all_token_does_not_escalate_to_l4(field, value):
 
 # A genuinely destructive verb combined with "all" still escalates via its verb.
 def test_delete_all_still_escalates_to_l4():
-    decision = classify_risk_level(
-        {"type": "restart_pod", "target": "delete_all", "params": {}}
-    )
+    decision = classify_risk_level({"type": "restart_pod", "target": "delete_all", "params": {}})
     assert decision.risk_level == "L4"
     assert not decision.allowed
 
@@ -147,6 +152,20 @@ def test_risk_hint_lower_than_default_is_ignored():
         {"type": "rollback_release", "target": "svc", "params": {}, "risk_hint": "L0"}
     )
     assert decision.risk_level == "L3"
+
+
+def test_risk_hint_cannot_downgrade_forbidden_database_session_kill():
+    decision = classify_risk_level(
+        {
+            "type": "kill_idle_transactions",
+            "target": "database",
+            "params": {"max_idle_seconds": 30},
+            "risk_hint": "L2",
+        }
+    )
+    assert decision.risk_level == "L4"
+    assert decision.allowed is False
+    assert decision.requires_approval is False
 
 
 def test_risk_hint_case_insensitive():

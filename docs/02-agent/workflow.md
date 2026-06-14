@@ -21,6 +21,10 @@ Agent 工作流由 `packages/agent/graph.py` 构建，是一个 18 节点 LangGr
 
 ## 图结构
 
+下图展示 Agent 的主执行路径，以及三个受预算限制的循环：缺失证据补采、审批拒绝后的重规划、验证未恢复后的重规划。
+
+![Agent 工作流流程图](assets/agent-workflow.png)
+
 ```text
 parse_alert
   -> collect_all_evidence
@@ -69,9 +73,9 @@ parse_alert
 | `rank_hypotheses` | hypotheses、evidence | ranked hypotheses | 按证据数量、来源多样性、部署相关性、runbook/memory 匹配排序 |
 | `plan_actions` | root cause、反馈、snapshot | `recommended_actions` | 只建议动作，不决定最终执行权限 |
 | `guardrail_check` | recommended actions | `risk_level`、`allowed`、`requires_approval` | 确定性风险分类，绝不信任模型决定权限 |
-| `human_approval` | L2/L3 actions | action/approval records、GraphInterrupt | 创建审批记录并暂停图；resume 时读取 DB 中每个 approval 的真实状态 |
+| `human_approval` | L2/L3 actions | action/approval records、GraphInterrupt | 为需要审批的动作创建 Action/Approval 记录并暂停图；resume 时读取 DB 中每个 approval 的真实状态 |
 | `take_snapshot` | pending executable actions | `pre_action_snapshot` | 执行前抓取 evidence count 和 K8s deployment 状态，供回滚/降级处理使用 |
-| `execute_action` | allowed 且无需审批的 actions | `execution_results` | 通过注入的 executor backend 执行；默认 fixture |
+| `execute_action` | allowed 且无需审批的 actions | action records、`execution_results` | 对无 `action_id` 的自动动作先创建 Action 记录，再通过注入的 executor backend 执行；默认 fixture |
 | `verify` | execution results | `verify_result`、`verify_evidence` | 对 L2/L3 执行动作重新查 metrics/logs，最多 2 轮验证/重规划 |
 | `generate_report` | run trajectory | `incident_report` | 生成结构化 incident report |
 | `persist_memory` | diagnosis/report/actions | L0-L3 memory writes | best-effort 写入，失败不终止主流程 |

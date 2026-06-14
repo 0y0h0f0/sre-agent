@@ -85,6 +85,10 @@ class K8sDiscovery:
     @property
     def _k8s(self) -> Any:
         """Lazily initialize and return kubernetes client modules."""
+        if self._kube_config_file is None and get_settings().k8s_backend != "live":
+            raise K8sUnavailableError(
+                "Kubernetes discovery is disabled unless K8S_BACKEND=live"
+            )
         if self._client is not None:
             return self._client
         with self._client_lock:
@@ -157,7 +161,9 @@ class K8sDiscovery:
                 if self._namespace_allowlist:
                     return self._namespace_allowlist
                 raise K8sUnavailableError("RBAC forbidden") from exc
-            raise
+            raise K8sUnavailableError(
+                f"K8s namespace discovery failed: {exc}"
+            ) from exc
         if self._namespace_allowlist:
             names = [n for n in names if n in self._namespace_allowlist]
         return names

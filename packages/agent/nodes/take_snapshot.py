@@ -67,13 +67,14 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
         # If K8s actions are pending, capture current deployment spec so
         # rollback can use concrete revision/replica values from snapshot.
         k8s_action_types = {
-            "restart_pod", "restart_service", "scale_deployment",
-            "rollback_release", "scale_back",
+            "restart_pod",
+            "restart_service",
+            "scale_deployment",
+            "rollback_release",
+            "rollback_deployment",
+            "scale_back",
         }
-        k8s_actions = [
-            a for a in actions
-            if str(a.get("type", "")).lower() in k8s_action_types
-        ]
+        k8s_actions = [a for a in actions if str(a.get("type", "")).lower() in k8s_action_types]
         if k8s_actions and deps.k8s_tool:
             try:
                 svc = state.get("service_name", "unknown")
@@ -85,13 +86,12 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
                         namespace=namespace,
                     )
                 )
-                snapshot["k8s"] = (
-                    result.data.get("payload", {}) if result.data else {}
-                )
+                snapshot["k8s"] = result.data.get("payload", {}) if result.data else {}
             except Exception:
                 logger.error(
                     "take_snapshot: k8s query failed service=%s",
-                    svc, exc_info=True,
+                    svc,
+                    exc_info=True,
                 )
                 snapshot["k8s"] = {"error": "k8s_unreachable"}
 
@@ -114,7 +114,8 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
     except Exception as exc:
         logger.error(
             "take_snapshot: node failed incident=%s",
-            state.get("incident_id"), exc_info=True,
+            state.get("incident_id"),
+            exc_info=True,
         )
         deps.node_tracer(
             node_id=node_id,
@@ -137,10 +138,7 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
 
 
 def _has_rollback_action(actions: list[dict[str, Any]]) -> bool:
-    return any(
-        str(action.get("type", "")).lower() in ROLLBACK_ACTION_TYPES
-        for action in actions
-    )
+    return any(str(action.get("type", "")).lower() in ROLLBACK_ACTION_TYPES for action in actions)
 
 
 def _usable_snapshot(snapshot: object) -> bool:

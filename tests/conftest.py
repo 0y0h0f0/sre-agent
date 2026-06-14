@@ -19,14 +19,40 @@ from apps.api.dependencies import (
 from apps.api.main import create_app
 from packages.common.settings import Settings, get_settings
 
+_EXTERNAL_ENV_VARS = (
+    "ALL_PROXY",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "all_proxy",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "KUBECONFIG",
+)
+
 
 @pytest.fixture(autouse=True)
-def _disable_auth_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Disable API key auth and force fake providers for all tests."""
+def _isolate_settings_in_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[None, None, None]:
+    """Keep tests deterministic regardless of local shell env or .env files."""
+    monkeypatch.setattr(
+        Settings,
+        "model_config",
+        {**Settings.model_config, "env_file": None},
+    )
+    for field_name in Settings.model_fields:
+        monkeypatch.delenv(field_name, raising=False)
+        monkeypatch.delenv(field_name.upper(), raising=False)
+    for env_var in _EXTERNAL_ENV_VARS:
+        monkeypatch.delenv(env_var, raising=False)
     monkeypatch.setenv("API_KEY_AUTH_ENABLED", "false")
-    monkeypatch.setenv("LLM_PROVIDER", "fake")
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
     get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 from packages.db import models  # noqa: E402, F401
 from packages.db.base import Base  # noqa: E402
 

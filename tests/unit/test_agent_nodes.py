@@ -67,6 +67,28 @@ def _base_state(**overrides) -> IncidentState:
     return state
 
 
+def _seed_incident_run(db: Session, incident_id: str, agent_run_id: str) -> None:
+    from packages.common.time import utc_now
+    from packages.db.models import AgentRun, Incident
+
+    db.add(
+        Incident(
+            incident_id=incident_id,
+            fingerprint=f"fp_{incident_id}",
+            source="mock",
+            service="checkout",
+            severity="P2",
+            alert_name="DatabaseConnectionExhaustion",
+            status="diagnosing",
+            starts_at=utc_now(),
+            labels={},
+            annotations={},
+        )
+    )
+    db.add(AgentRun(agent_run_id=agent_run_id, incident_id=incident_id, status="running"))
+    db.flush()
+
+
 class TestPersistEvidence:
     def test_persist_evidence_writes_ids_back_to_state(self, db_session: Session) -> None:
         from packages.agent.nodes._persist import persist_evidence
@@ -507,7 +529,278 @@ class TestRouteAfterApproval:
         assert _route_after_approval(_base_state(phase="approval_approved")) == "execute"
 
 
+class TestPlanActionsNode:
+    def test_fallback_actions_are_copied_per_run(self, db_session: Session) -> None:
+        from packages.agent.nodes.plan_actions import plan_actions
+        from packages.agent.rules_fallback import _ACTIONS_MAP
+
+        class FailingLLM:
+            def generate_json(self, prompt, output_schema, *, thinking=False):
+                raise RuntimeError("llm unavailable")
+
+        deps = _make_deps(db_session)
+        deps.llm = FailingLLM()
+        state = _base_state(
+            alert_name="DatabaseConnectionExhaustion",
+            root_cause={"summary": "db pool exhausted", "confidence": 0.8},
+        )
+
+        first = plan_actions(state, deps)
+        first["recommended_actions"][0]["action_id"] = "act_stale"
+        second = plan_actions(state, deps)
+
+        assert "action_id" not in _ACTIONS_MAP["DatabaseConnectionExhaustion"][0]
+        assert "action_id" not in second["recommended_actions"][0]
+
+
 class TestExecuteActionNode:
+    def test_persists_automatic_actions_before_execution(self, db_session: Session) -> None:
+        from packages.db.repositories.actions import ActionRepository
+
+        incident_id = "inc_auto_actions"
+        agent_run_id = "run_auto_actions"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+
+        deps = _make_deps(db_session)
+        state = _base_state(
+            incident_id=incident_id,
+            agent_run_id=agent_run_id,
+            recommended_actions=[
+                {
+                    "type": "adjust_connection_pool",
+                    "target": "database",
+                    "params": {"max_connections": 200},
+                    "reason": "pool saturated",
+                    "risk_level": "L1",
+                    "allowed": True,
+                    "requires_approval": False,
+                },
+                {
+                    "type": "create_ticket",
+                    "target": "db-team",
+                    "params": {"priority": "P1"},
+                    "reason": "track slow query cleanup",
+                    "risk_level": "L1",
+                    "allowed": True,
+                    "requires_approval": False,
+                },
+            ],
+        )
+
+        result = execute_action(state, deps)
+
+        rows = ActionRepository(db_session).list_for_run(agent_run_id)
+        assert [row.type for row in rows] == ["adjust_connection_pool", "create_ticket"]
+        assert {row.status for row in rows} == {"succeeded"}
+        assert all(row.execution_result is not None for row in rows)
+        assert all(action.get("action_id") for action in result["recommended_actions"])
+        assert [item["action_id"] for item in result["execution_results"]] == [
+            row.action_id for row in rows
+        ]
+
+    def test_uses_existing_action_id_without_duplicate(self, db_session: Session) -> None:
+        from packages.db.repositories.actions import ActionRepository
+
+        incident_id = "inc_existing_action"
+        agent_run_id = "run_existing_action"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        repo = ActionRepository(db_session)
+        existing = repo.create(
+            incident_id=incident_id,
+            agent_run_id=agent_run_id,
+            type="restart_pod",
+            risk_level="L2",
+            status="approved",
+            target="checkout",
+            params={},
+            reason="approved by human",
+        )
+        db_session.flush()
+
+        deps = _make_deps(db_session)
+        result = execute_action(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                recommended_actions=[
+                    {
+                        "action_id": existing.action_id,
+                        "type": "restart_pod",
+                        "target": "checkout",
+                        "params": {},
+                        "reason": "approved by human",
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        rows = repo.list_for_run(agent_run_id)
+        assert len(rows) == 1
+        assert rows[0].action_id == existing.action_id
+        assert rows[0].status == "succeeded"
+        assert result["execution_results"][0]["action_id"] == existing.action_id
+
+    def test_stale_automatic_action_id_creates_current_run_action(
+        self, db_session: Session
+    ) -> None:
+        from packages.db.repositories.actions import ActionRepository
+
+        stale_incident_id = "inc_stale_previous"
+        stale_run_id = "run_stale_previous"
+        incident_id = "inc_stale_current"
+        agent_run_id = "run_stale_current"
+        _seed_incident_run(db_session, stale_incident_id, stale_run_id)
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        repo = ActionRepository(db_session)
+        stale = repo.create(
+            incident_id=stale_incident_id,
+            agent_run_id=stale_run_id,
+            type="adjust_connection_pool",
+            risk_level="L1",
+            status="succeeded",
+            target="database",
+            params={},
+            reason="previous run",
+        )
+        db_session.flush()
+
+        deps = _make_deps(db_session)
+        result = execute_action(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                recommended_actions=[
+                    {
+                        "action_id": stale.action_id,
+                        "type": "adjust_connection_pool",
+                        "target": "database",
+                        "params": {"max_connections": 200},
+                        "reason": "current run",
+                        "risk_level": "L1",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        current_rows = list(repo.list_for_run(agent_run_id))
+        assert len(current_rows) == 1
+        assert current_rows[0].action_id != stale.action_id
+        assert current_rows[0].status == "succeeded"
+        assert result["execution_results"][0]["action_id"] == current_rows[0].action_id
+        assert repo.get_by_public_id(stale.action_id).agent_run_id == stale_run_id
+
+    def test_stale_approval_gated_action_id_fails_closed(self, db_session: Session) -> None:
+        from packages.db.repositories.actions import ActionRepository
+
+        stale_incident_id = "inc_stale_l2_previous"
+        stale_run_id = "run_stale_l2_previous"
+        incident_id = "inc_stale_l2_current"
+        agent_run_id = "run_stale_l2_current"
+        _seed_incident_run(db_session, stale_incident_id, stale_run_id)
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        repo = ActionRepository(db_session)
+        stale = repo.create(
+            incident_id=stale_incident_id,
+            agent_run_id=stale_run_id,
+            type="restart_pod",
+            risk_level="L2",
+            status="approved",
+            target="checkout",
+            params={},
+            reason="previous approval",
+        )
+        db_session.flush()
+
+        deps = _make_deps(db_session)
+        result = execute_action(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                recommended_actions=[
+                    {
+                        "action_id": stale.action_id,
+                        "type": "restart_pod",
+                        "target": "checkout",
+                        "params": {},
+                        "reason": "stale approval must not carry over",
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert result["errors"]
+        assert "does not belong to current run" in result["errors"][0]["error"]
+        assert list(repo.list_for_run(agent_run_id)) == []
+
+    def test_stale_approval_gated_action_id_does_not_leave_automatic_row(
+        self, db_session: Session
+    ) -> None:
+        from packages.db.repositories.actions import ActionRepository
+
+        stale_incident_id = "inc_mixed_stale_previous"
+        stale_run_id = "run_mixed_stale_previous"
+        incident_id = "inc_mixed_stale_current"
+        agent_run_id = "run_mixed_stale_current"
+        _seed_incident_run(db_session, stale_incident_id, stale_run_id)
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        repo = ActionRepository(db_session)
+        stale = repo.create(
+            incident_id=stale_incident_id,
+            agent_run_id=stale_run_id,
+            type="restart_pod",
+            risk_level="L2",
+            status="approved",
+            target="checkout",
+            params={},
+            reason="previous approval",
+        )
+        db_session.flush()
+
+        deps = _make_deps(db_session)
+        result = execute_action(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                recommended_actions=[
+                    {
+                        "type": "create_ticket",
+                        "target": "db-team",
+                        "params": {},
+                        "reason": "auto action should not be created",
+                        "risk_level": "L1",
+                        "allowed": True,
+                        "requires_approval": False,
+                    },
+                    {
+                        "action_id": stale.action_id,
+                        "type": "restart_pod",
+                        "target": "checkout",
+                        "params": {},
+                        "reason": "stale approval must fail closed",
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    },
+                ],
+            ),
+            deps,
+        )
+
+        assert result["errors"]
+        assert "does not belong to current run" in result["errors"][0]["error"]
+        assert list(repo.list_for_run(agent_run_id)) == []
+
     def test_executes_l0_l1_actions(self, db_session: Session) -> None:
         deps = _make_deps(db_session)
         state = _base_state(
@@ -810,6 +1103,53 @@ class TestSnapshotVerifyRollbackFlow:
         )
 
         assert not backend.execute_calls
+        assert backend.rollback_calls[0][1] == snapshot
+        assert result["execution_results"][0]["execution_result"]["message"] == "rollback"
+
+    def test_degraded_rollback_deployment_alias_uses_backend_rollback(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class RecordingBackend:
+            name = "recording"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+                self.rollback_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                return ExecutionResult(status="succeeded", message="execute")
+
+            def rollback(self, action, snapshot, context):
+                self.rollback_calls.append((action, snapshot, context))
+                return ExecutionResult(status="succeeded", message="rollback")
+
+        deps = _make_deps(db_session)
+        backend = RecordingBackend()
+        deps.executor_backend = backend
+        snapshot = {"k8s": {"revision": "5"}}
+
+        result = execute_action(
+            _base_state(
+                verify_result="degraded",
+                pre_action_snapshot=snapshot,
+                recommended_actions=[
+                    {
+                        "type": "rollback_deployment",
+                        "target": "checkout",
+                        "risk_level": "L3",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert not backend.execute_calls
+        assert backend.rollback_calls[0][0]["type"] == "rollback_deployment"
         assert backend.rollback_calls[0][1] == snapshot
         assert result["execution_results"][0]["execution_result"]["message"] == "rollback"
 

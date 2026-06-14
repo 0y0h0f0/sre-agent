@@ -9,6 +9,7 @@ from packages.agent.llm import FakeLLMAdapter
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.settings import Settings
+from packages.db.repositories.actions import ActionRepository
 from packages.memory.context_builder import ContextBuilder
 from packages.memory.memory_store import MemoryStore
 from packages.tools.cache import RequestLocalToolCache
@@ -88,6 +89,12 @@ def test_graph_runs_end_to_end(db_session) -> None:
     assert result.get("root_cause", {}).get("summary")
     assert result.get("phase") == "report_generated"
     assert len(result.get("incident_report", {})) > 0
+    actions = list(ActionRepository(db_session).list_for_run("run_test"))
+    assert [action.type for action in actions] == [
+        "adjust_connection_pool",
+        "create_ticket",
+    ]
+    assert {action.status for action in actions} == {"succeeded"}
 
 
 def test_graph_handles_all_alert_types(db_session) -> None:

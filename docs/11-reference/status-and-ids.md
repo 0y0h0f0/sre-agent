@@ -127,8 +127,8 @@ Defined as `RiskLevel`.
 |------|------------------|----------|
 | `L0` | Automatic, read-only. | `query_metrics`, `query_logs`, `query_traces`, `query_git`. |
 | `L1` | Automatic low-risk local/system action. | `create_ticket`, `generate_report`, `warmup_cache`, `adjust_connection_pool`. |
-| `L2` | Requires approval. | `restart_pod`, `scale_deployment`, `restart_service`, `scale_back`, `revert_config`. |
-| `L3` | Requires approval and second confirmation. | `enable_rate_limit`, `rollback_release`, `cancel_deployment`. |
+| `L2` | Requires approval. | `restart_pod`, `scale_deployment`, `restart_service`, `increase_memory_limit`, `scale_back`, `revert_config`. |
+| `L3` | Requires approval and second confirmation. | `enable_rate_limit`, `raise_rate_limit`, `rollback_release`, `rollback_deployment`, `enable_circuit_breaker`, `switch_dns_resolver`, `failover`, `cancel_deployment`. |
 | `L4` | Directly blocked; must not enter approval. | `delete_data`, `truncate_table`, `flush_cache`, `modify_database`. |
 
 Unknown action types default conservatively to `L2`. Forbidden destructive keywords escalate to `L4`.

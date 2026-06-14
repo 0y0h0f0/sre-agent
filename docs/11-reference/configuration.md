@@ -106,7 +106,7 @@ The Python defaults are library/runtime defaults. Docker Compose may override th
 
 - rolling restart for `restart_pod` / `restart_service`,
 - deployment scale patch for `scale_deployment` / `scale_back`,
-- deployment rollback subresource call for `rollback_release`.
+- deployment rollback subresource call for `rollback_release` (`rollback_deployment` is normalized to this same operation).
 
 It must not perform cloud writes, database mutations, data deletion, cache flushes, or arbitrary Kubernetes writes.
 

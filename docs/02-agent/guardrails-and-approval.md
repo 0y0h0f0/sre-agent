@@ -14,8 +14,8 @@
 |------|----------|----------|--------------|----------|
 | L0 | 只读查询 | 是 | 否 | `query_metrics`、`query_logs`、`query_traces`、`query_git` |
 | L1 | 低风险本地/系统动作 | 是 | 否 | `create_ticket`、`generate_report`、`warmup_cache`、`adjust_connection_pool` |
-| L2 | 服务/Kubernetes 运维动作 | 是 | 是 | `restart_pod`、`scale_deployment`、`restart_service`、`scale_back`、`revert_config` |
-| L3 | 回滚、限流、部署取消 | 是 | 是，且二次确认 | `enable_rate_limit`、`rollback_release`、`cancel_deployment` |
+| L2 | 服务/Kubernetes/资源限额运维动作 | 是 | 是 | `restart_pod`、`scale_deployment`、`restart_service`、`increase_memory_limit`、`scale_back`、`revert_config` |
+| L3 | 回滚、限流、故障转移、部署取消 | 是 | 是，且二次确认 | `enable_rate_limit`、`raise_rate_limit`、`rollback_release`、`rollback_deployment`、`enable_circuit_breaker`、`switch_dns_resolver`、`failover`、`cancel_deployment` |
 | L4 | 破坏性数据/缓存/数据库动作 | 否 | 否 | `delete_data`、`truncate_table`、`flush_cache`、`modify_database` |
 
 未知 action type 默认归类为 L2，并要求审批。
@@ -121,6 +121,7 @@ action.get("allowed") and not action.get("requires_approval")
 
 执行后：
 
+- L0/L1 自动动作如果还没有属于当前 incident/run 的 `action_id`，`execute_action` 会先创建 Action 记录并写回 state，再调用 executor；持久化失败时不执行该动作。
 - 默认 backend 是 `FixtureExecutorBackend`。
 - `EXECUTOR_BACKEND=live` 才会构造 `LiveK8sExecutorBackend`。
 - 处于 degraded verify 循环时，只允许 rollback 类动作；非 rollback 动作会失败关闭。
@@ -137,8 +138,11 @@ action.get("allowed") and not action.get("requires_approval")
 | `scale_deployment` | patch Deployment scale subresource |
 | `scale_back` | patch Deployment scale subresource，用于回缩 |
 | `rollback_release` | 调用 Deployment rollback subresource |
+| `rollback_deployment` | 兼容别名，规范化为 `rollback_release`，调用同一个 Deployment rollback subresource |
 
 其它动作在 live executor 中失败关闭。live executor 会校验 namespace 和 target 符合 Kubernetes DNS-1123 label，防止路径注入。
+
+`scale_deployment` 只表示调整 Deployment 副本数，参数使用 `replicas`。内存限额调整使用 `increase_memory_limit`，当前仅在 fixture/local 路径有确定性执行结果，不属于 live executor 的真实 Kubernetes mutation。
 
 项目不允许新增真实云资源写操作，不允许删除数据、修改应用数据库、truncate table 或 flush 真实 cache。
 

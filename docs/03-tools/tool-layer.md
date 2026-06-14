@@ -163,7 +163,7 @@ class ExecutorBackend(Protocol):
 | `FixtureExecutorBackend` | 是 | 返回确定性 mock result，供测试、本地 demo、CI 使用 |
 | `LiveK8sExecutorBackend` | 否 | `EXECUTOR_BACKEND=live` 显式 opt-in，只支持 restart/scale/rollback 类 Kubernetes mutation |
 
-live executor 当前支持：`restart_pod`、`restart_service`、`scale_deployment`、`scale_back`、`rollback_release`。其它动作失败关闭。
+live executor 当前支持：`restart_pod`、`restart_service`、`scale_deployment`、`scale_back`、`rollback_release`。`rollback_deployment` 是兼容别名，会规范化为 `rollback_release` 并调用同一个 Deployment rollback subresource。其它动作失败关闭。
 
 ## Worker 中的依赖构造
 

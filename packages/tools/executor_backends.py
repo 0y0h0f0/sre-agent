@@ -29,8 +29,18 @@ _K8S_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$")
 
 #: Action types that are classified as rollback operations.
 ROLLBACK_ACTION_TYPES: frozenset[str] = frozenset(
-    {"rollback_release", "scale_back", "revert_config"}
+    {"rollback_release", "rollback_deployment", "scale_back", "revert_config"}
 )
+
+_ACTION_TYPE_ALIASES: dict[str, str] = {
+    "rollback_deployment": "rollback_release",
+}
+
+
+def canonical_action_type(action_type: object) -> str:
+    """Return the executor's canonical action type for supported aliases."""
+    normalized = str(action_type or "").lower()
+    return _ACTION_TYPE_ALIASES.get(normalized, normalized)
 
 
 class ExecutionContext(BaseModel):
@@ -69,9 +79,7 @@ class ExecutorBackend(Protocol):
 
     name: str
 
-    def execute(
-        self, action: dict[str, Any], context: ExecutionContext
-    ) -> ExecutionResult:
+    def execute(self, action: dict[str, Any], context: ExecutionContext) -> ExecutionResult:
         """Execute a single remediation action."""
 
     def rollback(
@@ -90,45 +98,28 @@ class ExecutorBackend(Protocol):
 # Mirror the original MOCK_EXECUTOR_RESULTS shape so every existing action
 # type has a deterministic result.
 _FIXTURE_RESULTS: dict[str, ExecutionResult] = {
-    "restart_pod": ExecutionResult(
-        status="succeeded", message="mock pod restart completed"
-    ),
+    "restart_pod": ExecutionResult(status="succeeded", message="mock pod restart completed"),
     "restart_service": ExecutionResult(
         status="succeeded", message="mock service restart completed"
     ),
-    "scale_deployment": ExecutionResult(
-        status="succeeded", message="mock scaling completed"
-    ),
-    "rollback_release": ExecutionResult(
-        status="succeeded", message="mock rollback completed"
-    ),
-    "enable_rate_limit": ExecutionResult(
-        status="succeeded", message="mock rate limit enabled"
-    ),
-    "warmup_cache": ExecutionResult(
-        status="succeeded", message="mock cache warming completed"
-    ),
-    "create_ticket": ExecutionResult(
-        status="succeeded", message="mock ticket created"
-    ),
-    "adjust_connection_pool": ExecutionResult(
-        status="succeeded", message="mock pool adjusted"
+    "scale_deployment": ExecutionResult(status="succeeded", message="mock scaling completed"),
+    "rollback_release": ExecutionResult(status="succeeded", message="mock rollback completed"),
+    "enable_rate_limit": ExecutionResult(status="succeeded", message="mock rate limit enabled"),
+    "warmup_cache": ExecutionResult(status="succeeded", message="mock cache warming completed"),
+    "create_ticket": ExecutionResult(status="succeeded", message="mock ticket created"),
+    "adjust_connection_pool": ExecutionResult(status="succeeded", message="mock pool adjusted"),
+    "increase_memory_limit": ExecutionResult(
+        status="succeeded", message="mock memory limit increase completed"
     ),
     # Rollback-specific actions.
-    "scale_back": ExecutionResult(
-        status="succeeded", message="mock scale-back completed"
-    ),
-    "revert_config": ExecutionResult(
-        status="succeeded", message="mock config revert completed"
-    ),
+    "scale_back": ExecutionResult(status="succeeded", message="mock scale-back completed"),
+    "revert_config": ExecutionResult(status="succeeded", message="mock config revert completed"),
     "cancel_deployment": ExecutionResult(
         status="succeeded", message="mock deployment cancellation completed"
     ),
 }
 
-_FIXTURE_FALLBACK = ExecutionResult(
-    status="succeeded", message="mock execution completed"
-)
+_FIXTURE_FALLBACK = ExecutionResult(status="succeeded", message="mock execution completed")
 
 
 class FixtureExecutorBackend:
@@ -136,10 +127,8 @@ class FixtureExecutorBackend:
 
     name = "fixture"
 
-    def execute(
-        self, action: dict[str, Any], context: ExecutionContext
-    ) -> ExecutionResult:
-        atype = str(action.get("type", "")).lower()
+    def execute(self, action: dict[str, Any], context: ExecutionContext) -> ExecutionResult:
+        atype = canonical_action_type(action.get("type"))
         return _FIXTURE_RESULTS.get(atype, _FIXTURE_FALLBACK)
 
     def rollback(
@@ -148,7 +137,7 @@ class FixtureExecutorBackend:
         snapshot: dict[str, Any],
         context: ExecutionContext,
     ) -> ExecutionResult:
-        atype = str(action.get("type", "")).lower()
+        atype = canonical_action_type(action.get("type"))
         result = _FIXTURE_RESULTS.get(atype, _FIXTURE_FALLBACK)
         return ExecutionResult(
             status=result.status,
@@ -186,10 +175,8 @@ class LiveK8sExecutorBackend:
     # execute
     # ------------------------------------------------------------------
 
-    def execute(
-        self, action: dict[str, Any], context: ExecutionContext
-    ) -> ExecutionResult:
-        atype = str(action.get("type", "")).lower()
+    def execute(self, action: dict[str, Any], context: ExecutionContext) -> ExecutionResult:
+        atype = canonical_action_type(action.get("type"))
         target = str(action.get("target", ""))
         params = dict(_to_dict(action.get("params")))
         ns = context.namespace or self.namespace
@@ -218,7 +205,10 @@ class LiveK8sExecutorBackend:
         except Exception as exc:
             logger.error(
                 "live executor: action=%s target=%s ns=%s failed",
-                atype, target, ns, exc_info=True,
+                atype,
+                target,
+                ns,
+                exc_info=True,
             )
             return ExecutionResult(
                 status="failed",
@@ -236,7 +226,7 @@ class LiveK8sExecutorBackend:
         snapshot: dict[str, Any],
         context: ExecutionContext,
     ) -> ExecutionResult:
-        atype = str(action.get("type", "")).lower()
+        atype = canonical_action_type(action.get("type"))
         target = str(action.get("target", ""))
         params = dict(_to_dict(action.get("params")))
         ns = context.namespace or self.namespace
@@ -276,7 +266,10 @@ class LiveK8sExecutorBackend:
         except Exception as exc:
             logger.error(
                 "live executor: rollback=%s target=%s ns=%s failed",
-                atype, target, ns, exc_info=True,
+                atype,
+                target,
+                ns,
+                exc_info=True,
             )
             return ExecutionResult(
                 status="failed",
@@ -311,9 +304,7 @@ def _live_restart_pod(
             }
         }
     }
-    apps.patch_namespaced_deployment(
-        name=target, namespace=ns, body=body, _request_timeout=timeout
-    )
+    apps.patch_namespaced_deployment(name=target, namespace=ns, body=body, _request_timeout=timeout)
     return ExecutionResult(
         status="succeeded",
         message=f"restart triggered for deployment/{target} in {ns}",

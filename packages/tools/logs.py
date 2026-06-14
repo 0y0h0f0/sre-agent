@@ -138,6 +138,7 @@ class LogsTool:
         for keyword in keywords:
             before_count = len(collected)
             for logql in _logql_candidates(query.service, keyword, self.service_label):
+                candidate_had_rows = False
                 params: dict[str, str | int] = {
                     "query": logql,
                     "start": int(query.start.timestamp() * 1_000_000_000),
@@ -164,13 +165,14 @@ class LogsTool:
                 for stream in payload["data"].get("result", []):
                     labels = stream.get("stream", {})
                     for timestamp, line in stream.get("values", []):
+                        candidate_had_rows = True
                         labels_key = tuple(sorted(labels.items()))
                         collected[(str(timestamp), str(line), labels_key)] = {
                             "timestamp": str(timestamp),
                             "line": str(line),
                             "labels": labels,
                         }
-                if len(collected) > before_count:
+                if candidate_had_rows or len(collected) > before_count:
                     break
         return list(collected.values())[: query.limit]
 

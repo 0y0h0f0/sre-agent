@@ -48,7 +48,7 @@
 
 只有 `EXECUTOR_BACKEND=live` 且动作通过 guardrail、审批和二次确认要求后，才允许 live executor 执行以下 Kubernetes mutation：
 
-- `restart_pod` / `restart_service`：通过 patch Deployment pod template 触发 rolling restart。
+- `restart_pod` / `restart_service`：bounded irreversible rolling restart，通过 patch Deployment pod template 触发；不提供 restore/undo 保证。
 - `scale_deployment` / `scale_back`：通过 Deployment scale patch 调整副本数。
 - `rollback_release`：调用 Deployment rollback subresource；`rollback_deployment` 是兼容别名，会规范化为同一操作。
 

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from packages.agent.fake_llm import FakeLLM
 from packages.agent.guardrails.policy import classify_risk_level
-from packages.agent.prompts import DIAGNOSIS_PROMPT_TEMPLATE, SYSTEM_PROMPT
+from packages.agent.prompts import (
+    DIAGNOSIS_PROMPT_TEMPLATE,
+    PLAN_ACTIONS_PROMPT_TEMPLATE,
+    SYSTEM_PROMPT,
+)
 from packages.agent.schemas import DiagnosisOutput, PlannedAction
 
 
@@ -75,6 +79,16 @@ class TestGuardrailPolicy:
     def test_unknown_defaults_l2(self) -> None:
         d = classify_risk_level({"type": "new_action", "target": "", "params": {}})
         assert d.risk_level == "L2"
+
+
+class TestPlannerPrompt:
+    def test_prompt_documents_live_action_safety_boundaries(self) -> None:
+        prompt = PLAN_ACTIONS_PROMPT_TEMPLATE
+        assert "bounded irreversible rolling restarts" in prompt
+        assert "not a guaranteed undo" in prompt
+        assert "DB diagnostics and DB verify gates are read-only" in prompt
+        assert "required verify gates come from the" in prompt
+        assert "how to undo this action" not in prompt
 
 
 class TestFakeLLMMultiPerspective:

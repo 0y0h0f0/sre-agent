@@ -169,7 +169,7 @@ class ExecutorBackend(Protocol):
 
 live executor 当前支持：`restart_pod`、`restart_service`、`scale_deployment`、`scale_back`、`rollback_release`。`rollback_deployment` 是兼容别名，会规范化为 `rollback_release` 并调用同一个 Deployment rollback subresource。其它动作失败关闭。
 
-Live K8s action capability metadata 会声明执行后必须运行的 verify gates。Restart/scale 类能力至少包含 `k8s_rollout` 和 `metrics_logs`；rollback 类能力还包含 `db_readonly`。Gate 执行由 Agent `verify` 节点完成，不由 executor backend 直接执行。
+Live K8s action capability metadata 会声明执行后必须运行的 verify gates。Restart/scale 类能力至少包含 `k8s_rollout` 和 `metrics_logs`；rollback 类能力还包含 `db_readonly`。Gate 执行由 Agent `verify` 节点完成，不由 executor backend 直接执行。Restart 类动作是 bounded irreversible rolling restart，不提供 restore/undo 保证；executor 只负责执行受控 patch，后续恢复判断由只读 verify gates 和 replan 循环完成。
 
 ## Worker 中的依赖构造
 

@@ -1,6 +1,6 @@
 # 护栏与审批
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-15
 
 ## 概述
 
@@ -142,9 +142,30 @@ action.get("allowed") and not action.get("requires_approval")
 
 其它动作在 live executor 中失败关闭。live executor 会校验 namespace 和 target 符合 Kubernetes DNS-1123 label，防止路径注入。
 
+Live action capability metadata 还会在 `execute_action` 前执行确定性 preflight：
+
+| 类别 | 动作 | 语义 |
+|------|------|------|
+| reversible | `scale_deployment`、`scale_back`、`rollback_release`、`rollback_deployment` | 必须有 rollback action、snapshot contract 和 verify gates |
+| bounded irreversible | `restart_pod`、`restart_service` | 只允许 Deployment rolling restart patch；需要 snapshot、preflight 和 verify gates，但不提供 restore/undo 保证 |
+
+`restart_pod` / `restart_service` 不应被文档、prompt 或 report 描述为“可完全恢复”或“可回滚”的动作。它们只是受审批、snapshot、preflight、verify/replan 和审计约束的 bounded irreversible 操作；如果验证降级，下一轮 planner 只能基于 snapshot 规划 `scale_back`、`rollback_release`、`rollback_deployment`、`revert_config` 等可执行回退/升级动作，不能假设 restart 本身有 undo。
+
 `scale_deployment` 只表示调整 Deployment 副本数，参数使用 `replicas`。内存限额调整使用 `increase_memory_limit`，当前仅在 fixture/local 路径有确定性执行结果，不属于 live executor 的真实 Kubernetes mutation。
 
 项目不允许新增真实云资源写操作，不允许删除数据、修改应用数据库、truncate table 或 flush 真实 cache。
+
+## Verify Gate 边界
+
+`verify` 节点只执行只读 gate：
+
+| Gate | 数据源 | 边界 |
+|------|--------|------|
+| `metrics_logs` | Prometheus/Loki | 只读查询最近窗口 |
+| `k8s_rollout` | `K8sDiagnosticsTool.rollout_status` | 只读 K8s diagnostics，不执行 rollout 写入 |
+| `db_readonly` | `DbDiagnosticsTool.connection_pool` | 只读 PostgreSQL diagnostics，不触发 DB remediation |
+
+Required gate 来自静态 action capability registry。Action `params` 只能把 optional gate 升级为 required，不能把 capability-required gate 降级为 optional；模型不能通过 params 放宽 verify policy。
 
 ## 与 Runbook 动作分类的关系
 

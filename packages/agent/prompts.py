@@ -237,12 +237,27 @@ For each action specify:
 - params: key-value parameters for the action
 - reason: why this action addresses the root cause
 - risk_hint: L0-L4 risk level (use the levels from the table above)
-- rollback_plan: how to undo this action if needed
+- rollback_plan: mitigation, verification, rollback, or escalation plan; for
+  bounded irreversible restarts, describe monitoring/escalation rather than undo
 
 Rules:
 - Prefer lower-risk actions first (L0/L1 before L2/L3)
+- restart_pod and restart_service are bounded irreversible rolling restarts:
+  use them only when evidence supports a restart, and do not claim they can be
+  rolled back or fully restored
+- rollback_plan for restart actions must describe monitoring/verification or
+  follow-up escalation, not a guaranteed undo
 - scale_deployment means changing Deployment replicas only; params must include replicas
-- Use increase_memory_limit for memory limit changes; do not encode CPU or memory limits in scale_deployment
+- scale_deployment/scale_back are replica-count changes; use the pre-action
+  snapshot when planning scale_back after degradation
+- rollback_release/rollback_deployment are L3 deployment rollback actions and
+  require explicit second confirmation
+- Use increase_memory_limit for memory limit changes; do not encode CPU or
+  memory limits in scale_deployment
+- DB diagnostics and DB verify gates are read-only; never propose database
+  writes, table changes, session kills, or cache flushes
+- Do not put verification policy in params; required verify gates come from the
+  deterministic capability registry
 - L3 actions require secondary confirmation
 - Never propose L4 actions (delete_data, truncate_table, flush_cache, modify_database)
 - Every action must have a rollback_plan unless it is read-only (L0)

@@ -155,6 +155,19 @@ def test_db_diagnostic_operations_are_read_only_only() -> None:
         assert DbDiagnosticsQuery(operation=operation).operation == operation
 
 
+def test_live_capability_policy_has_no_database_write_backend() -> None:
+    for capability in iter_action_capabilities():
+        assert capability.live_backend in {"none", "k8s"}
+        if "database" in capability.action_type or "transaction" in capability.action_type:
+            assert capability.live_backend == "none"
+    modify_database = get_action_capability("modify_database")
+    kill_idle_transactions = get_action_capability("kill_idle_transactions")
+    assert modify_database is not None
+    assert kill_idle_transactions is not None
+    assert modify_database.category == "forbidden"
+    assert kill_idle_transactions.category == "forbidden"
+
+
 @pytest.mark.parametrize(
     "action_type",
     [

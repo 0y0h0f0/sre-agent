@@ -99,7 +99,7 @@ parse_alert
 | `k8s_rollout` | `K8sDiagnosticsTool` | 只读 `rollout_status`；成功可贡献 `resolved`，失败/ReplicaFailure 会阻止 `resolved` 并返回 `degraded` |
 | `db_readonly` | `DbDiagnosticsTool` | 只读 `connection_pool`；连接数下降可贡献 `improving`/`resolved`；默认 optional，不可用时返回 `unknown` |
 
-Gate verdicts 写入 state 的 `verify_gates`，每项包含 `gate`、`required`、`verdict`、`status`、`summary` 和 `evidence_ids`。Required gate 的 `degraded`/`unchanged`/`unknown` 会影响整体 `verify_result`；optional gate 的 `unknown` 不阻止 resolved，但如果实际返回 `degraded` 或 `unchanged`，会参与整体判定。所有 gate 只能读数据，不能触发新的写 remediation。
+Gate verdicts 写入 state 的 `verify_gates`，每项包含 `gate`、`required`、`verdict`、`status`、`summary` 和 `evidence_ids`。Required gate 的 `degraded`/`unchanged`/`unknown` 会影响整体 `verify_result`；optional gate 的 `unknown` 不阻止 resolved，但如果实际返回 `degraded` 或 `unchanged`，会参与整体判定。所有 gate 只能读数据，不能触发新的写 remediation。Required/optional 判定来自静态 capability registry；action params 只能把 optional gate 升级为 required，不能放宽 required gate。
 
 ## Checkpoint 与恢复
 

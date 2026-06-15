@@ -57,6 +57,7 @@ class AgentRunner:
             "_replan_count": 0,
             "verify_result": "",
             "verify_evidence": [],
+            "verify_gates": [],
             "_verify_cycles": 0,
             "_collect_gap_cycles": 0,
             "pre_action_snapshot": {},

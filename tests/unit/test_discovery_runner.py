@@ -338,6 +338,21 @@ class TestRunnerBackendDetection:
         assert len(result.backend_endpoints) == 1
         assert result.backend_endpoints[0].backend_type == "prometheus"
 
+    def test_runner_passes_manual_backend_urls_to_detector(self):
+        """Manual backend URLs must win over K8s discovery."""
+        detector = MagicMock(spec=BackendEndpointDetector)
+        detector.detect.return_value = []
+        runner = DiscoveryRunner(
+            k8s=_mock_k8s_discovery(),
+            prom_client=_mock_prom_client(),
+            backend_detector=detector,
+            manual_backend_urls={"prometheus": "https://manual-prom:9090"},
+        )
+        runner.run()
+
+        _args, kwargs = detector.detect.call_args
+        assert kwargs["manual_urls"] == {"prometheus": "https://manual-prom:9090"}
+
 
 # ---------------------------------------------------------------------------
 # Tests: Missing semantic types

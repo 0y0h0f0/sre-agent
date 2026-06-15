@@ -49,6 +49,7 @@ class IncidentState(TypedDict, total=False):
     # ReAct micro-loop state
     verify_result: str
     verify_evidence: list[dict[str, Any]]
+    verify_gates: list[dict[str, Any]]
     _verify_cycles: int
     _collect_gap_cycles: int
     # Snapshot + rollback (Phase 2.5)

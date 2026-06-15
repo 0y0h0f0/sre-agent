@@ -30,6 +30,9 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
             + state.get("logs_evidence", [])
             + state.get("traces_evidence", [])
             + state.get("deployment_evidence", [])
+            + state.get("k8s_evidence", [])
+            + state.get("db_evidence", [])
+            + state.get("verify_evidence", [])
         )
         # Build a richer prompt with evidence and actions
         evidence_summary = json.dumps(
@@ -78,6 +81,8 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
         # It is authoritative, so it is injected here rather than trusted to the
         # LLM output, and a follow-up is added so reviewers can act on it.
         report_data = dict(report_data)
+        report_data["verify_result"] = state.get("verify_result", "")
+        report_data["verify_gates"] = state.get("verify_gates", [])
         needs_review = bool(state.get("needs_human_review", False))
         report_data["needs_human_review"] = needs_review
         if needs_review:
@@ -93,9 +98,7 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
             incident_id=state["incident_id"],
             agent_run_id=state["agent_run_id"],
             version=version,
-            root_cause=_as_text(
-                report_data.get("root_cause", root_cause.get("summary", ""))
-            ),
+            root_cause=_as_text(report_data.get("root_cause", root_cause.get("summary", ""))),
             impact=_as_text(report_data.get("impact", "unknown")),
             timeline=report_data.get("timeline", []),
             actions=report_data.get("actions", actions),

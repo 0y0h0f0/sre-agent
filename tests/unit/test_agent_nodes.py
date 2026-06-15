@@ -876,8 +876,201 @@ class TestExecuteActionNode:
         assert len(result["execution_results"]) == 1
         assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
 
+    def test_live_restart_blocks_when_required_snapshot_missing(self, db_session: Session) -> None:
+        from packages.db.repositories.actions import ActionRepository
+
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("live backend should not be called")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        incident_id = "inc_live_missing_snapshot"
+        agent_run_id = "run_live_missing_snapshot"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                recommended_actions=[
+                    {
+                        "type": "restart_pod",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "missing" in execution["message"]
+        assert backend.execute_calls == []
+        rows = ActionRepository(db_session).list_for_run(agent_run_id)
+        assert rows[0].status == "blocked"
+
+    def test_live_restart_executes_when_capability_preflight_passes(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                return ExecutionResult(status="succeeded", message="live restart")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "replicas": 2,
+                        "ready_replicas": 2,
+                        "available_replicas": 2,
+                        "image": "checkout:v1",
+                        "conditions": [{"type": "Progressing", "status": "True"}],
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "restart_service",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert backend.execute_calls
+        assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
+        capability = result["execution_results"][0]["capability"]
+        assert capability["bounded_irreversible"] is True
+        assert "k8s_rollout" in capability["verify_gates"]
+
+    def test_unknown_live_action_fails_closed_before_backend(self, db_session: Session) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def execute(self, action, context):
+                raise AssertionError("unknown live action must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        deps.executor_backend = LiveBackend()
+
+        result = execute_action(
+            _base_state(
+                recommended_actions=[
+                    {
+                        "type": "unknown_live_mutation",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "unknown live action capability" in execution["message"]
+
+    def test_live_read_only_action_not_forced_through_capability_preflight(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                return ExecutionResult(status="succeeded", message="read-only passthrough")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+
+        result = execute_action(
+            _base_state(
+                recommended_actions=[
+                    {
+                        "type": "query_metrics",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L0",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert backend.execute_calls
+        assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
+
 
 class TestSnapshotVerifyRollbackFlow:
+    @staticmethod
+    def _static_tool(name: str, result):
+        class StaticTool:
+            def __init__(self) -> None:
+                self.name = name
+                self.timeout_seconds = 1.0
+                self.queries = []
+
+            def run(self, query):
+                self.queries.append(query)
+                return result
+
+        return StaticTool()
+
     def test_verify_records_tool_calls_with_current_run_id(
         self, db_session: Session, monkeypatch
     ) -> None:
@@ -940,6 +1133,25 @@ class TestSnapshotVerifyRollbackFlow:
             "logs",
             ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
         )
+        deps.k8s_tool = StaticTool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 2,
+                        "updated_replicas": 2,
+                        "ready_replicas": 2,
+                        "status": "complete",
+                    },
+                },
+                summary="rollout complete",
+                evidence=[],
+                duration_ms=1,
+            ),
+        )
         deps.tool_call_recorder = lambda **kw: calls.append(kw)
         monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
 
@@ -959,6 +1171,429 @@ class TestSnapshotVerifyRollbackFlow:
         assert result["verify_result"] == "resolved"
         assert calls
         assert {call["agent_run_id"] for call in calls} == {"run_verify"}
+
+    def test_verify_k8s_rollout_success_contributes_to_resolved(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_k8s_ok"
+        agent_run_id = "run_verify_k8s_ok"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 3,
+                        "updated_replicas": 3,
+                        "ready_replicas": 3,
+                        "status": "complete",
+                    },
+                },
+                summary="rollout complete",
+                evidence=[{"type": "k8s", "source": "fixture", "summary": "rollout complete"}],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {"risk_level": "L2", "type": "restart_pod", "target": "checkout"}
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        assert result["verify_result"] == "resolved"
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert gates["metrics_logs"]["verdict"] == "resolved"
+        assert gates["k8s_rollout"]["verdict"] == "resolved"
+        assert gates["k8s_rollout"]["evidence_ids"][0].startswith("evi_")
+
+    def test_verify_k8s_rollout_failure_prevents_resolved(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_k8s_failed"
+        agent_run_id = "run_verify_k8s_failed"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 3,
+                        "updated_replicas": 1,
+                        "ready_replicas": 0,
+                        "status": "failed",
+                    },
+                },
+                summary="rollout failed",
+                evidence=[{"type": "k8s", "source": "fixture", "summary": "rollout failed"}],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {"risk_level": "L2", "type": "restart_pod", "target": "checkout"}
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        assert result["verify_result"] == "degraded"
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert gates["metrics_logs"]["verdict"] == "resolved"
+        assert gates["k8s_rollout"]["verdict"] == "degraded"
+
+    def test_verify_db_connection_pool_improvement_contributes_to_improving(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_db_improving"
+        agent_run_id = "run_verify_db_improving"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 2,
+                        "updated_replicas": 2,
+                        "ready_replicas": 2,
+                        "status": "complete",
+                    },
+                },
+                summary="rollout complete",
+                evidence=[{"type": "k8s", "source": "fixture", "summary": "rollout complete"}],
+                duration_ms=1,
+            ),
+        )
+        deps.db_diagnostics_tool = self._static_tool(
+            "db_diagnostics",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "connection_pool",
+                    "rows": [{"state": "active", "connections": 80}],
+                },
+                summary="operation=connection_pool, rows=1",
+                evidence=[
+                    {
+                        "type": "db",
+                        "source": "fixture",
+                        "payload": {
+                            "operation": "connection_pool",
+                            "rows": [{"state": "active", "connections": 80}],
+                        },
+                    }
+                ],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="DatabaseConnectionExhaustion",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                db_evidence=[
+                    {
+                        "payload": {
+                            "operation": "connection_pool",
+                            "rows": [{"state": "active", "connections": 120}],
+                        }
+                    }
+                ],
+                execution_results=[
+                    {"risk_level": "L3", "type": "rollback_release", "target": "checkout"}
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        assert result["verify_result"] == "improving"
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert gates["db_readonly"]["verdict"] == "improving"
+
+    def test_verify_optional_db_unavailable_does_not_block_resolved(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_db_optional"
+        agent_run_id = "run_verify_db_optional"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 2,
+                        "updated_replicas": 2,
+                        "ready_replicas": 2,
+                        "status": "complete",
+                    },
+                },
+                summary="rollout complete",
+                evidence=[{"type": "k8s", "source": "fixture", "summary": "rollout complete"}],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {"risk_level": "L3", "type": "rollback_release", "target": "checkout"}
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert gates["db_readonly"]["required"] is False
+        assert gates["db_readonly"]["verdict"] == "unknown"
+        assert result["verify_result"] == "resolved"
+
+    def test_verify_required_db_unavailable_degrades(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_db_required"
+        agent_run_id = "run_verify_db_required"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 2,
+                        "updated_replicas": 2,
+                        "ready_replicas": 2,
+                        "status": "complete",
+                    },
+                },
+                summary="rollout complete",
+                evidence=[{"type": "k8s", "source": "fixture", "summary": "rollout complete"}],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {
+                        "risk_level": "L3",
+                        "type": "rollback_release",
+                        "target": "checkout",
+                        "params": {"required_verify_gates": ["db_readonly"]},
+                    }
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert gates["db_readonly"]["required"] is True
+        assert gates["db_readonly"]["verdict"] == "degraded"
+        assert result["verify_result"] == "degraded"
+
+    def test_action_params_cannot_downgrade_required_verify_gate(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_no_downgrade"
+        agent_run_id = "run_verify_no_downgrade"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {
+                        "risk_level": "L2",
+                        "type": "restart_pod",
+                        "target": "checkout",
+                        "params": {"optional_verify_gates": ["k8s_rollout"]},
+                    }
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert gates["k8s_rollout"]["required"] is True
+        assert gates["k8s_rollout"]["verdict"] == "degraded"
+        assert result["verify_result"] == "degraded"
 
     def test_take_snapshot_uses_executor_namespace_for_k8s_snapshot(
         self, db_session: Session
@@ -1232,3 +1867,37 @@ class TestGenerateReportReviewFlag:
         )
         result = generate_report(state, deps)
         assert result["incident_report"]["needs_human_review"] is False
+
+    def test_report_surfaces_verify_gate_verdicts(self, db_session: Session) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+
+        deps = _make_deps(db_session)
+        state = _base_state(
+            incident_id="inc_verify_report",
+            agent_run_id="run_verify_report",
+            root_cause={"summary": "rollout failed", "confidence": 0.8},
+            verify_result="degraded",
+            verify_gates=[
+                {
+                    "gate": "k8s_rollout",
+                    "required": True,
+                    "verdict": "degraded",
+                    "status": "succeeded",
+                    "summary": "rollout failed",
+                }
+            ],
+            verify_evidence=[
+                {
+                    "evidence_id": "evi_verify",
+                    "type": "k8s",
+                    "source": "fixture",
+                    "summary": "rollout failed",
+                }
+            ],
+        )
+
+        result = generate_report(state, deps)
+        report = result["incident_report"]
+
+        assert report["verify_result"] == "degraded"
+        assert report["verify_gates"][0]["gate"] == "k8s_rollout"

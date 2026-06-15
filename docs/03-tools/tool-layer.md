@@ -1,6 +1,6 @@
 # 工具层
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-15
 
 ## 概述
 
@@ -128,6 +128,8 @@ GitHub backend 先读 deployments API；如果没有 deployment records，再按
 
 live backend 只调用 Kubernetes read API。它不执行 restart、scale、rollback、cordon、drain 等写操作。`build_remediation_suggestions()` 只生成 dry-run command suggestion，不执行。
 
+`verify` 节点的 `k8s_rollout` gate 使用 `operation="rollout_status"` 重新读取 Deployment rollout 状态；该 gate 仍只读，失败会阻止整体验证结果变成 `resolved`。
+
 ### DbDiagnosticsTool
 
 - 文件：`db_diagnostics.py`
@@ -138,6 +140,8 @@ live backend 只调用 Kubernetes read API。它不执行 restart、scale、roll
 - live 安全策略：专用连接、`conn.read_only = True`、`statement_timeout`、`_assert_read_only()` 二次校验
 
 live DB diagnostics 只能读取 PostgreSQL 诊断视图，不允许任何 DDL/DML。
+
+`verify` 节点的 `db_readonly` gate 使用 `operation="connection_pool"` 重新读取连接池状态；该 gate 默认 optional，不可用时记录 `unknown`，不会触发任何 DB 写 remediation。
 
 ### RunbookSearchTool
 
@@ -164,6 +168,8 @@ class ExecutorBackend(Protocol):
 | `LiveK8sExecutorBackend` | 否 | `EXECUTOR_BACKEND=live` 显式 opt-in，只支持 restart/scale/rollback 类 Kubernetes mutation |
 
 live executor 当前支持：`restart_pod`、`restart_service`、`scale_deployment`、`scale_back`、`rollback_release`。`rollback_deployment` 是兼容别名，会规范化为 `rollback_release` 并调用同一个 Deployment rollback subresource。其它动作失败关闭。
+
+Live K8s action capability metadata 会声明执行后必须运行的 verify gates。Restart/scale 类能力至少包含 `k8s_rollout` 和 `metrics_logs`；rollback 类能力还包含 `db_readonly`。Gate 执行由 Agent `verify` 节点完成，不由 executor backend 直接执行。
 
 ## Worker 中的依赖构造
 

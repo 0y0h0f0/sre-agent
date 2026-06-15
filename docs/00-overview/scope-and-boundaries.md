@@ -1,6 +1,6 @@
 # 范围与安全边界
 
-**最后更新：** 2026-06-13
+**最后更新：** 2026-06-15
 
 ## 当前范围
 
@@ -52,7 +52,7 @@
 - `scale_deployment` / `scale_back`：通过 Deployment scale patch 调整副本数。
 - `rollback_release`：调用 Deployment rollback subresource；`rollback_deployment` 是兼容别名，会规范化为同一操作。
 
-这些写路径仍受 Kubernetes resource name 校验、namespace 限制、executor timeout、执行前 snapshot、执行后 verify/replan 和审计记录约束。
+这些写路径仍受 Kubernetes resource name 校验、namespace 限制、executor timeout、执行前 snapshot、执行后 verify/replan 和审计记录约束。执行后的 verify gates 只允许重新读取 metrics/logs、K8s rollout 状态和 DB read-only diagnostics；DB gate 不会触发数据库写入或新的 DB remediation。
 
 ## 禁止的真实写路径
 

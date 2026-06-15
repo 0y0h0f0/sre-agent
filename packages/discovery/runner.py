@@ -73,6 +73,7 @@ class DiscoveryRunner:
         cost_control: DiscoveryCostControl | None = None,
         metrics_service_label: str = "service",
         logs_service_label: str = "service",
+        manual_backend_urls: dict[str, str] | None = None,
     ) -> None:
         self._k8s = k8s
         self._prom_client = prom_client
@@ -82,6 +83,7 @@ class DiscoveryRunner:
         self._cost = cost_control or DiscoveryCostControl()
         self._metrics_service_label = metrics_service_label
         self._logs_service_label = logs_service_label
+        self._manual_backend_urls = dict(manual_backend_urls or {})
 
     def run(self, *, run_id: str = "") -> DiscoveryResult:
         """Run all discovery components and return a unified result.
@@ -213,7 +215,12 @@ class DiscoveryRunner:
             degraded_signals.append("backend_endpoints_unavailable")
             return []
         try:
-            raw_endpoints = list(self._backend_detector.detect(k8s_result))
+            raw_endpoints = list(
+                self._backend_detector.detect(
+                    k8s_result,
+                    manual_urls=self._manual_backend_urls,
+                )
+            )
         except Exception as exc:
             warnings.append(f"BackendEndpointDetector error: {exc}")
             degraded_signals.append("backend_endpoints_unavailable")

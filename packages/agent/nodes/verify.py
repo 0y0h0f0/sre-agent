@@ -1,7 +1,8 @@
 """Verify that executed actions resolved the incident (ReAct Loop A).
 
-Re-queries metrics and logs after L2/L3 actions execute, compares
-before/after state, and routes back to plan_actions if the issue persists.
+Dispatches deterministic read-only verify gates after L2/L3 actions execute.
+The default gate re-queries metrics and logs; Kubernetes and database gates are
+selected from action capability metadata when present.
 """
 
 from __future__ import annotations
@@ -11,11 +12,15 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
+from packages.agent.actions.capabilities import get_action_capability
 from packages.agent.nodes._persist import persist_evidence
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
 from packages.common.time import utc_now
+from packages.tools.db_diagnostics import DbDiagnosticsQuery
+from packages.tools.executor_backends import canonical_action_type
+from packages.tools.k8s import K8sQuery
 from packages.tools.logs import LogsQuery
 from packages.tools.metrics import MetricsQuery, MetricType
 
@@ -24,10 +29,14 @@ logger = logging.getLogger(__name__)
 MAX_VERIFY_CYCLES = 2
 
 # Thresholds for deterministic before/after comparison.
-_ERROR_RATE_RESOLVED = 0.01   # < 1% error rate -> resolved
-_ERROR_RATE_IMPROVED = 0.5    # > 50% drop -> improving
-_LATENCY_IMPROVED_MS = 0.5    # > 50% latency drop -> improving
-_LATENCY_RESOLVED_MS = 100    # < 100ms -> resolved
+_ERROR_RATE_RESOLVED = 0.01  # < 1% error rate -> resolved
+_ERROR_RATE_IMPROVED = 0.5  # > 50% drop -> improving
+_LATENCY_IMPROVED_MS = 0.5  # > 50% latency drop -> improving
+_LATENCY_RESOLVED_MS = 100  # < 100ms -> resolved
+_DB_CONNECTION_RESOLVED = 50
+_DB_CONNECTION_IMPROVED = 0.3
+_DEFAULT_VERIFY_GATES = ("metrics_logs",)
+_OPTIONAL_VERIFY_GATES = {"db_readonly"}
 
 
 def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
@@ -43,8 +52,7 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
     try:
         execution_results = state.get("execution_results", [])
         actionable = [
-            r for r in execution_results
-            if str(r.get("risk_level", "")).upper() in ("L2", "L3")
+            r for r in execution_results if str(r.get("risk_level", "")).upper() in ("L2", "L3")
         ]
         cycles = int(state.get("_verify_cycles", 0))
 
@@ -59,9 +67,7 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
                 status="succeeded",
                 started_at=started_at,
                 finished_at=utc_now(),
-                input_summary=(
-                    f"actionable_l23={len(actionable)} cycles={cycles}"
-                ),
+                input_summary=(f"actionable_l23={len(actionable)} cycles={cycles}"),
                 output_summary="skipped" if not actionable else "max_cycles",
             )
             return {
@@ -70,6 +76,8 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
                 "verify_evidence": [],
                 "phase": "verified",
             }  # type: ignore[typeddict-unknown-key]
+
+        gate_plan = _build_gate_plan(actionable)
 
         # Wait for the system to stabilise after the action.
         # NOTE: blocks the Celery worker; acceptable for current scale.
@@ -83,28 +91,37 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
         fresh_start = now - timedelta(minutes=5)
         fresh_end = now
 
-        # Re-query the same metric type that was collected pre-diagnosis.
-        metric_type = _metric_for_alert(alert_name)
         agent_run_id = state["agent_run_id"]
-        fresh_metrics = _safe_query_metrics(
-            deps, agent_run_id, service, metric_type, fresh_start, fresh_end
-        )
-        fresh_logs = _safe_query_logs(
-            deps, agent_run_id, service, alert_name, fresh_start, fresh_end
-        )
-        fresh_evidence = fresh_metrics + fresh_logs
-
-        # Persist fresh evidence so it is traceable in DB.
-        if fresh_evidence:
-            fresh_evidence = persist_evidence(
-                deps.db, state["incident_id"], state["agent_run_id"],
-                fresh_evidence,
+        gate_results: list[dict[str, Any]] = []
+        fresh_evidence: list[dict[str, Any]] = []
+        for gate in gate_plan:
+            result = _run_verify_gate(
+                gate,
+                state=state,
+                deps=deps,
+                agent_run_id=agent_run_id,
+                service=service,
+                alert_name=alert_name,
+                fresh_start=fresh_start,
+                fresh_end=fresh_end,
             )
+            gate_evidence = result.pop("_evidence", [])
+            if gate_evidence:
+                gate_evidence = persist_evidence(
+                    deps.db,
+                    state["incident_id"],
+                    state["agent_run_id"],
+                    gate_evidence,
+                )
+                result["evidence_ids"] = [
+                    item["evidence_id"] for item in gate_evidence if item.get("evidence_id")
+                ]
+                fresh_evidence.extend(gate_evidence)
+            else:
+                result["evidence_ids"] = []
+            gate_results.append(result)
 
-        original_evidence = (
-            state.get("metrics_evidence", []) + state.get("logs_evidence", [])
-        )
-        verdict = _assess_verification(original_evidence, fresh_evidence)
+        verdict = _combine_gate_verdicts(gate_results)
 
         deps.node_tracer(
             node_id=node_id,
@@ -114,15 +131,14 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
             started_at=started_at,
             finished_at=utc_now(),
             input_summary=f"actions={len(actionable)} service={service}",
-            output_summary=(
-                f"verdict={verdict} fresh_evidence={len(fresh_evidence)}"
-            ),
+            output_summary=(f"verdict={verdict} fresh_evidence={len(fresh_evidence)}"),
         )
 
         return {
             **state,
             "verify_result": verdict,
             "verify_evidence": fresh_evidence,
+            "verify_gates": gate_results,
             "_verify_cycles": cycles + 1,
             "phase": "verified",
         }  # type: ignore[typeddict-unknown-key]
@@ -130,7 +146,8 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
     except Exception as exc:
         logger.error(
             "verify: node failed incident=%s",
-            state.get("incident_id"), exc_info=True,
+            state.get("incident_id"),
+            exc_info=True,
         )
         deps.node_tracer(
             node_id=node_id,
@@ -147,9 +164,258 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
             **state,
             "verify_result": "error",
             "verify_evidence": [],
+            "verify_gates": [],
             "phase": "verified",
             "errors": errors,
         }  # type: ignore[typeddict-unknown-key]
+
+
+def _build_gate_plan(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build a de-duplicated verify gate plan from action capability metadata."""
+    planned: list[dict[str, Any]] = []
+    seen: dict[tuple[str, str], int] = {}
+    for action in actions:
+        gates = _action_verify_gates(action)
+        if not gates:
+            gates = _DEFAULT_VERIFY_GATES
+        for gate in gates:
+            required = _gate_required(gate, action)
+            key = _gate_key(gate, action)
+            if key in seen:
+                existing = planned[seen[key]]
+                existing["required"] = bool(existing["required"]) or required
+                continue
+            seen[key] = len(planned)
+            planned.append(
+                {
+                    "gate": gate,
+                    "required": required,
+                    "action_type": canonical_action_type(action.get("type")),
+                    "target": action.get("target", ""),
+                    "action_id": action.get("action_id", ""),
+                }
+            )
+    return planned
+
+
+def _gate_key(gate: str, action: dict[str, Any]) -> tuple[str, str]:
+    if gate == "k8s_rollout":
+        return gate, str(action.get("target", ""))
+    return gate, ""
+
+
+def _action_verify_gates(action: dict[str, Any]) -> tuple[str, ...]:
+    capability = action.get("capability")
+    if isinstance(capability, dict):
+        gates = capability.get("verify_gates", [])
+        if isinstance(gates, list | tuple):
+            return tuple(str(g) for g in gates if str(g))
+
+    registered = get_action_capability(canonical_action_type(action.get("type")))
+    if registered is not None:
+        return registered.verify_gates
+    return ()
+
+
+def _gate_required(gate: str, action: dict[str, Any]) -> bool:
+    params = action.get("params", {})
+    if isinstance(params, dict):
+        required = params.get("required_verify_gates")
+        if isinstance(required, list | tuple | set) and gate in required:
+            return True
+    return gate not in _OPTIONAL_VERIFY_GATES
+
+
+def _run_verify_gate(
+    gate: dict[str, Any],
+    *,
+    state: IncidentState,
+    deps: AgentDeps,
+    agent_run_id: str,
+    service: str,
+    alert_name: str,
+    fresh_start: datetime,
+    fresh_end: datetime,
+) -> dict[str, Any]:
+    gate_name = str(gate["gate"])
+    required = bool(gate.get("required", True))
+    if gate_name == "metrics_logs":
+        return _run_metrics_logs_gate(
+            gate,
+            state=state,
+            deps=deps,
+            agent_run_id=agent_run_id,
+            service=service,
+            alert_name=alert_name,
+            fresh_start=fresh_start,
+            fresh_end=fresh_end,
+        )
+    if gate_name == "k8s_rollout":
+        return _run_k8s_rollout_gate(gate, deps=deps, agent_run_id=agent_run_id, service=service)
+    if gate_name == "db_readonly":
+        return _run_db_readonly_gate(gate, state=state, deps=deps, agent_run_id=agent_run_id)
+    return {
+        **_gate_base(gate),
+        "verdict": "degraded" if required else "unknown",
+        "status": "failed",
+        "summary": f"unknown verify gate '{gate_name}'",
+        "_evidence": [],
+    }
+
+
+def _run_metrics_logs_gate(
+    gate: dict[str, Any],
+    *,
+    state: IncidentState,
+    deps: AgentDeps,
+    agent_run_id: str,
+    service: str,
+    alert_name: str,
+    fresh_start: datetime,
+    fresh_end: datetime,
+) -> dict[str, Any]:
+    metric_type = _metric_for_alert(alert_name)
+    fresh_metrics = _safe_query_metrics(
+        deps, agent_run_id, service, metric_type, fresh_start, fresh_end
+    )
+    fresh_logs = _safe_query_logs(deps, agent_run_id, service, alert_name, fresh_start, fresh_end)
+    evidence = fresh_metrics + fresh_logs
+    original = state.get("metrics_evidence", []) + state.get("logs_evidence", [])
+    verdict = _assess_verification(original, evidence)
+    status = "succeeded" if evidence else "degraded"
+    return {
+        **_gate_base(gate),
+        "verdict": verdict,
+        "status": status,
+        "summary": f"metrics_logs verdict={verdict} evidence={len(evidence)}",
+        "_evidence": evidence,
+    }
+
+
+def _run_k8s_rollout_gate(
+    gate: dict[str, Any],
+    *,
+    deps: AgentDeps,
+    agent_run_id: str,
+    service: str,
+) -> dict[str, Any]:
+    required = bool(gate.get("required", True))
+    if deps.k8s_tool is None:
+        verdict = "degraded" if required else "unknown"
+        return {
+            **_gate_base(gate),
+            "verdict": verdict,
+            "status": "degraded",
+            "summary": "k8s diagnostics tool unavailable",
+            "_evidence": [],
+        }
+
+    target = str(gate.get("target") or service)
+    namespace = deps.settings.executor_k8s_namespace or deps.settings.k8s_namespace or "default"
+    query = K8sQuery(service=target, operation="rollout_status", namespace=namespace)
+    try:
+        result = deps.k8s_tool.run(query)
+        deps.tool_call_recorder(
+            agent_run_id=agent_run_id,
+            node_name="verify",
+            tool_name=deps.k8s_tool.name,
+            query=query,
+            result=result,
+            input_summary=f"verify k8s_rollout service={target} namespace={namespace}",
+        )
+    except Exception as exc:
+        logger.error(
+            "verify: k8s rollout gate failed service=%s namespace=%s",
+            target,
+            namespace,
+            exc_info=True,
+        )
+        verdict = "degraded" if required else "unknown"
+        return {
+            **_gate_base(gate),
+            "verdict": verdict,
+            "status": "degraded",
+            "summary": f"k8s rollout gate unavailable: {type(exc).__name__}",
+            "_evidence": [],
+        }
+    evidence = [
+        {**item, "_verify_fresh": True, "verify_gate": "k8s_rollout"} for item in result.evidence
+    ]
+    verdict = _assess_k8s_rollout(result.data, result.status, required=required)
+    return {
+        **_gate_base(gate),
+        "verdict": verdict,
+        "status": result.status,
+        "summary": result.summary,
+        "_evidence": evidence,
+    }
+
+
+def _run_db_readonly_gate(
+    gate: dict[str, Any],
+    *,
+    state: IncidentState,
+    deps: AgentDeps,
+    agent_run_id: str,
+) -> dict[str, Any]:
+    required = bool(gate.get("required", True))
+    if deps.db_diagnostics_tool is None:
+        verdict = "degraded" if required else "unknown"
+        return {
+            **_gate_base(gate),
+            "verdict": verdict,
+            "status": "degraded",
+            "summary": "db diagnostics tool unavailable",
+            "_evidence": [],
+        }
+
+    query = DbDiagnosticsQuery(operation="connection_pool")
+    try:
+        result = deps.db_diagnostics_tool.run(query)
+        deps.tool_call_recorder(
+            agent_run_id=agent_run_id,
+            node_name="verify",
+            tool_name=deps.db_diagnostics_tool.name,
+            query=query,
+            result=result,
+            input_summary="verify db_readonly op=connection_pool",
+        )
+    except Exception as exc:
+        logger.error("verify: db readonly gate failed", exc_info=True)
+        verdict = "degraded" if required else "unknown"
+        return {
+            **_gate_base(gate),
+            "verdict": verdict,
+            "status": "degraded",
+            "summary": f"db readonly gate unavailable: {type(exc).__name__}",
+            "_evidence": [],
+        }
+    evidence = [
+        {**item, "_verify_fresh": True, "verify_gate": "db_readonly"} for item in result.evidence
+    ]
+    verdict = _assess_db_readonly(
+        state.get("db_evidence", []),
+        result.data,
+        result.status,
+        required=required,
+    )
+    return {
+        **_gate_base(gate),
+        "verdict": verdict,
+        "status": result.status,
+        "summary": result.summary,
+        "_evidence": evidence,
+    }
+
+
+def _gate_base(gate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "gate": str(gate.get("gate", "")),
+        "required": bool(gate.get("required", True)),
+        "action_type": str(gate.get("action_type", "")),
+        "target": str(gate.get("target", "")),
+        "action_id": str(gate.get("action_id", "")),
+    }
 
 
 def _safe_query_metrics(
@@ -161,9 +427,7 @@ def _safe_query_metrics(
     end: datetime,
 ) -> list[dict[str, Any]]:
     try:
-        query = MetricsQuery(
-            service=service, metric_type=metric_type, start=start, end=end
-        )
+        query = MetricsQuery(service=service, metric_type=metric_type, start=start, end=end)
         result = deps.metrics_tool.run(query)
         deps.tool_call_recorder(
             agent_run_id=agent_run_id,
@@ -174,10 +438,7 @@ def _safe_query_metrics(
             input_summary=f"verify metric={metric_type} service={service}",
         )
         if result.evidence:
-            return [
-                {**e, "_verify_fresh": True}
-                for e in result.evidence
-            ]
+            return [{**e, "_verify_fresh": True} for e in result.evidence]
         return [
             {
                 "type": "metric",
@@ -192,7 +453,9 @@ def _safe_query_metrics(
     except Exception:
         logger.error(
             "verify: metrics_tool failed service=%s metric=%s",
-            service, metric_type, exc_info=True,
+            service,
+            metric_type,
+            exc_info=True,
         )
         return []
 
@@ -207,9 +470,7 @@ def _safe_query_logs(
 ) -> list[dict[str, Any]]:
     try:
         keywords = _keywords_for_alert(alert_name)
-        query = LogsQuery(
-            service=service, start=start, end=end, keywords=keywords, limit=50
-        )
+        query = LogsQuery(service=service, start=start, end=end, keywords=keywords, limit=50)
         result = deps.logs_tool.run(query)
         deps.tool_call_recorder(
             agent_run_id=agent_run_id,
@@ -220,10 +481,7 @@ def _safe_query_logs(
             input_summary=f"verify logs service={service}",
         )
         if result.evidence:
-            return [
-                {**e, "_verify_fresh": True}
-                for e in result.evidence
-            ]
+            return [{**e, "_verify_fresh": True} for e in result.evidence]
         return [
             {
                 "type": "log",
@@ -236,7 +494,9 @@ def _safe_query_logs(
         ]
     except Exception:
         logger.error(
-            "verify: logs_tool failed service=%s", service, exc_info=True,
+            "verify: logs_tool failed service=%s",
+            service,
+            exc_info=True,
         )
         return []
 
@@ -259,9 +519,7 @@ def _assess_verification(
 
     # Extract numeric values from evidence summaries.
     # Relies on ``compact_summary`` output format ("key=value, key2=value2").
-    def _extract_value(
-        evidence_list: list[dict[str, Any]], key: str
-    ) -> float | None:
+    def _extract_value(evidence_list: list[dict[str, Any]], key: str) -> float | None:
         for item in evidence_list:
             summary = str(item.get("summary", ""))
             for part in summary.replace(",", " ").split():
@@ -289,14 +547,14 @@ def _assess_verification(
 
     # Fallback: compare evidence counts with error-like content.
     fresh_failures = sum(
-        1 for e in fresh
-        if "error" in str(e.get("summary", "")).lower()
-        or e.get("status") == "failed"
+        1
+        for e in fresh
+        if "error" in str(e.get("summary", "")).lower() or e.get("status") == "failed"
     )
     orig_failures = sum(
-        1 for e in original
-        if "error" in str(e.get("summary", "")).lower()
-        or e.get("status") == "failed"
+        1
+        for e in original
+        if "error" in str(e.get("summary", "")).lower() or e.get("status") == "failed"
     )
 
     improved = False
@@ -346,6 +604,197 @@ def _assess_verification(
     if improved:
         return "improving"
     return "unchanged"
+
+
+def _assess_k8s_rollout(
+    data: dict[str, Any],
+    status: str,
+    *,
+    required: bool,
+) -> str:
+    """Assess a read-only rollout status payload."""
+    if status in {"failed", "timeout"}:
+        return "degraded" if required else "unknown"
+    if status == "degraded":
+        return "unknown" if not required else "degraded"
+
+    payload = data.get("payload", data)
+    if not isinstance(payload, dict) or not payload:
+        return "degraded" if required else "unknown"
+    if payload.get("error"):
+        return "degraded" if required else "unknown"
+
+    rollout_status = str(payload.get("status", "")).strip().lower()
+    if rollout_status in {"failed", "failure", "degraded"}:
+        return "degraded"
+    if rollout_status in {"complete", "completed", "successful", "success"}:
+        return "resolved"
+
+    for condition in payload.get("conditions", []) or []:
+        if not isinstance(condition, dict):
+            continue
+        ctype = str(condition.get("type", ""))
+        cstatus = str(condition.get("status", "")).lower()
+        if ctype == "ReplicaFailure" and cstatus == "true":
+            return "degraded"
+        if ctype == "Progressing" and cstatus == "false":
+            return "degraded"
+
+    desired = _first_number(payload, "desired_replicas", "replicas")
+    ready = _first_number(payload, "ready_replicas", "available_replicas")
+    updated = _first_number(payload, "updated_replicas")
+    if desired is not None and desired > 0:
+        if ready is not None and updated is not None:
+            if ready >= desired and updated >= desired:
+                return "resolved"
+            if ready > 0 or updated > 0:
+                return "improving"
+            return "unchanged"
+        if ready is not None:
+            if ready >= desired:
+                return "resolved"
+            if ready > 0:
+                return "improving"
+            return "unchanged"
+
+    return "unknown"
+
+
+def _assess_db_readonly(
+    original: list[dict[str, Any]],
+    data: dict[str, Any],
+    status: str,
+    *,
+    required: bool,
+) -> str:
+    """Assess read-only connection-pool diagnostics."""
+    if status in {"failed", "timeout"}:
+        return "degraded" if required else "unknown"
+    if status == "degraded":
+        return "degraded" if required else "unknown"
+
+    rows = data.get("rows", [])
+    if not isinstance(rows, list) or not rows:
+        return "degraded" if required else "unknown"
+
+    fresh_connections = _connection_count_from_rows(rows)
+    if fresh_connections is None:
+        return "unknown"
+    if fresh_connections <= _DB_CONNECTION_RESOLVED:
+        return "resolved"
+
+    original_connections = _connection_count_from_evidence(original)
+    if original_connections is None:
+        return "unknown"
+    if original_connections > 0 and fresh_connections > original_connections * 1.5:
+        return "degraded"
+    if original_connections > 0:
+        drop = (original_connections - fresh_connections) / original_connections
+        if drop >= _DB_CONNECTION_IMPROVED:
+            return "improving"
+    return "unchanged"
+
+
+def _combine_gate_verdicts(gates: list[dict[str, Any]]) -> str:
+    """Collapse gate verdicts into the workflow-level verify result."""
+    if not gates:
+        return "unknown"
+
+    effective = [gate for gate in gates if gate.get("required") or gate.get("verdict") != "unknown"]
+    if not effective:
+        return "unknown"
+
+    verdicts = [str(gate.get("verdict", "unknown")) for gate in effective]
+    if "degraded" in verdicts:
+        return "degraded"
+    required_verdicts = [
+        str(gate.get("verdict", "unknown")) for gate in gates if gate.get("required")
+    ]
+    if "unknown" in required_verdicts:
+        return "unknown"
+    if "unchanged" in verdicts:
+        return "unchanged"
+    if "improving" in verdicts:
+        return "improving"
+    if verdicts and all(verdict == "resolved" for verdict in verdicts):
+        return "resolved"
+    return "unknown"
+
+
+def _connection_count_from_rows(rows: list[Any]) -> float | None:
+    total = 0.0
+    saw_count = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("connections")
+        if value is None:
+            continue
+        try:
+            total += float(value)
+            saw_count = True
+        except (TypeError, ValueError):
+            continue
+    return total if saw_count else None
+
+
+def _connection_count_from_evidence(evidence: list[dict[str, Any]]) -> float | None:
+    for item in evidence:
+        rows = _rows_from_evidence_payload(item)
+        if rows:
+            count = _connection_count_from_rows(rows)
+            if count is not None:
+                return count
+        summary_count = _summary_number(item, "connections")
+        if summary_count is not None:
+            return summary_count
+    return None
+
+
+def _rows_from_evidence_payload(item: dict[str, Any]) -> list[Any]:
+    payload = item.get("payload")
+    if isinstance(payload, dict):
+        rows = payload.get("rows")
+        if isinstance(rows, list):
+            return rows
+        data = payload.get("data")
+        if isinstance(data, dict):
+            nested_rows = data.get("rows")
+            if isinstance(nested_rows, list):
+                return nested_rows
+    data = item.get("data")
+    if isinstance(data, dict):
+        rows = data.get("rows")
+        if isinstance(rows, list):
+            return rows
+    return []
+
+
+def _summary_number(item: dict[str, Any], key: str) -> float | None:
+    summary = str(item.get("summary", ""))
+    for part in summary.replace(",", " ").split():
+        if "=" not in part:
+            continue
+        k, value = part.split("=", 1)
+        if k.strip() != key:
+            continue
+        try:
+            return float(value.strip())
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _first_number(payload: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _metric_for_alert(alert_name: str) -> MetricType:

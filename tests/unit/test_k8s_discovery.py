@@ -114,7 +114,12 @@ class _FakeAppsV1:
                                 name="PAYMENTS_URL",
                                 value="http://payments.prod.svc.cluster.local",
                                 value_from=None,
-                            )
+                            ),
+                            _obj(
+                                name="KUBERNETES_SERVICE_HOST",
+                                value="10.0.0.1",
+                                value_from=None,
+                            ),
                         ],
                         env_from=[],
                     )

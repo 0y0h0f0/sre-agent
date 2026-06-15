@@ -1,6 +1,6 @@
 # Agent 工作流
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-15
 
 ## 概述
 
@@ -76,7 +76,7 @@ parse_alert
 | `human_approval` | L2/L3 actions | action/approval records、GraphInterrupt | 为需要审批的动作创建 Action/Approval 记录并暂停图；resume 时读取 DB 中每个 approval 的真实状态 |
 | `take_snapshot` | pending executable actions | `pre_action_snapshot` | 执行前抓取 evidence count 和 K8s deployment 状态，供回滚/降级处理使用 |
 | `execute_action` | allowed 且无需审批的 actions | action records、`execution_results` | 对无 `action_id` 的自动动作先创建 Action 记录，再通过注入的 executor backend 执行；默认 fixture |
-| `verify` | execution results | `verify_result`、`verify_evidence` | 对 L2/L3 执行动作重新查 metrics/logs，最多 2 轮验证/重规划 |
+| `verify` | execution results | `verify_result`、`verify_evidence`、`verify_gates` | 按 action capability metadata 执行只读 verify gates；默认重新查 metrics/logs，K8s live 能力追加 `k8s_rollout`，rollback 类能力可追加 `db_readonly`；最多 2 轮验证/重规划 |
 | `generate_report` | run trajectory | `incident_report` | 生成结构化 incident report |
 | `persist_memory` | diagnosis/report/actions | L0-L3 memory writes | best-effort 写入，失败不终止主流程 |
 
@@ -88,6 +88,18 @@ parse_alert
 | `human_approval -> plan_actions` | 本批审批全拒绝 | `MAX_REPLAN_CYCLES = 3` |
 | `verify -> plan_actions` | `verify_result` 为 `improving`、`unchanged`、`degraded` | `MAX_VERIFY_CYCLES = 2` |
 | `verify -> generate_report` | `resolved`、`skipped`、`unknown`、`error` 或达到上限 | 终止循环 |
+
+## Verify Gates
+
+`execute_action` 会把 action capability metadata 写入每个 execution result。`verify` 从这些 metadata 中读取 `verify_gates` 并执行只读验证：
+
+| Gate | 数据源 | 说明 |
+|------|--------|------|
+| `metrics_logs` | `MetricsTool`、`LogsTool` | 默认 gate；和旧行为一致，按原 alert 类型重新查询最近 5 分钟 metrics/logs |
+| `k8s_rollout` | `K8sDiagnosticsTool` | 只读 `rollout_status`；成功可贡献 `resolved`，失败/ReplicaFailure 会阻止 `resolved` 并返回 `degraded` |
+| `db_readonly` | `DbDiagnosticsTool` | 只读 `connection_pool`；连接数下降可贡献 `improving`/`resolved`；默认 optional，不可用时返回 `unknown` |
+
+Gate verdicts 写入 state 的 `verify_gates`，每项包含 `gate`、`required`、`verdict`、`status`、`summary` 和 `evidence_ids`。Required gate 的 `degraded`/`unchanged`/`unknown` 会影响整体 `verify_result`；optional gate 的 `unknown` 不阻止 resolved，但如果实际返回 `degraded` 或 `unchanged`，会参与整体判定。所有 gate 只能读数据，不能触发新的写 remediation。
 
 ## Checkpoint 与恢复
 
@@ -125,7 +137,7 @@ config = {
 | `cross_validation`、`needs_human_review`、`cascade_analysis` | 证据交叉验证和级联故障分析 |
 | `recommended_actions` | planner 输出，经 guardrail 后补充风险字段 |
 | `approval_status`、`approval_decision`、`rejection_feedback`、`_replan_count` | 审批与拒绝重规划状态 |
-| `pre_action_snapshot`、`execution_results`、`verify_result`、`verify_evidence`、`_verify_cycles` | 执行、验证和回滚参考 |
+| `pre_action_snapshot`、`execution_results`、`verify_result`、`verify_evidence`、`verify_gates`、`_verify_cycles` | 执行、验证、gate verdict 和回滚参考 |
 | `token_budget`、`compression_events`、`llm_calls` | token 使用、压缩事件和 LLM 元数据 |
 | `_built_messages`、`_needs_approval`、`_all_l4`、`_collect_gap_cycles`、`_interrupts_enabled` | 图内部字段，不应作为外部 API 契约 |
 

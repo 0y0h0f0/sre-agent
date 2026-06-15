@@ -9,6 +9,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from packages.agent.actions.capabilities import (
+    ActionCapability,
+    get_action_capability,
+)
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
@@ -19,6 +23,9 @@ from packages.tools.executor_backends import (
     ExecutionContext,
     ExecutionResult,
     FixtureExecutorBackend,
+    canonical_action_type,
+    has_live_rollback_handler,
+    is_valid_k8s_resource_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,9 +58,13 @@ def execute_action(state: IncidentState, deps: AgentDeps) -> IncidentState:
         failed = 0
 
         for action in executable:
-            atype = str(action.get("type", "")).lower()
+            atype = canonical_action_type(action.get("type"))
+            _attach_capability_metadata(action, atype)
             try:
-                if state.get("verify_result") == "degraded" and atype in ROLLBACK_ACTION_TYPES:
+                preflight_block = _live_preflight_block(action, state, context, backend)
+                if preflight_block is not None:
+                    result = preflight_block
+                elif state.get("verify_result") == "degraded" and atype in ROLLBACK_ACTION_TYPES:
                     result = backend.rollback(action, state.get("pre_action_snapshot", {}), context)
                 else:
                     # Reject non-rollback actions when degraded.
@@ -64,7 +75,7 @@ def execute_action(state: IncidentState, deps: AgentDeps) -> IncidentState:
                         )
                     else:
                         result = backend.execute(action, context)
-                failed += 1 if result.status == "failed" else 0
+                failed += 1 if result.status in {"failed", "blocked", "timeout"} else 0
             except Exception as exc:
                 failed += 1
                 logger.error(
@@ -127,6 +138,186 @@ def execute_action(state: IncidentState, deps: AgentDeps) -> IncidentState:
         errors = list(state.get("errors", []))
         errors.append({"node": "execute_action", "error": str(exc)})
         return {**state, "errors": errors}
+
+
+def _attach_capability_metadata(action: dict[str, Any], action_type: str) -> None:
+    capability = get_action_capability(action_type)
+    if capability is None:
+        return
+    action["capability"] = {
+        "category": capability.category,
+        "live_backend": capability.live_backend,
+        "reversible": capability.reversible,
+        "bounded_irreversible": capability.bounded_irreversible,
+        "verify_gates": list(capability.verify_gates),
+    }
+
+
+def _live_preflight_block(
+    action: dict[str, Any],
+    state: IncidentState,
+    context: ExecutionContext,
+    backend: Any,
+) -> ExecutionResult | None:
+    """Return a blocked result when a live action fails capability preflight."""
+    if getattr(backend, "name", "") != "live":
+        return None
+
+    atype = canonical_action_type(action.get("type"))
+    capability = get_action_capability(atype)
+    if capability is None:
+        return _blocked_result(
+            atype,
+            "unknown live action capability",
+            {"action_type": atype},
+        )
+
+    if capability.category in {"read_only", "record_only"}:
+        return None
+
+    if capability.live_backend != "k8s":
+        return _blocked_result(
+            atype,
+            "action is not registered for live K8s execution",
+            {"category": capability.category, "live_backend": capability.live_backend},
+        )
+
+    contract_error = _capability_contract_error(capability)
+    if contract_error:
+        return _blocked_result(atype, contract_error, {"capability": capability.model_dump()})
+
+    common_errors = _common_k8s_preflight_errors(action, context)
+    if common_errors:
+        return _blocked_result(atype, "live K8s target preflight failed", {"failed": common_errors})
+
+    snapshot = state.get("pre_action_snapshot", {})
+    missing_paths = _missing_snapshot_paths(snapshot, capability.required_snapshot_paths)
+    if missing_paths:
+        return _blocked_result(
+            atype,
+            "required pre-action snapshot fields are missing",
+            {"missing_snapshot_paths": missing_paths},
+        )
+
+    failed_checks = _failed_preflight_checks(capability, action, snapshot, context)
+    if failed_checks:
+        return _blocked_result(
+            atype,
+            "live capability preflight checks failed",
+            {"failed_preflight_checks": failed_checks},
+        )
+
+    return None
+
+
+def _capability_contract_error(capability: ActionCapability) -> str:
+    if not (capability.reversible or capability.bounded_irreversible):
+        return "live mutation is neither reversible nor bounded irreversible"
+    if not capability.verify_gates:
+        return "live mutation has no verify gates"
+    if capability.reversible:
+        if not capability.rollback_action_type:
+            return "reversible live mutation has no rollback action"
+        rollback_capability = get_action_capability(capability.rollback_action_type)
+        if rollback_capability is None:
+            return "rollback action is not registered"
+        if not has_live_rollback_handler(capability.rollback_action_type):
+            return "rollback action has no live rollback handler"
+    if capability.bounded_irreversible and not capability.preflight_checks:
+        return "bounded irreversible live mutation has no preflight checks"
+    return ""
+
+
+def _common_k8s_preflight_errors(
+    action: dict[str, Any],
+    context: ExecutionContext,
+) -> list[str]:
+    errors: list[str] = []
+    target = str(action.get("target", "") or "")
+    namespace = context.namespace or ""
+    if not target or not is_valid_k8s_resource_name(target):
+        errors.append("k8s_target_name_valid")
+    if namespace and not is_valid_k8s_resource_name(namespace):
+        errors.append("k8s_namespace_valid")
+    return errors
+
+
+def _missing_snapshot_paths(snapshot: object, paths: tuple[str, ...]) -> list[str]:
+    return [path for path in paths if not _snapshot_path_exists(snapshot, path)]
+
+
+def _snapshot_path_exists(snapshot: object, path: str) -> bool:
+    current: object = snapshot
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False
+        current = current[part]
+    return current is not None and current != "" and current != []
+
+
+def _failed_preflight_checks(
+    capability: ActionCapability,
+    action: dict[str, Any],
+    snapshot: object,
+    context: ExecutionContext,
+) -> list[str]:
+    failed: list[str] = []
+    k8s_snapshot = snapshot.get("k8s") if isinstance(snapshot, dict) else None
+    if not isinstance(k8s_snapshot, dict):
+        k8s_snapshot = {}
+
+    for check in capability.preflight_checks:
+        if check == "k8s_target_name_valid":
+            target_errors = _common_k8s_preflight_errors(action, context)
+            if "k8s_target_name_valid" in target_errors:
+                failed.append(check)
+        elif check == "k8s_namespace_valid":
+            target_errors = _common_k8s_preflight_errors(action, context)
+            if "k8s_namespace_valid" in target_errors:
+                failed.append(check)
+        elif check == "k8s_deployment_exists":
+            if k8s_snapshot.get("error") or not k8s_snapshot.get("name"):
+                failed.append(check)
+        elif check == "k8s_replicas_gt_zero":
+            try:
+                if int(k8s_snapshot.get("replicas", 0)) <= 0:
+                    failed.append(check)
+            except (TypeError, ValueError):
+                failed.append(check)
+        elif check == "k8s_rollout_not_failed":
+            if _rollout_failed(k8s_snapshot):
+                failed.append(check)
+        elif check == "k8s_rolling_restart_patch_only":
+            if canonical_action_type(action.get("type")) not in {"restart_pod", "restart_service"}:
+                failed.append(check)
+        else:
+            failed.append(check)
+    return failed
+
+
+def _rollout_failed(k8s_snapshot: dict[str, Any]) -> bool:
+    for condition in k8s_snapshot.get("conditions", []) or []:
+        if not isinstance(condition, dict):
+            continue
+        ctype = str(condition.get("type", ""))
+        status = str(condition.get("status", "")).lower()
+        if ctype == "Progressing" and status == "false":
+            return True
+        if ctype == "ReplicaFailure" and status == "true":
+            return True
+    return False
+
+
+def _blocked_result(
+    action_type: str,
+    reason: str,
+    details: dict[str, Any],
+) -> ExecutionResult:
+    return ExecutionResult(
+        status="blocked",
+        message=f"live action '{action_type}' blocked: {reason}",
+        details={"reason": reason, **details},
+    )
 
 
 def _persist_missing_executable_actions(

@@ -563,3 +563,9 @@ For every implementation task, finish with:
 5. No MVP boundary violations.
 6. Relevant docs updated if behavior differs from the current docs.
 
+## Test Execution Policy
+
+  - Codex must not run `pytest`, frontend tests, Playwright tests, or full test suites directly.
+  - When verification is needed, Codex should provide the exact test commands for the user to run.
+  - The user will run tests locally and paste the results back.
+  - Codex may still run non-test inspection commands such as `rg`, `sed`, `git diff`, `ruff` on targeted files, unless the user says otherwise.

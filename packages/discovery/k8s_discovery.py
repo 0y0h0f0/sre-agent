@@ -462,13 +462,9 @@ def _extract_env_service_refs(workload: Any) -> list[str]:
     refs: set[str] = set()
     for container in getattr(pod_spec, "containers", None) or []:
         for env in getattr(container, "env", None) or []:
-            name = getattr(env, "name", "") or ""
             value = getattr(env, "value", "") or ""
             for match in _SERVICE_DNS_RE.finditer(value):
                 refs.add(f"{match.group('service')}.{match.group('namespace')}")
-            if name.endswith("_SERVICE_HOST") and value:
-                service = name.removesuffix("_SERVICE_HOST").lower().replace("_", "-")
-                refs.add(service)
     return sorted(refs)
 
 

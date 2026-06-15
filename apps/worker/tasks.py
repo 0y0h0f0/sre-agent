@@ -1051,7 +1051,36 @@ def _build_discovery_runner(settings: Any) -> Any:
         backend_detector=backend_detector,
         metrics_service_label=settings.metrics_service_label,
         logs_service_label=settings.logs_service_label,
+        manual_backend_urls=_manual_discovery_backend_urls(settings),
     )
+
+
+def _manual_discovery_backend_urls(settings: Any) -> dict[str, str]:
+    """Return explicitly configured backend URLs that discovery must not replace.
+
+    Settings carries local demo defaults, so only values that differ from those
+    defaults are treated as operator/manual input here.
+    """
+    defaults = {
+        "prometheus": "http://localhost:9090",
+        "loki": "http://localhost:3100",
+        "jaeger": "http://localhost:16686",
+        "alertmanager": "http://localhost:9093",
+        "tempo": "http://localhost:3200",
+    }
+    attrs = {
+        "prometheus": "prometheus_url",
+        "loki": "loki_url",
+        "jaeger": "jaeger_url",
+        "alertmanager": "alertmanager_url",
+        "tempo": "tempo_url",
+    }
+    manual: dict[str, str] = {}
+    for backend_type, attr in attrs.items():
+        value = str(getattr(settings, attr, "") or "").strip()
+        if value and value != defaults[backend_type]:
+            manual[backend_type] = value
+    return manual
 
 
 def _result_to_config_diff(result: Any) -> dict[str, Any]:

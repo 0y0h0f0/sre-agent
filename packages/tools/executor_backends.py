@@ -43,6 +43,16 @@ def canonical_action_type(action_type: object) -> str:
     return _ACTION_TYPE_ALIASES.get(normalized, normalized)
 
 
+def is_valid_k8s_resource_name(value: str) -> bool:
+    """Return whether ``value`` is a Kubernetes DNS-1123 resource name."""
+    return bool(_K8S_NAME_RE.match(value))
+
+
+def has_live_rollback_handler(action_type: str) -> bool:
+    """Return whether live K8s rollback can handle ``action_type``."""
+    return canonical_action_type(action_type) in _LIVE_ROLLBACK_HANDLERS
+
+
 class ExecutionContext(BaseModel):
     """Context passed to every execution call for audit and targeting."""
 

@@ -13,6 +13,7 @@ from typing import Protocol, runtime_checkable
 import httpx
 
 from packages.common.errors import ValidationAppError
+from packages.common.feature_flags import is_m9_subfeature_enabled
 from packages.common.settings import Settings
 
 
@@ -45,6 +46,24 @@ class FakeEmbeddingProvider:
         return [self.embed_text(text) for text in texts]
 
 
+class DisabledEmbeddingProvider:
+    """Keyword-only fallback provider.
+
+    The primary runbook chunk table requires a 512-dim vector column, so disabled
+    embedding still returns a deterministic placeholder vector. Retrieval then
+    relies on lexical/BM25 scoring instead of semantic distance.
+    """
+
+    dimension = 512
+    model_name = "disabled"
+
+    def embed_text(self, text: str) -> list[float]:
+        return [0.0] * self.dimension
+
+    def embed_many(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed_text(text) for text in texts]
+
+
 class BGEZhEmbeddingProvider:
     """BAAI/bge-small-zh via local TEI or compatible HTTP API."""
 
@@ -67,7 +86,8 @@ class BGEZhEmbeddingProvider:
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            return response.json()  # type: ignore[no-any-return]
+            vectors = response.json()
+            return _require_dimension(vectors, self.dimension, self.model_name)
         except Exception as exc:
             raise RuntimeError(
                 f"BGE-ZH embedding failed for {len(texts)} texts: {exc}"
@@ -96,7 +116,8 @@ class Text2VecEmbeddingProvider:
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            return response.json()  # type: ignore[no-any-return]
+            vectors = response.json()
+            return _require_dimension(vectors, self.dimension, self.model_name)
         except Exception as exc:
             raise RuntimeError(
                 f"Text2Vec embedding failed for {len(texts)} texts: {exc}"
@@ -107,11 +128,16 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
     """Construct an embedding provider from settings.
 
     Provider selection (embedding_provider):
+      - disabled   → DisabledEmbeddingProvider (keyword-only fallback)
       - fake       → FakeEmbeddingProvider (deterministic, default)
       - bge_zh     → BGEZhEmbeddingProvider (BAAI/bge-small-zh, 512-dim)
-      - text2vec   → Text2VecEmbeddingProvider (text2vec-large-chinese, 1024-dim)
+      - text2vec   → currently rejected for the primary 512-dim chunk store
+      - external   → M9 external provider only when its gates and URL are explicit
     """
     provider = settings.embedding_provider.strip().lower()
+
+    if provider == "disabled":
+        return DisabledEmbeddingProvider()
 
     if provider == "fake":
         return FakeEmbeddingProvider()
@@ -123,16 +149,66 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
         )
 
     if provider == "text2vec":
-        return Text2VecEmbeddingProvider(
-            base_url=settings.embedding_text2vec_url,
-            timeout=settings.tool_timeout_seconds,
+        raise ValidationAppError(
+            "embedding_provider='text2vec' is 1024-dimensional and cannot "
+            "write to the primary runbook_chunks.embedding vector(512) column",
+            details={
+                "provider": "text2vec",
+                "provider_dimension": 1024,
+                "required_dimension": 512,
+            },
         )
 
-    supported = {"fake", "bge_zh", "text2vec"}
+    if provider == "external":
+        if (
+            not settings.semantic_runbook_search_enabled
+            or not is_m9_subfeature_enabled(settings, "external_embedding_provider")
+        ):
+            return DisabledEmbeddingProvider()
+        if not settings.external_embedding_url.strip():
+            raise ValidationAppError(
+                "embedding_provider='external' requires EXTERNAL_EMBEDDING_URL",
+                details={"required_setting": "EXTERNAL_EMBEDDING_URL"},
+            )
+        from packages.rag.external_embedding_provider import ExternalEmbeddingProvider
+
+        return ExternalEmbeddingProvider(
+            endpoint=settings.external_embedding_url,
+            secret_ref=settings.external_embedding_secret_ref,
+            timeout_seconds=settings.embedding_timeout_seconds,
+            app_env=settings.app_env,
+            allowed_domain_patterns=_parse_csv(settings.external_embedding_allowed_domains),
+            blocked_domain_patterns=_parse_csv(settings.external_embedding_blocked_domains),
+        )
+
+    supported = {"disabled", "fake", "bge_zh", "text2vec", "external"}
     raise ValidationAppError(
         f"unknown embedding_provider '{settings.embedding_provider}'",
         details={"supported": sorted(supported)},
     )
+
+
+def _require_dimension(
+    vectors: object,
+    dimension: int,
+    model_name: str,
+) -> list[list[float]]:
+    if not isinstance(vectors, list):
+        raise ValueError(f"{model_name} response must be a list of vectors")
+    checked: list[list[float]] = []
+    for index, vector in enumerate(vectors):
+        if not isinstance(vector, list):
+            raise ValueError(f"{model_name} vector {index} is not a list")
+        if len(vector) != dimension:
+            raise ValueError(
+                f"{model_name} vector {index} dimension {len(vector)} != {dimension}"
+            )
+        checked.append([float(value) for value in vector])
+    return checked
+
+
+def _parse_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()] if value else []
 
 
 # ---------------------------------------------------------------------------

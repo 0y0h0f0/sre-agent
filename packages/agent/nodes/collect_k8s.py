@@ -10,6 +10,7 @@ from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
 from packages.common.time import utc_now
+from packages.tools.base import ToolResult
 from packages.tools.k8s import K8sQuery
 
 # Fault classes that implicate the compute/pod layer. Querying K8s only when the
@@ -47,10 +48,10 @@ def collect_k8s(state: IncidentState, deps: AgentDeps) -> IncidentState:
 
     node_id = new_id("nd_")
     started_at = utc_now()
+    service = str(state.get("service_name") or "unknown")
+    namespace = deps.settings.k8s_namespace
+    query = K8sQuery(service=service, operation="events", namespace=namespace)
     try:
-        service = state.get("service_name", "unknown")
-        namespace = deps.settings.k8s_namespace
-        query = K8sQuery(service=service, operation="events", namespace=namespace)
         result = deps.k8s_tool.run(query)
         deps.tool_call_recorder(
             agent_run_id=state["agent_run_id"],
@@ -85,14 +86,48 @@ def collect_k8s(state: IncidentState, deps: AgentDeps) -> IncidentState:
         )
         return {**state, "k8s_evidence": evidence, "phase": "k8s_collected"}
     except Exception as exc:
+        finished_at = utc_now()
+        summary = f"k8s collection failed for {service}"
+        result = ToolResult(
+            status="degraded",
+            data={},
+            summary=summary,
+            duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
+            error_message=str(exc),
+        )
+        deps.tool_call_recorder(
+            agent_run_id=state["agent_run_id"],
+            node_name="collect_k8s",
+            tool_name=deps.k8s_tool.name,
+            query=query,
+            result=result,
+            input_summary=f"service={service} op=events",
+        )
         deps.node_tracer(
             node_id=node_id,
             agent_run_id=state["agent_run_id"],
             name="collect_k8s",
-            status="failed",
+            status="degraded",
             started_at=started_at,
-            finished_at=utc_now(),
+            finished_at=finished_at,
+            input_summary=f"service={service}",
+            output_summary=summary,
             error_message=str(exc),
         )
-        state.setdefault("errors", []).append({"node": "collect_k8s", "error": str(exc)})
-        return state
+        errors = list(state.get("errors", []))
+        errors.append({"node": "collect_k8s", "error": str(exc)})
+        evidence = [
+            {
+                "type": "k8s",
+                "source": "k8s",
+                "service": service,
+                "status": "degraded",
+                "summary": summary,
+            }
+        ]
+        return {
+            **state,
+            "k8s_evidence": evidence,
+            "phase": "k8s_collected",
+            "errors": errors,
+        }

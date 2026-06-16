@@ -773,6 +773,31 @@ pre {
   margin: 14px 0;
 }
 
+.actionParamsPanel {
+  background: #f8fafc;
+  border: 1px solid #d7dee8;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px;
+}
+
+.actionParamsPanel h3 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.actionParamsPanel .recordBox {
+  padding: 0;
+}
+
+.actionParamsPanel p,
+.actionParamsEmpty {
+  color: #5f6b7a;
+  margin: 0 0 12px;
+}
+
 .decisionForm,
 .l3Confirm {
   display: grid;
@@ -1104,6 +1129,11 @@ pre {
 .batchBar span {
   color: #526071;
   font-weight: 800;
+}
+
+.batchBar .batchHint {
+  color: #8a5a00;
+  font-size: 13px;
 }
 
 .batchCheck {

@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable, Iterable
 
 import httpx
 
+from packages.common.backend_url_safety import BackendUrlSafetyValidator
+from packages.common.errors import ValidationAppError
 from packages.common.redaction import redact_text
 
 logger = logging.getLogger(__name__)
@@ -27,6 +30,7 @@ _DEFAULT_TIMEOUT = 10.0
 _DEFAULT_RETRIES = 2
 _DEFAULT_CIRCUIT_BREAKER_FAILURES = 5
 _DEFAULT_CIRCUIT_BREAKER_WINDOW = 60.0
+_PRIMARY_STORE_DIMENSION = 512
 
 
 class ExternalEmbeddingProvider:
@@ -41,6 +45,8 @@ class ExternalEmbeddingProvider:
     """
 
     name = "external"
+    dimension = _PRIMARY_STORE_DIMENSION
+    model_name = "external-512"
 
     def __init__(
         self,
@@ -49,7 +55,33 @@ class ExternalEmbeddingProvider:
         secret_ref: str = "",
         timeout_seconds: float = _DEFAULT_TIMEOUT,
         retries: int = _DEFAULT_RETRIES,
+        app_env: str = "local",
+        allowed_domain_patterns: list[str] | None = None,
+        blocked_domain_patterns: list[str] | None = None,
+        dns_resolver: Callable[[str], Iterable[str]] | None = None,
+        url_validator: BackendUrlSafetyValidator | None = None,
     ) -> None:
+        if app_env == "production" and not allowed_domain_patterns and url_validator is None:
+            raise ValidationAppError(
+                "external embedding endpoint requires an allowlist in production",
+                details={"required_setting": "EXTERNAL_EMBEDDING_ALLOWED_DOMAINS"},
+            )
+        validator = url_validator or BackendUrlSafetyValidator(
+            app_env=app_env,
+            allowed_domain_patterns=allowed_domain_patterns,
+            blocked_domain_patterns=blocked_domain_patterns,
+            require_https=app_env == "production",
+            strict_private_networks=app_env != "local",
+            block_cluster_internal_domains=app_env != "local",
+            resolve_dns=app_env == "production",
+            dns_resolver=dns_resolver,
+        )
+        validation = validator.validate(endpoint)
+        if not validation.is_safe:
+            raise ValidationAppError(
+                "unsafe external embedding endpoint",
+                details={"reason": validation.reason},
+            )
         self.endpoint = endpoint
         self.secret_ref = secret_ref
         self.timeout_seconds = timeout_seconds
@@ -68,6 +100,15 @@ class ExternalEmbeddingProvider:
     # ------------------------------------------------------------------
     # Embedding generation
     # ------------------------------------------------------------------
+
+    def embed_text(self, text: str) -> list[float]:
+        vector = self.embed(text)
+        if vector is None or len(vector) != self.dimension:
+            return [0.0] * self.dimension
+        return vector
+
+    def embed_many(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed_text(text) for text in texts]
 
     def embed(self, text: str) -> list[float] | None:
         """Generate embedding for *text* via external endpoint.

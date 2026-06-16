@@ -27,6 +27,10 @@ ExecutionStatus = str  # "succeeded" | "failed" | "partial" | "timeout"
 #: Kubernetes resource name format (RFC 1123 DNS-1123 label).
 _K8S_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$")
 
+#: Conservative live scale bounds. Fixture execution is unaffected.
+_MIN_LIVE_SCALE_REPLICAS = 0
+_MAX_LIVE_SCALE_REPLICAS = 50
+
 #: Action types that are classified as rollback operations.
 ROLLBACK_ACTION_TYPES: frozenset[str] = frozenset(
     {"rollback_release", "rollback_deployment", "scale_back", "revert_config"}
@@ -325,17 +329,22 @@ def _live_scale_deployment(
     atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
 ) -> ExecutionResult:
     """Scale a Deployment to the requested replica count."""
-    replicas = params.get("replicas")
-    if replicas is None:
+    raw_replicas = params.get("replicas")
+    replicas, error_message = _coerce_live_scale_replicas(raw_replicas)
+    if error_message is not None:
         return ExecutionResult(
             status="failed",
-            message="scale_deployment requires 'replicas' in params",
+            message=error_message,
+            details={
+                "min_replicas": _MIN_LIVE_SCALE_REPLICAS,
+                "max_replicas": _MAX_LIVE_SCALE_REPLICAS,
+            },
         )
     _ensure_k8s_client()
     from kubernetes import client  # type: ignore[import-untyped]
 
     apps = client.AppsV1Api()
-    body = {"spec": {"replicas": int(replicas)}}
+    body = {"spec": {"replicas": replicas}}
     apps.patch_namespaced_deployment_scale(
         name=target, namespace=ns, body=body, _request_timeout=timeout
     )
@@ -434,6 +443,25 @@ def _to_dict(value: object) -> dict[str, Any]:
     if value is not None:
         logger.warning("_to_dict received unexpected type: %s", type(value))
     return {}
+
+
+def _coerce_live_scale_replicas(value: object) -> tuple[int | None, str | None]:
+    if value is None:
+        return None, "scale_deployment requires 'replicas' in params"
+    if isinstance(value, bool):
+        return None, "scale_deployment replicas must be an integer"
+    if isinstance(value, int):
+        replicas = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        replicas = int(value.strip())
+    else:
+        return None, "scale_deployment replicas must be an integer"
+    if replicas < _MIN_LIVE_SCALE_REPLICAS or replicas > _MAX_LIVE_SCALE_REPLICAS:
+        return None, (
+            "scale_deployment replicas must be between "
+            f"{_MIN_LIVE_SCALE_REPLICAS} and {_MAX_LIVE_SCALE_REPLICAS}"
+        )
+    return replicas, None
 
 
 def _now_iso() -> str:

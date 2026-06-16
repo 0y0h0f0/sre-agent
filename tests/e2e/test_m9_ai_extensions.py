@@ -20,7 +20,6 @@ from apps.api.dependencies import get_app_settings, get_db, get_task_enqueue
 from packages.common.settings import Settings, get_settings
 from packages.db.base import Base
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -96,6 +95,7 @@ def e2e_client(
         runbook_llm_generation_enabled=False,
         llm_incident_diff_enabled=False,
         runbook_web_search_enabled=False,
+        rate_limit_max_requests=1000,
     )
 
     with TestClient(app) as client:

@@ -5,13 +5,14 @@ metadata:
   namespace: sre-agent
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: sre-agent-role
+  namespace: sre-agent
 rules:
   # === Read-only diagnostics (collect_k8s node) ===
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "events", "namespaces", "endpoints", "configmaps"]
+    resources: ["pods", "pods/log", "services", "events", "endpoints", "configmaps"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
@@ -24,36 +25,18 @@ rules:
     verbs: ["get", "list"]
 
   # === Discovery (K8sDiscovery + BackendEndpointDetector) ===
-  # Included above: services, endpoints, configmaps, ingresses, namespaces,
-  # deployments, statefulsets, daemonsets
-
-  # === Executor (only needed when EXECUTOR_BACKEND=live) ===
-  # restart_pod / restart_service: patch Deployment annotation
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["patch"]
-    resourceNames: []  # will be restricted at the namespace level by RoleBinding if needed
-  # scale_deployment / scale_back: patch scale sub-resource
-  - apiGroups: ["apps"]
-    resources: ["deployments/scale"]
-    verbs: ["get", "patch"]
-  # rollback_release: create rollback sub-resource
-  - apiGroups: ["apps"]
-    resources: ["deployments/rollback"]
-    verbs: ["create"]
-
-  # === L3: rollback via apps/v1 Deployment rollback (legacy approach) ===
-  - apiGroups: ["extensions"]
-    resources: ["deployments/rollback"]
-    verbs: ["create"]
+  # Included above: services, endpoints, configmaps, ingresses, deployments,
+  # statefulsets, daemonsets. Live executor write permissions are deliberately
+  # not part of the base manifest.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: sre-agent-binding
+  namespace: sre-agent
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: sre-agent-role
 subjects:
   - kind: ServiceAccount

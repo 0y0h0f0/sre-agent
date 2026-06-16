@@ -107,7 +107,9 @@ confirm_target == action.target
 - `taken_at`
 - action type 列表
 - metrics/logs/traces evidence 数量
-- 对 K8s 动作，读取 `get_deployment` 的 replicas、revision、image、ready/available replicas 等信息
+- 对 K8s 动作，按每个 action `target` 读取 `get_deployment` 的 replicas、revision、image、ready/available replicas 等信息
+
+`execute_action` 在调用 live executor 前会校验 snapshot 中的 Deployment `name` 与 action `target` 一致，并校验 snapshot namespace 与 executor namespace 一致。缺少 snapshot 字段或 snapshot 与目标不匹配时，live backend 不会被调用。
 
 当 `verify_result == degraded` 且下一轮计划包含 rollback 类动作时，如果已有可用 snapshot，会保留原 snapshot，避免回滚依据被新状态覆盖。
 
@@ -151,7 +153,7 @@ Live action capability metadata 还会在 `execute_action` 前执行确定性 pr
 
 `restart_pod` / `restart_service` 不应被文档、prompt 或 report 描述为“可完全恢复”或“可回滚”的动作。它们只是受审批、snapshot、preflight、verify/replan 和审计约束的 bounded irreversible 操作；如果验证降级，下一轮 planner 只能基于 snapshot 规划 `scale_back`、`rollback_release`、`rollback_deployment`、`revert_config` 等可执行回退/升级动作，不能假设 restart 本身有 undo。
 
-`scale_deployment` 只表示调整 Deployment 副本数，参数使用 `replicas`。内存限额调整使用 `increase_memory_limit`，当前仅在 fixture/local 路径有确定性执行结果，不属于 live executor 的真实 Kubernetes mutation。
+`scale_deployment` 只表示调整 Deployment 副本数，参数使用 `replicas`。live executor 要求 `replicas` 是整数，范围为 0 到 50；缺失、非整数、负数或超过上限时在调用 Kubernetes API 前失败关闭。内存限额调整使用 `increase_memory_limit`，当前仅在 fixture/local 路径有确定性执行结果，不属于 live executor 的真实 Kubernetes mutation。
 
 项目不允许新增真实云资源写操作，不允许删除数据、修改应用数据库、truncate table 或 flush 真实 cache。
 

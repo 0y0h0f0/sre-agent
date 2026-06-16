@@ -217,6 +217,12 @@ class Settings(BaseSettings):
     # M9 External embedding provider (PR 9.9). Requires SEMANTIC_RUNBOOK_SEARCH_ENABLED
     # and EMBEDDING_PROVIDER=external.
     external_embedding_provider_enabled: bool = False
+    external_embedding_url: str = ""
+    external_embedding_secret_ref: str = ""
+    # Production external embedding calls require an explicit destination allowlist.
+    external_embedding_allowed_domains: str = ""
+    external_embedding_blocked_domains: str = ""
+    embedding_timeout_seconds: float = Field(default=10.0, gt=0)
     # Double opt-in for external cloud LLM (PR 9.2, 9.3). When false, only
     # locally-hosted LLM providers may be used even if M9 + LLM features are on.
     llm_external_provider_allowed: bool = False
@@ -309,6 +315,8 @@ class Settings(BaseSettings):
     redis_socket_connect_timeout: float = Field(default=1.0, gt=0)
     redis_socket_timeout: float = Field(default=2.0, gt=0)
     redis_retry_on_timeout: bool = True
+    websocket_ticket_ttl_seconds: int = Field(default=60, gt=0, le=300)
+    websocket_ticket_secret: SecretStr | None = None
     cors_allow_origins: str = "http://localhost:5173"
     # How long a RUNNING agent run can be stuck before it is considered orphaned
     # (previous worker killed by SIGKILL) and re-executed. Default 5 minutes.

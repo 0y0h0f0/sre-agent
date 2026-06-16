@@ -327,6 +327,62 @@ class TestBatchApprovalAPI:
         assert resp.status_code == 200
         assert resp.json()[0]["status"] == "rejected"
 
+    def test_batch_approve_is_atomic_when_l3_confirmation_missing(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        inc = _create_incident(db_session, status="waiting_approval")
+        run_id = new_id("run_")
+        l2_action = _create_action(
+            db_session,
+            inc.incident_id,
+            run_id,
+            type="restart_pod",
+            risk_level="L2",
+        )
+        l3_action = _create_action(
+            db_session,
+            inc.incident_id,
+            run_id,
+            type="rollback_release",
+            risk_level="L3",
+            target="checkout-api",
+        )
+        l2_approval = _create_approval(
+            db_session,
+            l2_action.action_id,
+            inc.incident_id,
+            run_id,
+        )
+        l3_approval = _create_approval(
+            db_session,
+            l3_action.action_id,
+            inc.incident_id,
+            run_id,
+        )
+        db_session.commit()
+
+        resp = client.post(
+            "/api/approvals/batch",
+            json={
+                "decision": "approve",
+                "approver": "sre-batch",
+                "approval_ids": [l2_approval.approval_id, l3_approval.approval_id],
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+        db_session.refresh(l2_action)
+        db_session.refresh(l3_action)
+        db_session.refresh(l2_approval)
+        db_session.refresh(l3_approval)
+        assert l2_action.status == "waiting_approval"
+        assert l3_action.status == "waiting_approval"
+        assert l2_approval.status == "waiting"
+        assert l3_approval.status == "waiting"
+
     def test_batch_empty_ids(self, client: TestClient) -> None:
         resp = client.post(
             "/api/approvals/batch",

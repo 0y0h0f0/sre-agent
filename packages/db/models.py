@@ -807,7 +807,7 @@ class ApiKey(Base):
     key_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="admin")
     # Role/scope access control (M0 PR 0.7).
-    # roles: list of role names (e.g., ["api_key:admin"]).
+    # roles: list of operator-facing role labels (e.g., ["operator"]).
     roles: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
     # scopes: granular permission tokens
     # (discovery:read, discovery:write, config:read, config:write,

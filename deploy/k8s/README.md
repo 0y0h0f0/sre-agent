@@ -1,5 +1,7 @@
 # SRE Incident Response Agent — K8s 部署指南
 
+> 部署后确认是否真正读到目标后端，请看 [K8s 后端对接验证](../../docs/08-deploy/k8s-backend-verification.md)。多服务和多后端边界见 [后端对接范围](../../docs/11-reference/backend-connectivity.md)。
+
 ## 前置条件
 
 | 条件 | 说明 |
@@ -36,7 +38,7 @@ scp sre-agent-images.tar node01:/tmp/
 ssh node01 docker load -i /tmp/sre-agent-images.tar
 #    对所有工作节点重复
 
-# 4. 部署（镜像已在节点上，Never 策略下不会尝试远程拉取）
+# 4. 部署安全 base（fixture executor、M9 off、API auth on）
 kubectl apply -k deploy/k8s/base/
 ```
 
@@ -49,7 +51,7 @@ deploy/k8s/
   README.md                        ← 本文件
   base/                            ← 基础清单（所有环境共用）
     namespace.yaml                 Namespace
-    rbac.yaml                      ServiceAccount + ClusterRole + ClusterRoleBinding
+    rbac.yaml                      ServiceAccount + namespace-scoped read-only Role/RoleBinding
     configmap.yaml                 非敏感环境变量（70+ 字段）
     secret.yaml                    Secret 模板（数据库/Redis/SMTP 密码等）
     api.yaml                       API Deployment + Service + HPA
@@ -115,8 +117,8 @@ stringData:
 | `LOKI_URL` | `loki.task-platform.svc.cluster.local:3100` | 改为集群内实际 Loki 地址 |
 | `BACKEND_URL_ALLOWLIST` | `*.svc.cluster.local,*.svc` | 后端 URL 安全白名单 |
 | `K8S_NAMESPACE` | `task-platform` | Agent 诊断的目标 namespace |
-| `DEPLOYMENT_BACKEND` | `github` | 发布变更源；GitHub 后端只读查询 deployments/commits |
-| `GITHUB_REPO` | `0y0h0f0/platform` | GitHub 仓库，格式为 `owner/repo` |
+| `DEPLOYMENT_BACKEND` | `fixture` | 发布变更源；切到 `github` 时仍只读查询 deployments/commits |
+| `GITHUB_REPO` | 空 | GitHub 仓库，格式为 `owner/repo`，仅 `DEPLOYMENT_BACKEND=github` 需要 |
 | `GITHUB_API_URL` | `https://api.github.com` | GitHub API 地址；企业版可改为内部 API |
 | `CORS_ALLOW_ORIGINS` | — | 前端域名 |
 | `WEB_BASE_URL` | — | 前端 URL（用于邮件通知中的链接）|
@@ -152,10 +154,11 @@ curl http://localhost:8000/healthz
 kubectl logs -n sre-agent deployment/worker --tail=20
 # 应看到: celery@... ready.
 
-# 检查 RBAC 权限
+# 检查 base RBAC 权限：只读应允许，写权限应拒绝
 kubectl auth can-i get pods --as=system:serviceaccount:sre-agent:sre-agent
 kubectl auth can-i list deployments --as=system:serviceaccount:sre-agent:sre-agent
 kubectl auth can-i patch deployments --as=system:serviceaccount:sre-agent:sre-agent
+# → no
 
 # 创建第一个 API Key（用于后续操作）
 kubectl exec -n sre-agent deployment/api -- python -c "
@@ -203,14 +206,48 @@ resources:
 
 ## 可选：启用 Live Executor
 
-如果需要 Agent 在审批后执行真实的 K8s 操作（重启 Pod、扩缩容、回滚），修改 ConfigMap：
+如果需要 Agent 在审批后执行真实的 K8s 操作（重启 Pod、扩缩容、回滚），这是单独的高风险 opt-in。除了修改 ConfigMap，还必须在目标 namespace 创建独立、namespace-scoped 的写权限 Role/RoleBinding；base RBAC 不包含任何写权限。
 
 ```yaml
 EXECUTOR_BACKEND: "live"
 EXECUTOR_K8S_NAMESPACE: "your-target-namespace"
 ```
 
-> **注意：** 确保 RBAC 中的 executor 权限范围已覆盖目标 namespace。L2 操作需审批，L3 操作需审批 + 二次确认。
+最小 Role 示例（应用到目标 namespace，subject 指向 `sre-agent` namespace 中的 ServiceAccount）：
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sre-agent-live-executor
+  namespace: your-target-namespace
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/rollback"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sre-agent-live-executor
+  namespace: your-target-namespace
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sre-agent-live-executor
+subjects:
+  - kind: ServiceAccount
+    name: sre-agent
+    namespace: sre-agent
+```
+
+> **注意：** Live executor 仍只允许现有 restart/scale/rollback Kubernetes mutation。L2 操作需审批，L3 操作需审批 + 二次确认；不要授予 cluster-wide 写权限。
 
 ## 可选：在集群已有可观测性时对接
 

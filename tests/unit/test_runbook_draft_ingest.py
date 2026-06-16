@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-from unittest.mock import MagicMock, patch
+from datetime import UTC
 
 import pytest
 
 from apps.api.schemas.runbooks import RunbookDraftItem
-from apps.api.services.runbook_service import RunbookService
 from packages.db.models import RunbookDraft
 
 
@@ -118,8 +117,8 @@ class TestRunbookDraftItemSchema:
             discovery_run_id="run-abc",
             parent_draft_id="drf_parent001",
         )
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+        from datetime import datetime
+        now = datetime.now(UTC).isoformat()
         item = RunbookDraftItem(
             draft_id=draft.draft_id,
             fingerprint=draft.fingerprint,
@@ -210,6 +209,7 @@ Detect this.
 
         # Create chunks (without embedding — degraded mode)
         from packages.common.ids import new_id
+        from packages.db.repositories.runbooks import degraded_runbook_embedding
         for cd in chunk_drafts:
             repo.create_chunk(
                 chunk_id=new_id("chk_"),
@@ -218,7 +218,7 @@ Detect this.
                 title=cd.title,
                 content=cd.content,
                 content_hash=cd.content_hash,
-                embedding=[],
+                embedding=degraded_runbook_embedding(),
                 embedding_model="none",
                 metadata=dict(cd.metadata),
             )
@@ -233,8 +233,11 @@ Detect this.
 
     def test_ingest_dedup_by_content_hash(self, db_session):
         """Same content hash should not create duplicate chunks."""
-        from packages.db.repositories.runbooks import RunbookChunkRepository
         from packages.common.ids import new_id
+        from packages.db.repositories.runbooks import (
+            RunbookChunkRepository,
+            degraded_runbook_embedding,
+        )
 
         repo = RunbookChunkRepository(db_session)
         chunk_id_1 = new_id("chk_")
@@ -247,7 +250,7 @@ Detect this.
             title="Test Chunk",
             content="test content",
             content_hash=content_hash,
-            embedding=[],
+            embedding=degraded_runbook_embedding(),
             embedding_model="none",
             metadata={},
         )
@@ -260,8 +263,11 @@ Detect this.
 
     def test_source_path_always_set(self, db_session):
         """Every chunk created from a draft must have source_path set."""
-        from packages.db.repositories.runbooks import RunbookChunkRepository
         from packages.common.ids import new_id
+        from packages.db.repositories.runbooks import (
+            RunbookChunkRepository,
+            degraded_runbook_embedding,
+        )
 
         repo = RunbookChunkRepository(db_session)
         chunk = repo.create_chunk(
@@ -271,7 +277,7 @@ Detect this.
             title="Test",
             content="content",
             content_hash=hashlib.sha256(b"content").hexdigest(),
-            embedding=[],
+            embedding=degraded_runbook_embedding(),
             embedding_model="none",
             metadata={},
         )
@@ -290,7 +296,13 @@ Detect this.
             incident_type="x",
             title="Pending Draft",
             content="# Test\n\n## Section\n\ntest",
-            front_matter={"service": "svc", "incident_type": "x", "severity": "P2", "owner": "team", "updated_at": "2026-01-01"},
+            front_matter={
+                "service": "svc",
+                "incident_type": "x",
+                "severity": "P2",
+                "owner": "team",
+                "updated_at": "2026-01-01",
+            },
             draft_type="template",
             source="template_engine",
         )
@@ -310,7 +322,13 @@ Detect this.
             incident_type="x",
             title="Rejected Draft",
             content="# Test\n\n## Section\n\ntest",
-            front_matter={"service": "svc", "incident_type": "x", "severity": "P2", "owner": "team", "updated_at": "2026-01-01"},
+            front_matter={
+                "service": "svc",
+                "incident_type": "x",
+                "severity": "P2",
+                "owner": "team",
+                "updated_at": "2026-01-01",
+            },
         )
         repo.update_status(draft.draft_id, "rejected", reviewer="reviewer", comment="not good")
         updated = repo.get_by_draft_id(draft.draft_id)
@@ -327,10 +345,13 @@ Detect this.
 
 
 class TestEmbeddingDegradation:
-    def test_empty_embedding_stored_when_provider_unavailable(self, db_session):
-        """Chunks can be stored with empty embeddings (keyword-only search)."""
-        from packages.db.repositories.runbooks import RunbookChunkRepository
+    def test_degraded_embedding_stored_when_provider_unavailable(self, db_session):
+        """Chunks can be stored with pgvector-compatible degraded embeddings."""
         from packages.common.ids import new_id
+        from packages.db.repositories.runbooks import (
+            RunbookChunkRepository,
+            degraded_runbook_embedding,
+        )
 
         repo = RunbookChunkRepository(db_session)
         chunk = repo.create_chunk(
@@ -340,11 +361,12 @@ class TestEmbeddingDegradation:
             title="Degraded Chunk",
             content="content for keyword search",
             content_hash=hashlib.sha256(b"content for keyword search").hexdigest(),
-            embedding=[],  # empty — embedding provider was unavailable
+            embedding=degraded_runbook_embedding(),
             embedding_model="none",
             metadata={},
         )
-        assert chunk.embedding == []
+        assert chunk.embedding == degraded_runbook_embedding()
+        assert len(chunk.embedding) == 512
         assert chunk.embedding_model == "none"
         assert chunk.content == "content for keyword search"
 

@@ -1,6 +1,6 @@
 # 仓库地图
 
-**最后更新：** 2026-06-13
+**最后更新：** 2026-06-15
 
 本文帮助开发者从目录结构定位代码、文档、测试和 demo 数据。统计不包含 `__pycache__`、`node_modules`、`dist`、`coverage`、`.vite-cache`、`test-results` 等生成物。
 
@@ -26,7 +26,7 @@ agentp/
 | `migrations/versions/` | 15 个迁移版本 | 从初始 schema 到 M9 相关表/字段 |
 | `deploy/` | 约 31 个文件 | 本地 compose 支撑文件和 Kubernetes manifest |
 | `demo/` | 约 24 个文件 | 4 个 alert fixture、4 个 fault fixture、12 个 runbook |
-| `docs/` | 约 40 个 Markdown 文件 | 当前文档源 |
+| `docs/` | 约 45 个 Markdown 文件 | 当前文档源 |
 | `plans/` | 约 33 个 Markdown 文件 | 历史计划和 roadmap 背景 |
 
 ## apps/ 应用层
@@ -143,19 +143,22 @@ docs/                    当前读者文档，优先描述已实现行为
   05-memory/             Memory/cache/compression
   06-frontend/           React console
   07-testing/            测试策略
-  08-deploy/             本地演示
+  08-deploy/             本地演示和 K8s 后端对接验证
   09-evals/              评估
   10-operations/         开发、运维、demo playbook
-  11-reference/          配置、状态/ID、术语
+  11-reference/          配置、后端对接范围、状态/ID、术语
 plans/                   历史实施计划和 roadmap 背景
 ```
 
 判断冲突时按 [开发者全景指南](developer-guide.md) 的源文档优先级处理：当前代码与迁移、当前 `docs/`、`AGENTS.md`、仍适用的 codegen 检查清单、历史 `plans/`。
 
+需要按模块契约理解全项目依赖方向、数据对象所有权、配置影响范围和横向调试入口时，见 [全项目技术地图](full-project-technical-map.md)。
+
 ## 常见定位路径
 
 | 任务 | 先看代码 | 再看文档 |
 |------|----------|----------|
+| 理解全项目模块契约 | `apps/`、`packages/`、`tests/`、`deploy/` | `docs/00-overview/full-project-technical-map.md` |
 | 新增 API | `apps/api/routers`、`schemas`、`services`、`packages/db/repositories` | `docs/01-backend/api-reference.md` |
 | 修改 Agent 节点 | `packages/agent/graph.py`、`packages/agent/nodes`、`packages/agent/state.py` | `docs/02-agent/workflow.md` |
 | 调整风险规则 | `packages/agent/guardrails/policy.py`、approval service/node | `docs/02-agent/guardrails-and-approval.md` |
@@ -164,4 +167,5 @@ plans/                   历史实施计划和 roadmap 背景
 | 修改上下文压缩 | `packages/memory`、`packages/agent/nodes/build_context.py` | `docs/05-memory/memory-cache-compression.md` |
 | 修改配置 | `packages/common/settings.py`、`feature_flags.py` | `docs/11-reference/configuration.md` |
 | 修改本地部署 | `docker-compose.yml`、`deploy/`、`demo/` | `docs/08-deploy/local-demo.md` |
+| 验证 K8s 后端对接 | `deploy/k8s/`、`apps/worker/tasks.py`、`packages/discovery` | `docs/08-deploy/k8s-backend-verification.md`、`docs/11-reference/backend-connectivity.md` |
 | 修改前端 | `apps/web/src` | `docs/06-frontend/react-console.md` |

@@ -1,6 +1,6 @@
 # Configuration Reference
 
-**Last updated:** 2026-06-14
+**Last updated:** 2026-06-15
 
 The runtime source of truth is `packages/common/settings.py`. This document explains the stable settings surface for developers and operators.
 
@@ -54,6 +54,8 @@ The Python defaults are library/runtime defaults. Docker Compose may override th
 
 ## Observability Backends
 
+Current backend connectivity is a single-environment model: each Agent instance has one active endpoint per backend type, while that environment may contain many services. See [Backend Connectivity Scope](backend-connectivity.md) for the multi-service and multi-backend boundary.
+
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `PROMETHEUS_URL` | `http://localhost:9090` | Metrics tool backend. |
@@ -87,7 +89,7 @@ The Python defaults are library/runtime defaults. Docker Compose may override th
 | `ARGOCD_TOKEN` | unset | Optional secret token. |
 | `K8S_BACKEND` | `fixture` | `fixture` or read-only `live`. |
 | `K8S_FIXTURE_PATH` | `demo/faults/k8s.json` | K8s fixture data. |
-| `K8S_NAMESPACE` | `default` | Namespace for K8s read diagnostics. |
+| `K8S_NAMESPACE` | `default` | Namespace for K8s read diagnostics and discovery allowlist; discovery supports comma-separated namespaces. |
 | `DB_DIAGNOSTICS_BACKEND` | `fixture` | `fixture` or read-only `live`. |
 | `DB_DIAGNOSTICS_FIXTURE_PATH` | `demo/faults/db_diagnostics.json` | DB diagnostic fixture data. |
 | `DB_DIAGNOSTICS_URL` | unset | Live read-only diagnostic database URL. |
@@ -114,9 +116,14 @@ It must not perform cloud writes, database mutations, data deletion, cache flush
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `EMBEDDING_PROVIDER` | `fake` | `fake`, `bge_zh`, `text2vec` in the base factory. |
+| `EMBEDDING_PROVIDER` | `fake` | `disabled`, `fake`, `bge_zh`, `text2vec`, `external`; `text2vec` is rejected for the primary 512-dim store. |
 | `EMBEDDING_BGE_ZH_URL` | `http://localhost:8083` | Local BGE-ZH embedding endpoint. |
 | `EMBEDDING_TEXT2VEC_URL` | `http://localhost:8084` | Local text2vec endpoint. |
+| `EXTERNAL_EMBEDDING_URL` | empty | M9 external embedding endpoint; only used with the external embedding gates enabled. |
+| `EXTERNAL_EMBEDDING_SECRET_REF` | empty | Secret reference such as `env:EMBEDDING_API_KEY`; raw token values are not expected. |
+| `EXTERNAL_EMBEDDING_ALLOWED_DOMAINS` | empty | Comma-separated allowlist required for production external embedding endpoints. |
+| `EXTERNAL_EMBEDDING_BLOCKED_DOMAINS` | empty | Comma-separated blocklist for external embedding endpoints. |
+| `EMBEDDING_TIMEOUT_SECONDS` | `10.0` | External embedding request timeout. |
 | `RUNBOOK_HYBRID_SEARCH_ENABLED` | `true` | Enables keyword/vector weighted retrieval. |
 | `RUNBOOK_HYBRID_ALPHA_KEYWORD` | `0.65` | Keyword weight. |
 | `RUNBOOK_HYBRID_ALPHA_NL` | `0.35` | Vector/NL weight. |
@@ -159,6 +166,13 @@ Current database vector dimensions:
 | `TOKEN_CACHE_ENABLED` | `true` | Application prompt segment cache toggle. |
 
 CI and deterministic tests must use FakeLLM. Real LLMs are for manual demos/evals only, not stable CI gates.
+
+When `LLM_PROVIDER` is a cloud provider (`openai`, `deepseek`, or `anthropic`),
+the factory wraps the provider in `RedactingLLMAdapter`. The wrapper redacts
+prompt/message strings before egress and records safe redaction metadata in
+LLM call metadata. Self-hosted `vllm` remains an explicit operator-configured
+OpenAI-compatible endpoint and is not treated as a cloud provider by this
+wrapper rule.
 
 ## M9 Controlled Enhancements
 
@@ -259,6 +273,8 @@ L2 and L3 actions still require approval. L3 approval requires `risk_ack=true`, 
 | `API_KEY_OPEN_PATHS` | `/healthz,/readyz,/metrics,/docs,/openapi.json,/api/approvals/by-token` | Boundary-aware open path list. |
 | `API_KEY_DEFAULT_EXPIRY_DAYS` | `90` | Default expiry for generated keys where used. |
 | `API_KEY_INITIAL_SEED` | unset | Bootstrap seed accepted by middleware as `apik_initial`. Rotate after use. |
+| `WEBSOCKET_TICKET_TTL_SECONDS` | `60` | Short-lived incident WebSocket ticket TTL, capped at 300 seconds. |
+| `WEBSOCKET_TICKET_SECRET` | unset | HMAC secret for WebSocket tickets. Required when `APP_ENV=production` and API key auth is enabled. |
 | `RATE_LIMIT_MAX_REQUESTS` | `10` | Request cap per window for alert ingestion. |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window. |
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from apps.api.dependencies import get_db, require_scope
+from apps.api.dependencies import get_app_settings, get_db, require_scope
 from apps.api.schemas.config import (
     ConfigCurrentResponse,
     ConfigPublishRequest,
@@ -27,6 +27,7 @@ from apps.api.schemas.config import (
     OverrideRevokeRequest,
     OverrideRevokeResponse,
 )
+from packages.common.settings import Settings
 from packages.discovery.config_publisher import (
     ConfigPublisher,
     ConfigPublishError,
@@ -38,6 +39,10 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 
 _require_read = require_scope("config:read", "config:write")
 _require_write = require_scope("config:write")
+
+
+def _parse_comma_list(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()] if value else []
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +303,7 @@ def get_overrides(
 def create_override(
     body: OverrideCreateRequest,
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_app_settings),
 ) -> OverrideResponse:
     """Create a new config override.
 
@@ -328,7 +334,10 @@ def create_override(
     # Validate backend URL if present.
     url = body.override_json.get("url")
     if url and isinstance(url, str):
-        validator = BackendUrlSafetyValidator()
+        validator = BackendUrlSafetyValidator(
+            allowlist_patterns=_parse_comma_list(settings.backend_url_allowlist),
+            app_env=settings.app_env,
+        )
         result = validator.validate(url)
         if not result.is_safe:
             raise HTTPException(

@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # _build_or_unavailable
 # ---------------------------------------------------------------------------
@@ -61,8 +58,9 @@ def test_unavailable_tool_name():
 
 def test_unavailable_tool_run_returns_degraded():
     """UnavailableTool.run() returns degraded status with reason."""
-    from packages.tools.unavailable import UnavailableTool
     from pydantic import BaseModel
+
+    from packages.tools.unavailable import UnavailableTool
 
     class FakeQuery(BaseModel):
         query: str = "test"
@@ -93,6 +91,7 @@ def _make_mock_effective_config(**overrides):
     cfg.prometheus = MagicMock(url="http://localhost:9090", source="default", degraded=False)
     cfg.loki = MagicMock(url="http://localhost:3100", source="default", degraded=False)
     cfg.jaeger = MagicMock(url="http://localhost:16686", source="default", degraded=False)
+    cfg.tempo = MagicMock(url="http://localhost:3200", source="default", degraded=False)
     cfg.alertmanager = MagicMock(url="http://localhost:9093", source="default", degraded=False)
     cfg.metrics_service_label = "service"
     cfg.logs_service_label = "service"
@@ -111,7 +110,10 @@ def _make_mock_settings(**overrides):
     s.prometheus_url = "http://localhost:9090"
     s.loki_url = "http://localhost:3100"
     s.jaeger_url = "http://localhost:16686"
+    s.tempo_url = "http://localhost:3200"
     s.alertmanager_url = "http://localhost:9093"
+    s.trace_backend = "fixture"
+    s.trace_enabled = True
     s.metrics_service_label = "service"
     s.logs_service_label = "service"
     s.metrics_step_seconds = 15

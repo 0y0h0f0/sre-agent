@@ -21,6 +21,7 @@ class TestDemoPath:
         config = EffectiveConfig.from_demo_sources(settings)
         assert config.prometheus.url == "http://localhost:9090"
         assert config.loki.url == "http://localhost:3100"
+        assert config.tempo.url == "http://localhost:3200"
         assert config.source == "demo"
 
     def test_demo_path_backward_compatible(self):
@@ -82,6 +83,26 @@ class TestEnvPriority:
         )
         assert config.prometheus.url == "http://pub:9090"
         assert config.prometheus.source == "published"
+
+    def test_nested_published_config_used_when_no_env_or_override(self):
+        """Published config may use either flat or nested backend URL shape."""
+        settings = _local_settings()
+        config = EffectiveConfig.from_operator_sources(
+            settings,
+            published_config={"prometheus": {"url": "http://pub:9090"}},
+        )
+        assert config.prometheus.url == "http://pub:9090"
+        assert config.prometheus.source == "published"
+
+    def test_tempo_published_config_is_available_for_trace_backend(self):
+        """Tempo URL is resolved but not treated as a required base backend."""
+        settings = _local_settings()
+        config = EffectiveConfig.from_operator_sources(
+            settings,
+            published_config={"tempo_url": "http://tempo:3200"},
+        )
+        assert config.tempo.url == "http://tempo:3200"
+        assert config.tempo.source == "published"
 
 
 class TestProductionSafety:

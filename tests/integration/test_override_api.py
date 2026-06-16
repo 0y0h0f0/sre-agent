@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from packages.common.time import utc_now
 from packages.db.models import DiscoveryOverride
-
 
 # ---------------------------------------------------------------------------
 # GET /api/config/overrides
@@ -117,7 +116,7 @@ def test_override_max_ttl_rejected(client, db_session):
         },
     )
     assert response.status_code == 400, response.json()
-    assert "TTL exceeds maximum" in response.json()["detail"]
+    assert "TTL exceeds maximum" in response.json()["error"]["message"]
 
 
 def test_override_rejects_unsafe_url(client, db_session):
@@ -131,7 +130,22 @@ def test_override_rejects_unsafe_url(client, db_session):
         },
     )
     assert response.status_code == 400, response.json()
-    assert "Unsafe" in response.json()["detail"]
+    assert "Unsafe" in response.json()["error"]["message"]
+
+
+def test_override_rejects_localhost_url_in_production(client, db_session, test_settings):
+    """Override URL validation must use production settings, not local defaults."""
+    test_settings.app_env = "production"
+    response = client.post(
+        "/api/config/overrides",
+        json={
+            "backend_type": "prometheus",
+            "override_json": {"url": "http://localhost:9090"},
+            "reason": "Production localhost must be rejected",
+        },
+    )
+    assert response.status_code == 400, response.json()
+    assert "Unsafe" in response.json()["error"]["message"]
 
 
 def test_override_rejects_secret_field(client, db_session):
@@ -145,7 +159,7 @@ def test_override_rejects_secret_field(client, db_session):
         },
     )
     assert response.status_code == 400, response.json()
-    assert "bearer_token" in response.json()["detail"]
+    assert "bearer_token" in response.json()["error"]["message"]
 
 
 def test_override_rejects_executor_field(client, db_session):
@@ -212,7 +226,7 @@ def test_override_revoke_success(client, db_session):
 
 def test_override_revoke_not_found(client, db_session):
     """Revoking non-existent override returns 404."""
-    response = client.request("DELETE","/api/config/overrides/dov_nonexistent")
+    response = client.request("DELETE", "/api/config/overrides/dov_nonexistent")
     assert response.status_code == 404, response.json()
 
 
@@ -230,6 +244,6 @@ def test_override_revoke_already_revoked(client, db_session):
     db_session.add(ov)
     db_session.flush()
 
-    response = client.request("DELETE","/api/config/overrides/dov_already_revoked")
+    response = client.request("DELETE", "/api/config/overrides/dov_already_revoked")
     assert response.status_code == 400, response.json()
-    assert "already revoked" in response.json()["detail"].lower()
+    assert "already revoked" in response.json()["error"]["message"].lower()

@@ -10,10 +10,6 @@ docs/superpowers/specs/m9-foragent.md §15.5 steps 8-12.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -23,7 +19,6 @@ from sqlalchemy.pool import StaticPool
 from apps.api.dependencies import get_app_settings, get_db, get_task_enqueue
 from packages.common.settings import Settings, get_settings
 from packages.db.base import Base
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -98,6 +93,7 @@ def e2e_client(
         trace_backend="disabled",
         tempo_discovery_enabled=False,
         grafana_alert_ingest_enabled=False,
+        rate_limit_max_requests=1000,
     )
 
     with TestClient(app) as client:

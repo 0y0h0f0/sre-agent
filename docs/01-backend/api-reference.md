@@ -46,13 +46,14 @@ API key middleware 由 `API_KEY_AUTH_ENABLED` 控制。`packages/common/settings
 Authorization: Bearer <api_key>
 ```
 
-WebSocket 使用：
+WebSocket 先用普通 bearer API key 申请短期 ticket，再连接：
 
 ```text
-/api/ws/incidents/{incident_id}?token=<api_key>
+POST /api/ws/incidents/{incident_id}/ticket
+/api/ws/incidents/{incident_id}?ticket=<short_lived_ticket>
 ```
 
-Scope enforcement 当前用于配置、发现和 M9 runbook 外部/LLM 能力。API key 管理 endpoints 当前受全局 API key auth 保护，但未在 router 层强制 `api_key:admin` scope。
+Scope enforcement 当前用于 API key 管理、配置、发现和 M9 runbook 外部/LLM 能力。API key 管理 endpoints 需要 `api_key:admin` scope。
 
 ## Route 总览
 

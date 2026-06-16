@@ -83,6 +83,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
         _route_after_approval,
         {
             "execute": "take_snapshot",
+            "wait": "human_approval",
             "replan": "plan_actions",
             "report": "generate_report",
         },
@@ -146,6 +147,8 @@ def _route_after_approval(state: IncidentState) -> str:
     phase = state.get("phase", "")
     if phase == "approval_approved":
         return "execute"
+    if phase == "approval_waiting":
+        return "wait"
     if phase == "approval_rejected":
         # Bound the reject -> replan cycle; give up to report after the cap so
         # repeated rejections cannot loop until the graph recursion limit.

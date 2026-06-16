@@ -45,7 +45,7 @@ def run_shadow_diagnosis(
         eval_run.status = "shadow_failed"
         eval_run.metrics = {"error": "incident not found"}
         eval_run.finished_at = utc_now()
-        db.flush()
+        db.commit()
         return eval_run
 
     # Placeholder: full shadow mode would clone the agent deps with the
@@ -59,5 +59,5 @@ def run_shadow_diagnosis(
         "shadow_prompt_version": shadow_prompt_version,
         "note": "shadow mode stub — full implementation pending",
     }
-    db.flush()
+    db.commit()
     return eval_run

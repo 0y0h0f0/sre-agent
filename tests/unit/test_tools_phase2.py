@@ -257,7 +257,23 @@ def test_trace_backend_timeout_degrades() -> None:
 def test_build_trace_backend_selects_by_setting() -> None:
     assert build_trace_backend(Settings()).name == "fixture"
     assert build_trace_backend(Settings(trace_backend="jaeger")).name == "jaeger"
-    assert build_trace_backend(Settings(trace_backend="tempo", trace_enabled=True)).name == "tempo"
+    overridden = build_trace_backend(
+        Settings(trace_backend="jaeger"),
+        base_url="http://effective-jaeger:16686",
+    )
+    assert isinstance(overridden, JaegerTraceBackend)
+    assert overridden.base_url == "http://effective-jaeger:16686"
+    assert (
+        build_trace_backend(Settings(trace_backend="tempo", trace_enabled=True)).name
+        == "degraded"
+    )
+    assert build_trace_backend(
+        Settings(
+            trace_backend="tempo",
+            trace_enabled=True,
+            m9_extensions_enabled=True,
+        )
+    ).name == "tempo"
     # invalid trace_backend values are now caught at Settings construction time
     # (pydantic model_validator) — not at build_trace_backend time.
     from pydantic import ValidationError

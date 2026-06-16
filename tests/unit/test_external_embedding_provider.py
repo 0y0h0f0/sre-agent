@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from packages.common.settings import Settings
 
 
@@ -30,16 +32,48 @@ class TestExternalEmbeddingDefaults:
 
 class TestExternalEmbeddingProvider:
     def test_provider_rejects_unsafe_url(self):
-        from packages.common.backend_url_safety import BackendUrlSafetyValidator
-        validator = BackendUrlSafetyValidator(app_env="production")
-        result = validator.validate("http://localhost:8080/embed")
-        assert result.is_safe is False
+        from packages.common.errors import ValidationAppError
+        from packages.rag.external_embedding_provider import ExternalEmbeddingProvider
+
+        with pytest.raises(ValidationAppError, match="unsafe external embedding endpoint"):
+            ExternalEmbeddingProvider(
+                endpoint="http://localhost:8080/embed",
+                app_env="production",
+                allowed_domain_patterns=["localhost"],
+            )
 
     def test_provider_accepts_safe_url(self):
-        from packages.common.backend_url_safety import BackendUrlSafetyValidator
-        validator = BackendUrlSafetyValidator(app_env="production")
-        result = validator.validate("https://embeddings.internal.svc/embed")
-        assert result.is_safe is True
+        from packages.rag.external_embedding_provider import ExternalEmbeddingProvider
+
+        provider = ExternalEmbeddingProvider(
+            endpoint="https://embedding.example.com/embed",
+            app_env="production",
+            allowed_domain_patterns=["embedding.example.com"],
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        )
+
+        assert provider.endpoint == "https://embedding.example.com/embed"
+
+    def test_provider_requires_allowlist_in_production(self):
+        from packages.common.errors import ValidationAppError
+        from packages.rag.external_embedding_provider import ExternalEmbeddingProvider
+
+        with pytest.raises(ValidationAppError, match="allowlist"):
+            ExternalEmbeddingProvider(
+                endpoint="https://embedding.example.com/embed",
+                app_env="production",
+            )
+
+    def test_provider_rejects_cluster_internal_domain_in_production(self):
+        from packages.common.errors import ValidationAppError
+        from packages.rag.external_embedding_provider import ExternalEmbeddingProvider
+
+        with pytest.raises(ValidationAppError, match="unsafe external embedding endpoint"):
+            ExternalEmbeddingProvider(
+                endpoint="https://embeddings.internal.svc/embed",
+                app_env="production",
+                allowed_domain_patterns=["*.svc"],
+            )
 
 
 class TestExternalEmbeddingSafety:
@@ -70,6 +104,16 @@ class TestExternalEmbeddingSafety:
             secret_ref="env:EMBEDDING_API_KEY",
         )
         assert provider.timeout_seconds > 0
+
+    def test_provider_conforms_to_primary_embedding_protocol_on_failure(self):
+        from packages.rag.external_embedding_provider import ExternalEmbeddingProvider
+
+        provider = ExternalEmbeddingProvider(endpoint="https://embeddings.internal.svc/embed")
+        provider._circuit_open = True
+
+        assert provider.dimension == 512
+        assert provider.model_name == "external-512"
+        assert provider.embed_text("checkout password=s3cret") == [0.0] * 512
 
     def test_redacts_input_before_sending(self):
         """Input text must be redacted before sending to external provider."""

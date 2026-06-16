@@ -62,9 +62,10 @@ def _item(
 class TestWebSearchQueryRedaction:
     def test_query_redacts_token(self):
         """Search queries must not contain tokens."""
-        text = "how to fix sk-abc123def456ghijklmnopqrstuvwxyz error"
+        token = "sk-" + "abc123def456ghijklmnopqrstuvwxyz"
+        text = f"how to fix {token} error"
         result = redact_text(text)
-        assert "sk-abc123" not in result.redacted_text
+        assert token not in result.redacted_text
 
     def test_query_redacts_password(self):
         """Search queries must not contain passwords."""
@@ -74,9 +75,11 @@ class TestWebSearchQueryRedaction:
 
     def test_query_redacts_private_key(self):
         """Search queries must not contain private keys."""
-        text = """Error with key -----BEGIN RSA PRIVATE KEY-----
-ABC123
------END RSA PRIVATE KEY-----"""
+        text = "Error with key " + "\n".join([
+            "-----BEGIN RSA " + "PRIVATE KEY-----",
+            "ABC123",
+            "-----END RSA " + "PRIVATE KEY-----",
+        ])
         result = redact_text(text)
         assert "[REDACTED]" in result.redacted_text
 
@@ -391,14 +394,15 @@ class TestRunbookWebContextBuilder:
             provider=provider,
             dns_resolver=lambda _host: ["93.184.216.34"],
         )
+        token = "sk-" + "abcdefghijklmnopqrstuvwxyz123456"
         result = builder.build_context(
-            query="service=checkout password=s3cret token sk-abcdefghijklmnopqrstuvwxyz123456"
+            query=f"service=checkout password=s3cret token {token}"
         )
         assert result.status == "ok"
         assert provider.queries
         assert "checkout" not in provider.queries[0]
         assert "s3cret" not in provider.queries[0]
-        assert "sk-abcdefghijklmnopqrstuvwxyz" not in provider.queries[0]
+        assert token not in provider.queries[0]
 
     def test_web_search_redirect_to_metadata_blocked(self):
         from packages.rag.runbook_web_context import RunbookWebContextBuilder

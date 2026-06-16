@@ -11,7 +11,7 @@ coverage.xml
 node_modules/
 apps/web/node_modules/
 apps/web/coverage/
-apps/web/.vite-cache/
+apps/web/.vite-cache*/
 apps/web/dist/
 apps/web/playwright-report/
 apps/web/test-results/
@@ -32,6 +32,10 @@ deploy/k8s/overlays/**/.env.secret
 
 # Local key exports
 newkey.txt
+SreAgentApiKey.txt
+*ApiKey.txt
+*api-key*.txt
+*secret*.txt
 
 # Generated eval reports
 reports/

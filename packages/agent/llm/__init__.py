@@ -10,6 +10,7 @@ from packages.agent.llm.base import LLMCallMetadata, LLMProvider
 from packages.agent.llm.factory import build_llm
 from packages.agent.llm.fake_adapter import FakeLLMAdapter
 from packages.agent.llm.openai_adapter import OpenAICompatibleAdapter
+from packages.agent.llm.redacting_adapter import RedactingLLMAdapter
 
 __all__ = [
     "AnthropicAdapter",
@@ -17,5 +18,6 @@ __all__ = [
     "LLMCallMetadata",
     "LLMProvider",
     "OpenAICompatibleAdapter",
+    "RedactingLLMAdapter",
     "build_llm",
 ]

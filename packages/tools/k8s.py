@@ -198,14 +198,7 @@ class K8sDiagnosticsTool:
                 duration_ms=elapsed_ms(started_at),
                 error_message=None if has_data else "empty k8s result",
             )
-        except (
-            OSError,
-            json.JSONDecodeError,
-            KeyError,
-            TypeError,
-            ValueError,
-            RuntimeError,
-        ) as exc:
+        except Exception as exc:
             return ToolResult(
                 status="degraded",
                 data={},
@@ -274,5 +267,14 @@ def _load_kubernetes_config(config_module: Any) -> None:
     """Load Kubernetes client config for both in-cluster and local execution."""
     try:
         config_module.load_incluster_config()
-    except Exception:
-        config_module.load_kube_config()
+        return
+    except Exception as incluster_exc:
+        try:
+            config_module.load_kube_config()
+            return
+        except Exception as kubeconfig_exc:
+            raise RuntimeError(
+                "Cannot configure Kubernetes client: "
+                f"in-cluster config failed: {incluster_exc}; "
+                f"kubeconfig failed: {kubeconfig_exc}"
+            ) from kubeconfig_exc

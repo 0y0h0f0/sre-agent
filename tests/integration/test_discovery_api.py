@@ -5,10 +5,9 @@ Tests GET /api/discovery/status, /services, /metrics, /topology, /capabilities.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from packages.db.models import DiscoveryRun
-from packages.db.repositories.discovery_runs import DiscoveryRunRepository
 
 
 def _create_discovery_run(
@@ -22,7 +21,6 @@ def _create_discovery_run(
     summary: dict | None = None,
 ) -> DiscoveryRun:
     """Helper to create a DiscoveryRun record directly in the DB."""
-    from packages.common.time import utc_now
 
     run = DiscoveryRun(
         discovery_run_id=discovery_run_id,
@@ -30,8 +28,8 @@ def _create_discovery_run(
         status=status,
         trigger_type=trigger_type,
         triggered_by=triggered_by,
-        started_at=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 6, 12, 10, 0, 5, tzinfo=timezone.utc),
+        started_at=datetime(2026, 6, 12, 10, 0, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 6, 12, 10, 0, 5, tzinfo=UTC),
         summary=summary or {},
     )
     db.add(run)
@@ -190,7 +188,10 @@ def test_discovery_metrics_from_run_summary(client, db_session):
                     "metric_name": "http_request_duration_seconds",
                     "status": "available",
                     "confidence": 0.95,
-                    "promql_template": 'histogram_quantile(0.99, sum(rate({metric}[5m])) by (le, {service_label}))',
+                    "promql_template": (
+                        "histogram_quantile(0.99, "
+                        "sum(rate({metric}[5m])) by (le, {service_label}))"
+                    ),
                     "service_label": "service",
                     "required_labels": ["le"],
                 },
@@ -313,7 +314,11 @@ def test_discovery_capabilities_from_run_summary(client, db_session):
                     "traces_available": False,
                     "k8s_accessible": False,
                     "metric_mappings": [],
-                    "capability_gaps": ["metrics_unavailable", "traces_unavailable", "k8s_inaccessible"],
+                    "capability_gaps": [
+                        "metrics_unavailable",
+                        "traces_unavailable",
+                        "k8s_inaccessible",
+                    ],
                 },
             ],
         },

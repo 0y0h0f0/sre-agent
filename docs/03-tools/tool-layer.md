@@ -106,7 +106,7 @@ Trace backend 选择：
 | `TRACE_BACKEND=disabled` | 同上 |
 | `TRACE_BACKEND=fixture` | 读取 `demo/faults/traces.json` |
 | `TRACE_BACKEND=jaeger` | Jaeger-compatible `/api/traces` |
-| `TRACE_BACKEND=tempo` | Native Tempo API，带 capability flags |
+| `TRACE_BACKEND=tempo` | Native Tempo API，带 capability flags；需要 `M9_EXTENSIONS_ENABLED=true`，否则返回 degraded backend |
 
 ### GitChangeTool
 
@@ -177,10 +177,11 @@ Live K8s action capability metadata 会声明执行后必须运行的 verify gat
 
 1. 读取已发布 EffectiveConfig 和 settings。
 2. 构造 `RequestLocalToolCache`。
-3. 根据 backend 配置构造 trace、deployment、k8s、db diagnostics、executor backend。
-4. 如果 metrics/logs URL 不可用，使用 `UnavailableTool` 返回 degraded，而不是传入 `None`。
-5. 构造 `RunbookRetriever(use_hybrid=settings.runbook_hybrid_search_enabled)` 和 `RunbookSearchTool`。
-6. 把所有依赖注入 `AgentDeps`。
+3. 使用 EffectiveConfig URL 构造 metrics、logs、trace 和 Alertmanager poll 依赖；production active override 会参与 merge，未发布 proposal 不会进入 worker。
+4. 根据 settings 构造 deployment、k8s、db diagnostics、executor backend。GitHub/Argo/K8s/DB/executor 的 secret-bearing settings 不写入 EffectiveConfig。
+5. 如果 metrics/logs/trace URL 不可用，使用 `UnavailableTool` 返回 degraded，而不是传入 `None`。
+6. 构造 `RunbookRetriever(use_hybrid=settings.runbook_hybrid_search_enabled)` 和 `RunbookSearchTool`。
+7. 把所有依赖注入 `AgentDeps`。
 
 节点不得绕过 `_build_deps()` 直接创建 live client。
 

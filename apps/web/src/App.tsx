@@ -63,6 +63,7 @@ import {
   batchDecideApprovals,
   createComment,
   deleteComment,
+  createWebSocketTicket,
   type ActionDetail,
   type ActionSummary,
   type AgentRunDetail,
@@ -157,14 +158,14 @@ function connectionStateLabel(state: string): string {
 type WsEvent = { type: string; payload: Record<string, unknown>; timestamp?: string };
 type WsConnectionState = 'disabled' | 'connecting' | 'open' | 'closed' | 'error';
 
-function buildIncidentWebSocketUrl(incidentId: string): string {
+async function buildIncidentWebSocketUrl(incidentId: string): Promise<string> {
   const apiBase = import.meta.env.VITE_API_BASE_URL as string | undefined;
   const baseUrl = apiBase ? new URL(apiBase, window.location.href) : new URL(window.location.href);
   const protocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(`/api/ws/incidents/${incidentId}`, `${protocol}//${baseUrl.host}`);
-  const token = getStoredApiKey();
-  if (token) {
-    url.searchParams.set('token', token);
+  if (getStoredApiKey()) {
+    const ticket = await createWebSocketTicket(incidentId);
+    url.searchParams.set('ticket', ticket.ticket);
   }
   return url.toString();
 }
@@ -190,11 +191,22 @@ function useWebSocket(incidentId: string | null, enabled: boolean) {
       return undefined;
     }
 
-    const wsUrl = buildIncidentWebSocketUrl(incidentId);
+    const activeIncidentId = incidentId;
+    let cancelled = false;
 
-    function connect() {
-      if (!mountedRef.current) return;
+    async function connect() {
+      if (!mountedRef.current || cancelled) return;
       setConnectionState('connecting');
+      let wsUrl: string;
+      try {
+        wsUrl = await buildIncidentWebSocketUrl(activeIncidentId);
+      } catch {
+        if (mountedRef.current && !cancelled) {
+          setConnectionState('error');
+        }
+        return;
+      }
+      if (!mountedRef.current || cancelled) return;
       let ws: WebSocket;
       try {
         ws = new WebSocket(wsUrl);
@@ -223,14 +235,15 @@ function useWebSocket(incidentId: string | null, enabled: boolean) {
         setConnectionState((state) => (state === 'disabled' ? state : 'closed'));
         reconnectTimerRef.current = window.setTimeout(() => {
           if (!mountedRef.current) return;
-          connect();
+          void connect();
         }, 5000);
       };
     }
 
-    connect();
+    void connect();
 
     return () => {
+      cancelled = true;
       mountedRef.current = false;
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
@@ -336,7 +349,15 @@ function AuthPanel() {
       if (expiryText && (!Number.isInteger(expiry) || Number(expiry) <= 0)) {
         throw new Error('过期天数必须为正整数。');
       }
-      return createApiKey({ description: trimmedDescription, expires_in_days: expiry }, authToken);
+      return createApiKey(
+        {
+          description: trimmedDescription,
+          expires_in_days: expiry,
+          scopes: ['api_key:admin'],
+          roles: ['operator']
+        },
+        authToken
+      );
     },
     onSuccess: (created) => {
       setStoredApiKey(created.raw_key);
@@ -1039,6 +1060,7 @@ function ApprovalsPage() {
 
   function batchDecide(decision: 'approve' | 'reject') {
     if (checkedIds.size === 0) return;
+    if (decision === 'approve' && selectedHasL3) return;
     batchMutation.mutate({
       decision,
       approver: 'sre-batch',
@@ -1048,6 +1070,8 @@ function ApprovalsPage() {
   }
 
   const waitingItems = query.data?.items.filter((a) => a.approval_status === 'waiting') ?? [];
+  const selectedItems = query.data?.items.filter((a) => checkedIds.has(a.approval_id)) ?? [];
+  const selectedHasL3 = selectedItems.some((a) => a.risk_level === 'L3');
 
   return (
     <>
@@ -1079,7 +1103,13 @@ function ApprovalsPage() {
       {status === 'waiting' && waitingItems.length > 0 && checkedIds.size > 0 ? (
         <div className="batchBar">
           <span>已选 {checkedIds.size} 项</span>
-          <button className="iconTextButton success" type="button" onClick={() => batchDecide('approve')} disabled={batchMutation.isPending}>
+          {selectedHasL3 ? <span className="batchHint">L3 需单独确认</span> : null}
+          <button
+            className="iconTextButton success"
+            type="button"
+            onClick={() => batchDecide('approve')}
+            disabled={batchMutation.isPending || selectedHasL3}
+          >
             <Check size={16} />
             批量批准
           </button>
@@ -1265,6 +1295,8 @@ function ApprovalDialog({ approval, onClose }: { approval: ApprovalItem; onClose
   }
 
   const action = actionQuery.data;
+  const actionParams = action?.params ?? {};
+  const hasActionParams = Object.keys(actionParams).length > 0;
 
   return (
     <div className="dialogBackdrop" role="presentation">
@@ -1286,6 +1318,12 @@ function ApprovalDialog({ approval, onClose }: { approval: ApprovalItem; onClose
         </div>
         <p className="dialogReason">{approval.reason}</p>
         {approval.rollback_plan ? <p className="rollbackText">回滚方案: {approval.rollback_plan}</p> : null}
+        {actionQuery.isLoading ? <p className="actionParamsEmpty">执行参数加载中</p> : (
+          <section className="actionParamsPanel" aria-label="执行参数">
+            <h3>执行参数</h3>
+            {hasActionParams ? <KeyValueRecord record={actionParams} /> : <p>无执行参数</p>}
+          </section>
+        )}
         {actionQuery.isError ? <ErrorState title="无法加载操作" error={actionQuery.error} /> : null}
 
         <div className="segmented compact" role="tablist" aria-label="审批决定">

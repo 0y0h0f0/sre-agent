@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,6 +53,7 @@ def create_app() -> FastAPI:
     app.middleware("http")(_request_id_middleware)
     app.middleware("http")(create_api_key_middleware())
     app.add_exception_handler(AppError, _app_error_handler)
+    app.add_exception_handler(HTTPException, _http_exception_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
 
     app.include_router(health.router)
@@ -99,6 +100,34 @@ async def _app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+async def _http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    if not isinstance(exc, HTTPException):
+        raise exc
+    request_id = getattr(request.state, "request_id", new_id("req_"))
+    detail = jsonable_encoder(exc.detail)
+    if isinstance(detail, str):
+        message = detail
+        details: dict[str, object] = {}
+    else:
+        message = "request failed"
+        details = {"detail": detail}
+
+    headers = dict(exc.headers or {})
+    headers["X-Request-Id"] = request_id
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": _http_error_code(exc.status_code),
+                "message": message,
+                "request_id": request_id,
+                "details": details,
+            }
+        },
+        headers=headers,
+    )
+
+
 async def _validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
     if not isinstance(exc, RequestValidationError):
         raise exc
@@ -115,6 +144,22 @@ async def _validation_error_handler(request: Request, exc: Exception) -> JSONRes
         },
         headers={"X-Request-Id": request_id},
     )
+
+
+def _http_error_code(status_code: int) -> str:
+    if status_code == 400:
+        return "VALIDATION_ERROR"
+    if status_code == 401:
+        return "UNAUTHORIZED"
+    if status_code == 403:
+        return "FORBIDDEN"
+    if status_code == 404:
+        return "NOT_FOUND"
+    if status_code == 409:
+        return "CONFLICT"
+    if status_code == 422:
+        return "VALIDATION_ERROR"
+    return "HTTP_ERROR"
 
 
 app = create_app()

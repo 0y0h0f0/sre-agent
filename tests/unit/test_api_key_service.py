@@ -31,7 +31,53 @@ def test_create_key_returns_raw_key_once(db_session) -> None:
     assert response.description == "test-key"
     assert len(response.raw_key) == 64  # token_hex(32)
     assert response.created_by == "admin"
+    assert response.scopes == []
+    assert response.roles == []
     assert response.expires_at is None
+
+
+def test_create_key_persists_scopes_roles_and_creator(db_session) -> None:
+    service = ApiKeyService(db_session)
+    data = ApiKeyCreateRequest(
+        description="scoped-key",
+        scopes=["config:read", "config:read", "api_key:admin"],
+        roles=["operator", "operator"],
+    )
+    response = service.create(data, created_by="apik_admin")
+
+    assert response.created_by == "apik_admin"
+    assert response.scopes == ["config:read", "api_key:admin"]
+    assert response.roles == ["operator"]
+
+    identity = service.verify(response.raw_key)
+    assert identity is not None
+    assert identity["scopes"] == ["config:read", "api_key:admin"]
+    assert identity["roles"] == ["operator"]
+
+
+def test_create_request_rejects_unknown_scope() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="unsupported API key scope"):
+        ApiKeyCreateRequest(description="bad-scope", scopes=["made_up:scope"])
+
+
+def test_create_request_rejects_invalid_role() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="roles must start"):
+        ApiKeyCreateRequest(description="bad-role", roles=["Admin Role"])
+
+
+def test_has_any_keys_tracks_bootstrap_initialization(db_session) -> None:
+    service = ApiKeyService(db_session)
+    assert service.has_any_keys() is False
+
+    service.create(ApiKeyCreateRequest(description="first-key"))
+
+    assert service.has_any_keys() is True
 
 
 def test_create_key_with_expiry(db_session) -> None:

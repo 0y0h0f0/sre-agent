@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from packages.discovery.models import CapabilityMatrix, DiscoveryResult, MetricMapping
 from packages.discovery.runbook_template_engine import (
-    DEFAULT_TEMPLATE,
     INCIDENT_TYPE_TO_TEMPLATE,
     RunbookTemplateContext,
     RunbookTemplateEngine,
@@ -151,7 +148,12 @@ class TestRunbookTemplateContext:
         assert d["has_error_rate_metric"] is False
 
     def test_context_with_capability_gaps(self):
-        capability = _make_capability("svc", logs=False, traces=False, gaps=["No log collection configured"])
+        capability = _make_capability(
+            "svc",
+            logs=False,
+            traces=False,
+            gaps=["No log collection configured"],
+        )
         ctx = RunbookTemplateContext(
             service_name="svc",
             incident_type="high_error_rate",
@@ -336,7 +338,7 @@ class TestRunbookTemplateEngine:
         assert "## Detection" in result
 
     def test_template_does_not_invent_metrics(self):
-        """When no metric mappings are provided, rendered output must not reference fake metric names."""
+        """Output must not reference fake metric names without metric mappings."""
         engine = RunbookTemplateEngine()
         ctx = RunbookTemplateContext(
             service_name="svc",
@@ -415,7 +417,13 @@ class TestRunbookTemplateEngine:
             title="T",
             severity="P2",
             owner="o",
-            capability=_make_capability("svc", gaps=["No disk metrics available", "Trace collection not configured"]),
+            capability=_make_capability(
+                "svc",
+                gaps=[
+                    "No disk metrics available",
+                    "Trace collection not configured",
+                ],
+            ),
         )
         result = engine.render(ctx)
         assert "### Known Capability Gaps" in result

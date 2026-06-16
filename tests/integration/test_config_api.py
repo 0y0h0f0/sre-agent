@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from packages.common.ids import new_id
 from packages.common.time import utc_now
 from packages.db.models import EffectiveConfigVersion

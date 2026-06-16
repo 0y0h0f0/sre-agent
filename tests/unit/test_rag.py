@@ -23,6 +23,17 @@ from packages.tools.cache import RequestLocalToolCache
 from packages.tools.runbook_search import RunbookSearchTool
 
 
+class FailingEmbeddingProvider:
+    dimension = 512
+    model_name = "failing"
+
+    def embed_text(self, text: str) -> list[float]:
+        raise RuntimeError("embedding backend unavailable")
+
+    def embed_many(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed_text(text) for text in texts]
+
+
 def _runbook_text(
     *,
     service: str = "checkout",
@@ -122,6 +133,25 @@ def test_ingest_is_idempotent_and_search_filters(db_session, tmp_path) -> None:
     assert {"chunk_id", "source_path", "title", "excerpt", "score", "metadata"}.issubset(
         results[0].model_dump().keys()
     )
+
+
+def test_ingest_degrades_when_embedding_provider_fails(db_session, tmp_path) -> None:
+    base = tmp_path / "runbooks"
+    base.mkdir()
+    (base / "high.md").write_text(_runbook_text(), encoding="utf-8")
+
+    repository = RunbookChunkRepository(db_session)
+    result = RunbookIngestor(
+        repository,
+        embedding_provider=FailingEmbeddingProvider(),
+    ).ingest_path(base)
+    db_session.commit()
+
+    chunks = repository.list_chunks()
+    assert result.chunks_created == len(chunks)
+    assert chunks
+    assert all(chunk.embedding_model == "none" for chunk in chunks)
+    assert all(chunk.embedding == [0.0] * 512 for chunk in chunks)
 
 
 def test_runbook_context_keeps_chunk_id_reference(db_session, tmp_path) -> None:
@@ -624,6 +654,44 @@ def test_build_embedding_provider_returns_fake_by_default() -> None:
     assert isinstance(provider, FakeEmbeddingProvider)
 
 
+def test_build_embedding_provider_returns_disabled_keyword_fallback() -> None:
+    from packages.common.settings import Settings
+    from packages.rag.embedding_factory import DisabledEmbeddingProvider, build_embedding_provider
+
+    settings = Settings(embedding_provider="disabled")
+    provider = build_embedding_provider(settings)
+
+    assert isinstance(provider, DisabledEmbeddingProvider)
+    assert provider.model_name == "disabled"
+    assert provider.embed_text("query") == [0.0] * 512
+
+
+def test_build_embedding_provider_external_disabled_without_full_opt_in() -> None:
+    from packages.common.settings import Settings
+    from packages.rag.embedding_factory import DisabledEmbeddingProvider, build_embedding_provider
+
+    settings = Settings(embedding_provider="external")
+    provider = build_embedding_provider(settings)
+
+    assert isinstance(provider, DisabledEmbeddingProvider)
+
+
+def test_build_embedding_provider_external_requires_url_when_enabled() -> None:
+    from packages.common.errors import ValidationAppError
+    from packages.common.settings import Settings
+    from packages.rag.embedding_factory import build_embedding_provider
+
+    settings = Settings(
+        embedding_provider="external",
+        m9_extensions_enabled=True,
+        semantic_runbook_search_enabled=True,
+        external_embedding_provider_enabled=True,
+    )
+
+    with pytest.raises(ValidationAppError, match="EXTERNAL_EMBEDDING_URL"):
+        build_embedding_provider(settings)
+
+
 def test_build_embedding_provider_unknown_raises() -> None:
     from packages.common.errors import ValidationAppError
     from packages.common.settings import Settings
@@ -631,6 +699,16 @@ def test_build_embedding_provider_unknown_raises() -> None:
 
     settings = Settings(embedding_provider="unknown_provider")
     with pytest.raises(ValidationAppError, match="unknown embedding_provider"):
+        build_embedding_provider(settings)
+
+
+def test_build_embedding_provider_rejects_text2vec_for_primary_512_store() -> None:
+    from packages.common.errors import ValidationAppError
+    from packages.common.settings import Settings
+    from packages.rag.embedding_factory import build_embedding_provider
+
+    settings = Settings(embedding_provider="text2vec")
+    with pytest.raises(ValidationAppError, match="1024-dimensional"):
         build_embedding_provider(settings)
 
 

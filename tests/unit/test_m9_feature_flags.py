@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from packages.common.feature_flags import (
     M9FeatureFlags,
     is_m9_enabled,
@@ -16,7 +14,6 @@ from packages.common.feature_flags import (
     resolve_m9_feature_flags,
 )
 from packages.common.settings import Settings
-
 
 # ---------------------------------------------------------------------------
 # Default-disabled

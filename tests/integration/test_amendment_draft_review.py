@@ -368,7 +368,7 @@ def test_incident_diff_external_provider_requires_llm_invoke_scope(
     )
 
     assert response.status_code == 403
-    assert "llm:invoke" in response.json()["detail"]
+    assert "llm:invoke" in response.json()["error"]["message"]
 
 
 @pytest.mark.parametrize(
@@ -394,7 +394,7 @@ def test_incident_diff_requires_base_scopes(
     )
 
     assert response.status_code == 403
-    assert missing_scope in response.json()["detail"]
+    assert missing_scope in response.json()["error"]["message"]
 
 
 def test_incident_diff_external_provider_allows_llm_invoke_scope(

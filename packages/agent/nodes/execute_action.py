@@ -190,13 +190,21 @@ def _live_preflight_block(
     if common_errors:
         return _blocked_result(atype, "live K8s target preflight failed", {"failed": common_errors})
 
-    snapshot = state.get("pre_action_snapshot", {})
+    snapshot = _snapshot_for_action(state.get("pre_action_snapshot", {}), action)
     missing_paths = _missing_snapshot_paths(snapshot, capability.required_snapshot_paths)
     if missing_paths:
         return _blocked_result(
             atype,
             "required pre-action snapshot fields are missing",
             {"missing_snapshot_paths": missing_paths},
+        )
+
+    identity_errors = _snapshot_identity_errors(snapshot, action, context)
+    if identity_errors:
+        return _blocked_result(
+            atype,
+            "pre-action snapshot does not match live K8s target",
+            {"failed": identity_errors},
         )
 
     failed_checks = _failed_preflight_checks(capability, action, snapshot, context)
@@ -208,6 +216,18 @@ def _live_preflight_block(
         )
 
     return None
+
+
+def _snapshot_for_action(snapshot: object, action: dict[str, Any]) -> object:
+    if not isinstance(snapshot, dict):
+        return snapshot
+    k8s_targets = snapshot.get("k8s_targets")
+    target = str(action.get("target", "") or "")
+    if isinstance(k8s_targets, dict) and target:
+        target_snapshot = k8s_targets.get(target)
+        if isinstance(target_snapshot, dict):
+            return {**snapshot, "k8s": target_snapshot}
+    return snapshot
 
 
 def _capability_contract_error(capability: ActionCapability) -> str:
@@ -292,6 +312,28 @@ def _failed_preflight_checks(
                 failed.append(check)
         else:
             failed.append(check)
+    return failed
+
+
+def _snapshot_identity_errors(
+    snapshot: object,
+    action: dict[str, Any],
+    context: ExecutionContext,
+) -> list[str]:
+    k8s_snapshot = snapshot.get("k8s") if isinstance(snapshot, dict) else None
+    if not isinstance(k8s_snapshot, dict):
+        return []
+
+    failed: list[str] = []
+    expected_target = str(action.get("target", "") or "")
+    snapshot_name = str(k8s_snapshot.get("name", "") or "")
+    if expected_target and snapshot_name and snapshot_name != expected_target:
+        failed.append("k8s_snapshot_target_matches_action")
+
+    expected_namespace = context.namespace or ""
+    snapshot_namespace = str(k8s_snapshot.get("namespace", "") or "")
+    if expected_namespace and snapshot_namespace and snapshot_namespace != expected_namespace:
+        failed.append("k8s_snapshot_namespace_matches_context")
     return failed
 
 

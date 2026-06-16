@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+from collections.abc import Sequence
+from typing import Any
+
 from celery import Celery
 from celery.schedules import crontab
 
@@ -49,7 +53,7 @@ celery_app.conf.update(
 )
 
 # Trigger auto-discovery on worker startup (initial scan, then Beat handles periodic).
-@celery_app.on_after_finalize.connect
+@celery_app.on_after_finalize.connect  # type: ignore[untyped-decorator]
 def _trigger_startup_discovery(sender: Any, **kwargs: Any) -> None:
     """Enqueue an auto-discovery run when the worker first starts."""
     try:
@@ -62,10 +66,22 @@ def _trigger_startup_discovery(sender: Any, **kwargs: Any) -> None:
         )
 
 
-# Start Prometheus metrics HTTP server for worker scraping (Phase 7.2)
+def _is_celery_worker_process(argv: Sequence[str] | None = None) -> bool:
+    """Return True only for the long-running Celery worker process.
+
+    Celery control commands such as ``celery inspect ping`` import this module
+    too. Those short-lived probe processes must not start the worker metrics
+    HTTP server because the real worker already owns the port.
+    """
+    args = list(sys.argv if argv is None else argv)
+    return "worker" in args
+
+
+# Start Prometheus metrics HTTP server for worker scraping (Phase 7.2).
 if (
     settings.prometheus_metrics_enabled
     and not settings.celery_task_always_eager
+    and _is_celery_worker_process()
 ):
     try:
         import prometheus_client

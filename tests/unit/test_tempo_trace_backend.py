@@ -17,8 +17,18 @@ class TestTempoBackendDefaultDisabled:
         backend = build_trace_backend(settings)
         assert not isinstance(backend, TempoTraceBackend)
 
-    def test_trace_backend_tempo_opt_in(self):
+    def test_trace_backend_tempo_requires_m9_opt_in(self):
         settings = Settings(trace_backend="tempo", trace_enabled=True)
+        backend = build_trace_backend(settings)
+        assert backend.name == "degraded"
+        assert not isinstance(backend, TempoTraceBackend)
+
+    def test_trace_backend_tempo_opt_in(self):
+        settings = Settings(
+            trace_backend="tempo",
+            trace_enabled=True,
+            m9_extensions_enabled=True,
+        )
         backend = build_trace_backend(settings)
         assert isinstance(backend, TempoTraceBackend)
         assert backend.name == "tempo"
@@ -149,6 +159,7 @@ class TestTempoSpanFetch:
         settings = Settings(
             trace_backend="tempo",
             trace_enabled=True,
+            m9_extensions_enabled=True,
             tempo_url="http://tempo:3200",
         )
         backend = build_trace_backend(settings)

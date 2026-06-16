@@ -21,23 +21,16 @@ class UnavailableTool(BaseTool):
     """
 
     def __init__(self, name: str, *, reason: str = "Backend not configured") -> None:
-        self._name = name
+        self.name = name
+        self.timeout_seconds = 1.0
         self._reason = reason
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def timeout_seconds(self) -> float:
-        return 1.0
 
     def run(self, query: BaseModel) -> ToolResult:
         """Always returns degraded with the stored reason."""
         return ToolResult(
             status="degraded",
             data={},
-            summary=f"[{self._name}] {self._reason}",
+            summary=f"[{self.name}] {self._reason}",
             duration_ms=0,
             error_message=self._reason,
         )

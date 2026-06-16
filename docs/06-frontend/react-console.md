@@ -55,6 +55,7 @@
 - 每个请求自动带 `X-Request-Id`，格式为 `web_<timestamp>_<random>`。
 - API key 存在 `localStorage` 的 `sre_api_key` 中，请求时写入 `Authorization: Bearer <key>`。
 - `createApiKey(payload, authToken)` 使用输入的 bootstrap token，而不是本地已保存 key。
+- 侧边栏“生成密钥”默认创建 `scopes=["api_key:admin"]`、`roles=["operator"]` 的本地 Web key，避免 bootstrap seed 移除后无法继续管理 key。
 - 标准错误信封会转换为 `ApiError(status, code, requestId, details)`，页面错误态会显示 `request_id`。
 - 列表接口通过 `normalizePaginatedResponse` 同时兼容分页响应和旧的数组响应。
 
@@ -84,13 +85,14 @@ VITE_API_BASE_URL=http://localhost:8000 npm run dev
 
 `LIVE_STATUSES` 包括 `open`、`diagnosing`、`waiting_approval`、`queued`、`running`、`executing`。这些状态决定是否启用页面轮询。
 
-Agent Run 页面还会连接：
+Agent Run 页面会先用当前保存的 bearer API key 申请短期 WebSocket ticket：
 
 ```text
-/api/ws/incidents/{incident_id}?token=<api_key>
+POST /api/ws/incidents/{incident_id}/ticket
+/api/ws/incidents/{incident_id}?ticket=<short_lived_ticket>
 ```
 
-WebSocket 收到 `node_update`、`approval_update`、`incident_update` 后，会失效对应 `agent-run` 和 `incident` query。连接断开后 5 秒重连。无 API key 时仍会尝试连接不带 token 的 URL，是否放行由后端认证配置决定。
+WebSocket 收到 `node_update`、`approval_update`、`incident_update` 后，会失效对应 `agent-run` 和 `incident` query。连接断开后 5 秒重连。无 API key 时仍会尝试连接不带 ticket 的 URL，是否放行由后端认证配置决定。
 
 ## 页面行为
 

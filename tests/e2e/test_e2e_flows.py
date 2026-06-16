@@ -7,10 +7,7 @@ poll → incident → dedup, production degraded path, operator auth path.
 
 from __future__ import annotations
 
-import hashlib
-import secrets
-from datetime import datetime, timezone
-from unittest.mock import patch
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +18,6 @@ from sqlalchemy.pool import StaticPool
 from apps.api.dependencies import get_app_settings, get_db, get_task_enqueue
 from packages.common.settings import Settings, get_settings
 from packages.db.base import Base
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -85,6 +81,7 @@ def e2e_client(
         celery_task_always_eager=True,
         llm_provider="fake",
         embedding_provider="fake",
+        rate_limit_max_requests=1000,
     )
 
     with TestClient(app) as client:
@@ -112,7 +109,7 @@ class TestE2ELocalDemo:
             "service": "checkout",
             "severity": "P2",
             "alert_name": "E2ETestAlert",
-            "starts_at": datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc).isoformat(),
+            "starts_at": datetime(2026, 6, 1, 0, 0, tzinfo=UTC).isoformat(),
             "labels": {"team": "payments"},
             "annotations": {"summary": "E2E test alert"},
         }
@@ -192,7 +189,7 @@ class TestE2EPollAndDedup:
             "service": "api-gateway",
             "severity": "P3",
             "alert_name": "DedupTest",
-            "starts_at": datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc).isoformat(),
+            "starts_at": datetime(2026, 6, 1, 0, 0, tzinfo=UTC).isoformat(),
         }
         resp1 = e2e_client.post("/api/alerts", json=payload)
         assert resp1.status_code in (200, 201, 202)

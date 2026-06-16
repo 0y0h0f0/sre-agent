@@ -9,8 +9,14 @@ rejected with HTTP 429.
 from __future__ import annotations
 
 import time
+from collections import defaultdict
+from typing import Any
 
 import redis
+from fastapi import Depends
+
+from apps.api.dependencies import get_app_settings
+from packages.common.settings import Settings
 
 
 class RateLimiter:
@@ -26,11 +32,15 @@ class RateLimiter:
     ) -> None:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self.redis = redis.Redis.from_url(
-            redis_url,
-            socket_connect_timeout=socket_timeout,
-            socket_timeout=socket_timeout,
-        )
+        self.redis: Any | None = None
+        self._memory = redis_url.startswith("memory://")
+        self._memory_windows: dict[str, list[float]] = defaultdict(list)
+        if not self._memory:
+            self.redis = redis.Redis.from_url(
+                redis_url,
+                socket_connect_timeout=socket_timeout,
+                socket_timeout=socket_timeout,
+            )
 
     def is_allowed(self, scope: str, identifier: str) -> bool:
         """Return True when *identifier* has not exceeded the limit for *scope*.
@@ -42,7 +52,12 @@ class RateLimiter:
         key = f"ratelimit:{scope}:{identifier}"
         now = time.time()
         window_start = now - self.window_seconds
+        if self._memory:
+            return self._memory_is_allowed(key, now, window_start)
+
         try:
+            if self.redis is None:
+                return True
             pipe = self.redis.pipeline(transaction=True)
             pipe.zremrangebyscore(key, 0, window_start)  # trim expired
             pipe.zcard(key)                               # count remaining
@@ -59,12 +74,22 @@ class RateLimiter:
             )
             return True
 
+    def _memory_is_allowed(self, key: str, now: float, window_start: float) -> bool:
+        window = [
+            timestamp
+            for timestamp in self._memory_windows.get(key, [])
+            if timestamp > window_start
+        ]
+        allowed = len(window) < self.max_requests
+        window.append(now)
+        self._memory_windows[key] = window
+        return allowed
 
-def build_rate_limiter() -> RateLimiter:
+
+def build_rate_limiter(
+    settings: Settings = Depends(get_app_settings),
+) -> RateLimiter:
     """Create a RateLimiter from application settings."""
-    from packages.common.settings import get_settings
-
-    settings = get_settings()
     return RateLimiter(
         redis_url=settings.redis_url,
         max_requests=settings.rate_limit_max_requests,

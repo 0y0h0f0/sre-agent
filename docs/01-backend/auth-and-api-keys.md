@@ -33,7 +33,7 @@ Authorization: Bearer <api_key>
 1. 如果 `api_key_auth_enabled=false`，跳过所有认证检查。
 2. 如果请求 path 命中开放路径，跳过认证。
 3. 读取 `Authorization: Bearer ...`。
-4. 若 `API_KEY_INITIAL_SEED` 存在，使用恒时比较检查 bootstrap key。
+4. 若 `API_KEY_INITIAL_SEED` 存在，使用恒时比较检查 bootstrap key；只有 `api_keys` 表还没有任何 key 时才接受。
 5. 否则通过 `ApiKeyService.verify(raw_key)` 查 hash、撤销状态和过期时间。
 6. 成功后写入 `request.state.api_key`。
 7. 响应后 best-effort 更新 `last_used_at`。
@@ -45,10 +45,11 @@ Authorization: Bearer <api_key>
 WebSocket endpoint：
 
 ```text
-/api/ws/incidents/{incident_id}?token=<api_key>
+POST /api/ws/incidents/{incident_id}/ticket
+/api/ws/incidents/{incident_id}?ticket=<short_lived_ticket>
 ```
 
-认证失败关闭连接，code 为 `4001`。Auth disabled 时跳过 token 校验。
+HTTP ticket endpoint 使用普通 `Authorization: Bearer <api_key>` 认证。认证失败或 ticket 无效时 WebSocket 关闭连接，code 为 `4001`。Auth disabled 时跳过 ticket 校验。
 
 ## ApiKey 模型
 
@@ -65,16 +66,19 @@ WebSocket endpoint：
 | `last_used_at` | best-effort 最近使用时间 |
 | `revoked` | 撤销标记 |
 
-`ApiKeyCreateRequest` 当前只接受：
+`ApiKeyCreateRequest` 接受：
 
 ```json
 {
   "description": "production-operator-key",
-  "expires_in_days": 90
+  "expires_in_days": 90,
+  "scopes": ["api_key:admin", "config:write"],
+  "roles": ["operator"]
 }
 ```
 
 创建响应中的 `raw_key` 只返回一次。之后列表接口只返回 metadata，不返回 raw key。
+`expires_in_days` 最大 365。`scopes` 必须属于下方 scope allowlist；`roles` 只能使用小写字母、数字、`_`、`:`、`-`，并以小写字母开头。
 
 ## Scope 系统
 
@@ -84,16 +88,23 @@ WebSocket endpoint：
 
 | Scope | 使用位置 | 行为 |
 |-------|----------|------|
+| `api_key:admin` | `/api/api-keys` | 创建、列出、撤销 API key |
 | `config:read` | `GET /api/config/current`、`GET /api/config/versions`、`GET /api/config/overrides` | 读取配置 |
 | `config:write` | config publish/rollback/revoke/override write | 写配置；也可读配置 |
 | `discovery:read` | discovery GET endpoints | 读取发现状态 |
 | `discovery:write` | discovery rerun；也可读 discovery | 触发手动发现 |
+| `runbook:read` | 预留/通用 runbook read scope | runbook 只读能力 |
 | `runbook:review` | M9 runbook LLM/Web 能力；incident diff 还需 `incident:llm_diff` | 审核/高级 runbook 能力 |
 | `runbook:llm_generate` | `POST /api/runbooks/llm-generate` | LLM runbook draft |
 | `runbook:web_search` | `POST /api/runbooks/web-search`，需同时具备 `runbook:review` | Web search enrichment |
+| `incident:llm_diff` | `POST /api/runbooks/incident-diff`，需同时具备 `runbook:review` | incident/runbook diff |
+| `llm:invoke` | 外部 LLM incident diff | 允许外部 LLM 调用 |
+| `ai:external` | 外部 AI provider | 比 `llm:invoke` 更宽的外部 AI 权限 |
+| `embedding:external` | external embedding provider 配置/能力 | 外部 embedding 权限 |
 | `incident:llm_diff` | `POST /api/runbooks/incident-diff`，需同时具备 `runbook:review` | Incident/runbook diff |
+| `api_key:admin` | `/api/api-keys` 创建、列表、撤销 | 管理 API key；不隐含 config/discovery/runbook 权限 |
 
-外部云 LLM 的 incident diff 还需要 `llm:invoke` 或 `ai:external`。定义但当前未直接在 router 中强制的 scope 常量包括 `runbook:read`、`embedding:external`。API key 管理 endpoints 当前没有 route-level `api_key:admin` dependency；它们只受全局 API key auth 保护。
+外部云 LLM 的 incident diff 还需要 `llm:invoke` 或 `ai:external`。定义但当前未直接在 router 中强制的 scope 常量包括 `runbook:read`、`embedding:external`。
 
 ## Bootstrap Key 注意事项
 
@@ -103,11 +114,14 @@ WebSocket endpoint：
 {
   "key_id": "apik_initial",
   "description": "initial-seed",
-  "created_by": "system"
+  "created_by": "system",
+  "scopes": ["api_key:admin"],
+  "roles": ["bootstrap"],
+  "is_bootstrap": true
 }
 ```
 
-该身份当前不包含 scopes，因此在 auth enabled 且 route 要求 scope 时，bootstrap key 不能通过 scope dependency。需要 scope 的配置/发现/M9 endpoint 应使用数据库中的 API key，或在本地/demo 中关闭 auth。
+该身份只用于创建第一个正式 operator key。只要 `api_keys` 表中已经存在任意 key（包括 revoked/expired key），bootstrap seed 就会被拒绝，不能作为长期恢复或管理凭据。它拥有 `api_key:admin` scope，但不拥有 `config:*`、`discovery:*` 或 M9 scopes；需要这些权限时，应在创建正式 key 时显式写入 `scopes`。
 
 ## 后端认证配置
 

@@ -7,6 +7,7 @@ in production.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from packages.common.settings import Settings
 
@@ -24,7 +25,7 @@ class TestTraceBackendEnum:
     def test_trace_backend_rejects_unknown_value(self, monkeypatch):
         """Unknown TRACE_BACKEND values should raise a validation error."""
         monkeypatch.setenv("TRACE_BACKEND", "zipkin")
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             Settings()
 
     def test_trace_backend_default_is_fixture(self):

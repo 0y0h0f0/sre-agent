@@ -190,21 +190,38 @@ class K8sDiscovery:
             result.degraded_reason = str(exc)
             return result
         for ns in namespaces:
-            collectors = [
-                ("services", self._list_services, result.services),
-                ("pods", self._list_pods, result.pods),
-                ("deployments", self._list_deployments, result.workloads),
-                ("statefulsets", self._list_statefulsets, result.workloads),
-                ("daemonsets", self._list_daemonsets, result.workloads),
-                ("endpoints", self._list_endpoints, result.endpoints),
-                ("ingresses", self._list_ingresses, result.ingresses),
-                ("configmaps", self._list_config_maps, result.config_maps),
-            ]
-            for label, collector, target in collectors:
-                try:
-                    target.extend(collector(ns))
-                except Exception as exc:
-                    result.warnings.append(f"namespace {ns} {label}: {exc}")
+            try:
+                result.services.extend(self._list_services(ns))
+            except Exception as exc:
+                result.warnings.append(f"namespace {ns} services: {exc}")
+            try:
+                result.pods.extend(self._list_pods(ns))
+            except Exception as exc:
+                result.warnings.append(f"namespace {ns} pods: {exc}")
+            try:
+                result.workloads.extend(self._list_deployments(ns))
+            except Exception as exc:
+                result.warnings.append(f"namespace {ns} deployments: {exc}")
+            try:
+                result.workloads.extend(self._list_statefulsets(ns))
+            except Exception as exc:
+                result.warnings.append(f"namespace {ns} statefulsets: {exc}")
+            try:
+                result.workloads.extend(self._list_daemonsets(ns))
+            except Exception as exc:
+                result.warnings.append(f"namespace {ns} daemonsets: {exc}")
+            try:
+                result.endpoints.extend(self._list_endpoints(ns))
+            except Exception as exc:
+                result.warnings.append(f"namespace {ns} endpoints: {exc}")
+            try:
+                result.ingresses.extend(self._list_ingresses(ns))
+            except Exception as exc:
+                result.warnings.append(f"namespace {ns} ingresses: {exc}")
+            try:
+                result.config_maps.extend(self._list_config_maps(ns))
+            except Exception as exc:
+                result.warnings.append(f"namespace {ns} configmaps: {exc}")
         if not result.services and not result.workloads:
             result.degraded = True
             result.degraded_reason = "No services or workloads discovered"

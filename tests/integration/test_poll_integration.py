@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from packages.db.models import AlertPollCursor
-
 
 # ---------------------------------------------------------------------------
 # _from_alertmanager_single_alert
@@ -220,7 +216,6 @@ def test_poll_task_skips_when_source_not_poll():
     mock_settings.alert_source = "webhook"
     mock_settings.redis_url = "redis://localhost:6379/0"
 
-    from unittest.mock import patch
 
     with patch("apps.worker.tasks.get_settings", return_value=mock_settings), \
          patch("redis.Redis.from_url", return_value=MagicMock()):
@@ -239,7 +234,6 @@ def test_poll_task_skips_when_no_valid_scope():
     mock_settings.alert_poll_filter_matchers = ""
     mock_settings.redis_url = "redis://localhost:6379/0"
 
-    from unittest.mock import patch
 
     with patch("apps.worker.tasks.get_settings", return_value=mock_settings), \
          patch("redis.Redis.from_url", return_value=MagicMock()):
@@ -339,6 +333,7 @@ def test_resolved_inference_truncated_blocks_resolution():
 def test_resolved_inference_grace_period():
     """Fingerprint within grace period is not eligible for resolution."""
     import time
+
     from packages.discovery.resolved_inference import (
         infer_resolved_from_missing_fingerprints,
     )

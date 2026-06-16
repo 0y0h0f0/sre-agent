@@ -54,6 +54,22 @@ def test_live_executor_rollback_fills_params_from_snapshot(monkeypatch) -> None:
     assert captured["params"]["to_revision"] == "5"
 
 
+def test_live_scale_rejects_missing_or_unsafe_replica_counts() -> None:
+    backend = LiveK8sExecutorBackend(namespace="payments")
+
+    unsafe_values = [None, True, -1, "2.5", "many", 51]
+    for replicas in unsafe_values:
+        params = {} if replicas is None else {"replicas": replicas}
+        result = backend.execute(
+            {"type": "scale_deployment", "target": "checkout", "params": params},
+            ExecutionContext(service="checkout", incident_id="inc", agent_run_id="run"),
+        )
+
+        assert result.status == "failed", f"should reject replicas={replicas!r}"
+        assert "replicas" in result.message
+        assert result.details == {"min_replicas": 0, "max_replicas": 50}
+
+
 def test_rollback_deployment_is_a_rollback_alias_for_execute(monkeypatch) -> None:
     captured = {}
 

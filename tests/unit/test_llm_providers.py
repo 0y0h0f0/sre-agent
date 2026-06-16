@@ -7,6 +7,7 @@ All tests are offline and deterministic. Network adapters are exercised with
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ from packages.agent.llm.base import extract_json, parse_into_schema
 from packages.agent.llm.factory import build_llm
 from packages.agent.llm.fake_adapter import FakeLLMAdapter
 from packages.agent.llm.openai_adapter import OpenAICompatibleAdapter
+from packages.agent.llm.redacting_adapter import RedactingLLMAdapter
 from packages.agent.schemas import DiagnosisOutput, PlannedAction
 from packages.common.errors import ValidationAppError
 from packages.common.settings import Settings
@@ -33,15 +35,46 @@ class TestFactory:
         llm = build_llm(_settings(llm_provider="fake"))
         assert isinstance(llm, FakeLLMAdapter)
 
-    @pytest.mark.parametrize("provider", ["vllm", "openai", "deepseek"])
-    def test_openai_compatible_providers(self, provider: str) -> None:
-        llm = build_llm(_settings(llm_provider=provider, llm_api_key="k"))
+    def test_vllm_provider_returns_openai_compatible_adapter(self) -> None:
+        llm = build_llm(
+            _settings(
+                llm_provider="vllm",
+                llm_api_key="k",
+            )
+        )
         assert isinstance(llm, OpenAICompatibleAdapter)
-        assert llm.provider == provider
+        assert llm.provider == "vllm"
+
+    @pytest.mark.parametrize("provider", ["openai", "deepseek"])
+    def test_external_openai_compatible_providers_are_redacted(
+        self, provider: str
+    ) -> None:
+        llm = build_llm(
+            _settings(
+                llm_provider=provider,
+                llm_api_key="k",
+                llm_external_provider_allowed=True,
+            )
+        )
+        assert isinstance(llm, RedactingLLMAdapter)
+        assert isinstance(llm.delegate, OpenAICompatibleAdapter)
+        assert llm.delegate.provider == provider
 
     def test_anthropic_provider_returns_anthropic_adapter(self) -> None:
-        llm = build_llm(_settings(llm_provider="anthropic", llm_api_key="sk-ant"))
-        assert isinstance(llm, AnthropicAdapter)
+        llm = build_llm(
+            _settings(
+                llm_provider="anthropic",
+                llm_api_key="sk-ant",
+                llm_external_provider_allowed=True,
+            )
+        )
+        assert isinstance(llm, RedactingLLMAdapter)
+        assert isinstance(llm.delegate, AnthropicAdapter)
+
+    @pytest.mark.parametrize("provider", ["openai", "deepseek", "anthropic"])
+    def test_external_cloud_provider_requires_explicit_allow(self, provider: str) -> None:
+        with pytest.raises(ValidationAppError, match="external LLM provider"):
+            build_llm(_settings(llm_provider=provider, llm_api_key="k"))
 
     def test_unknown_provider_raises_validation_error(self) -> None:
         with pytest.raises(ValidationAppError):
@@ -62,8 +95,16 @@ class TestFactory:
         assert settings.llm_api_key.get_secret_value() == "super-secret-key"
 
     def test_factory_unwraps_secret_api_key(self) -> None:
-        llm = build_llm(_settings(llm_provider="openai", llm_api_key="k-unwrap"))
-        assert llm.api_key == "k-unwrap"
+        llm = build_llm(
+            _settings(
+                llm_provider="openai",
+                llm_api_key="k-unwrap",
+                llm_external_provider_allowed=True,
+            )
+        )
+        assert isinstance(llm, RedactingLLMAdapter)
+        assert isinstance(llm.delegate, OpenAICompatibleAdapter)
+        assert llm.delegate.api_key == "k-unwrap"
 
 
 # --------------------------------------------------------------------------- #
@@ -97,6 +138,72 @@ class TestFakeAdapter:
         llm.invoke([{"role": "user", "content": "PodRestartLoop"}])
         assert llm.last_metadata["provider"] == "fake"
         assert llm.last_metadata["model"]
+
+
+# --------------------------------------------------------------------------- #
+# Redacting adapter — external cloud egress boundary                           #
+# --------------------------------------------------------------------------- #
+class _RecordingLLM:
+    def __init__(self) -> None:
+        self.last_prompt = ""
+        self.last_messages: list[dict[str, Any]] = []
+        self.last_metadata = {
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        }
+
+    def invoke(
+        self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
+    ) -> str:
+        self.last_messages = messages
+        return '{"ok": true}'
+
+    def generate_json(
+        self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
+    ) -> dict[str, bool]:
+        self.last_prompt = prompt
+        return {"ok": True}
+
+
+class TestRedactingLLMAdapter:
+    def test_generate_json_redacts_prompt_before_delegate(self) -> None:
+        delegate = _RecordingLLM()
+        adapter = RedactingLLMAdapter(delegate)
+
+        out = adapter.generate_json(
+            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789 "
+            "password=topsecret",
+            dict,
+        )
+
+        assert out == {"ok": True}
+        assert "abcdefghijklmnopqrstuvwxyz0123456789" not in delegate.last_prompt
+        assert "topsecret" not in delegate.last_prompt
+        assert adapter.last_metadata["provider"] == "deepseek"
+        assert adapter.last_metadata["redaction_applied"] is True
+        assert adapter.last_metadata["redaction_count"] >= 2
+        assert "bearer_token" in adapter.last_metadata["redaction_types"]
+
+    def test_invoke_redacts_nested_messages_without_mutating_original(self) -> None:
+        delegate = _RecordingLLM()
+        adapter = RedactingLLMAdapter(delegate)
+        messages = [
+            {
+                "role": "user",
+                "content": "call http://10.1.2.3/status with api_key=abc123",
+                "metadata": {"note": "namespace=payments"},
+            }
+        ]
+
+        adapter.invoke(messages)
+
+        sent = json.dumps(delegate.last_messages)
+        assert "10.1.2.3" not in sent
+        assert "abc123" not in sent
+        assert "namespace=payments" not in sent
+        assert "10.1.2.3" in str(messages)
+        assert adapter.last_metadata["redaction_count"] >= 3
 
 
 # --------------------------------------------------------------------------- #

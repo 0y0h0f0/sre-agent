@@ -19,6 +19,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from packages.common.feature_flags import resolve_m9_feature_flags
 from packages.common.settings import Settings
 
 
@@ -334,7 +335,11 @@ def _parse_otlp_span(span: dict[str, Any], service: str) -> dict[str, Any] | Non
     }
 
 
-def build_trace_backend(settings: Settings) -> TraceBackend:
+def build_trace_backend(
+    settings: Settings,
+    *,
+    base_url: str | None = None,
+) -> TraceBackend:
     """Select the trace backend from settings.
 
     - ``disabled`` → DegradedTraceBackend (no-op, TraceTool reports degraded).
@@ -354,11 +359,16 @@ def build_trace_backend(settings: Settings) -> TraceBackend:
         return FixtureTraceBackend(fixture_path=settings.trace_fixture_path)
     if backend == "jaeger":
         return JaegerTraceBackend(
-            base_url=settings.jaeger_url, timeout_seconds=settings.tool_timeout_seconds
+            base_url=base_url or settings.jaeger_url,
+            timeout_seconds=settings.tool_timeout_seconds,
         )
     if backend == "tempo":
+        flags = resolve_m9_feature_flags(settings)
+        if flags.tempo_degraded:
+            return DegradedTraceBackend()
         return TempoTraceBackend(
-            base_url=settings.tempo_url, timeout_seconds=settings.tool_timeout_seconds
+            base_url=base_url or settings.tempo_url,
+            timeout_seconds=settings.tool_timeout_seconds,
         )
     # Unreachable — Settings validator rejects unknown values.
     msg = f"unknown trace_backend '{settings.trace_backend}'"

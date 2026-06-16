@@ -164,6 +164,8 @@ export type ApprovalDecisionPayload = {
 export type ApiKeyCreatePayload = {
   description: string;
   expires_in_days?: number | null;
+  scopes?: string[];
+  roles?: string[];
 };
 
 export type ApiKeyCreateResponse = {
@@ -171,8 +173,15 @@ export type ApiKeyCreateResponse = {
   description: string;
   raw_key: string;
   created_by: string;
+  scopes: string[];
+  roles: string[];
   expires_at: string | null;
   created_at: string;
+};
+
+export type WebSocketTicketResponse = {
+  ticket: string;
+  expires_at: string;
 };
 
 export type IncidentReport = {
@@ -388,6 +397,10 @@ export function createApiKey(payload: ApiKeyCreatePayload, authToken: string): P
   });
 }
 
+export function createWebSocketTicket(incidentId: string): Promise<WebSocketTicketResponse> {
+  return apiRequest<WebSocketTicketResponse>(`/api/ws/incidents/${incidentId}/ticket`, { method: 'POST', body: {} });
+}
+
 export function getIncidentReport(incidentId: string): Promise<IncidentReport> {
   return apiRequest<IncidentReport>(`/api/incidents/${incidentId}/report`);
 }
@@ -504,4 +517,3 @@ export function listIncidentAudit(incidentId: string): Promise<AuditLogListRespo
 export function batchDecideApprovals(payload: BatchApprovalPayload): Promise<ApprovalDecision[]> {
   return apiRequest<ApprovalDecision[]>('/api/approvals/batch', { method: 'POST', body: payload });
 }
-

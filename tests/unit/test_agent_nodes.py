@@ -511,6 +511,72 @@ class TestHumanApprovalResume:
         for action in result["recommended_actions"]:
             assert action["allowed"] is False
 
+    def test_resume_recovers_existing_approved_batch_without_checkpoint_ids(
+        self, db_session: Session
+    ) -> None:
+        from packages.db.repositories.approvals import ApprovalRepository
+
+        inc_id, run_id, actions, approval_ids = self._seed(
+            db_session, statuses=["approved"]
+        )
+        deps = _make_deps(db_session)
+        sparse_actions = [dict(actions[0])]
+        sparse_actions[0].pop("action_id")
+        state = _base_state(
+            incident_id=inc_id,
+            agent_run_id=run_id,
+            recommended_actions=sparse_actions,
+            approval_status={},
+            approval_decision="",
+        )
+
+        result = human_approval(state, deps)
+
+        assert result["phase"] == "approval_approved"
+        assert result["approval_status"]["approval_ids"] == approval_ids
+        assert result["recommended_actions"][0]["action_id"] == actions[0]["action_id"]
+        assert result["recommended_actions"][0]["requires_approval"] is False
+        assert len(ApprovalRepository(db_session).list_for_run(run_id)) == 1
+
+    def test_existing_waiting_batch_reinterrupts_without_duplicate(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from langgraph.errors import GraphInterrupt
+
+        from packages.db.repositories.approvals import ApprovalRepository
+
+        inc_id, run_id, actions, approval_ids = self._seed(
+            db_session, statuses=["waiting"]
+        )
+        deps = _make_deps(db_session)
+        sparse_actions = [dict(actions[0])]
+        sparse_actions[0].pop("action_id")
+        captured = []
+
+        def mock_interrupt(data):
+            captured.append(data)
+            raise GraphInterrupt("interrupted for approval")
+
+        monkeypatch.setattr("packages.agent.nodes.human_approval.interrupt", mock_interrupt)
+        state = _base_state(
+            incident_id=inc_id,
+            agent_run_id=run_id,
+            recommended_actions=sparse_actions,
+            approval_status={},
+            approval_decision="",
+            _interrupts_enabled=True,
+        )
+
+        raised = False
+        try:
+            human_approval(state, deps)
+        except GraphInterrupt:
+            raised = True
+
+        assert raised
+        assert captured == [{"type": "approval_required", "approval_ids": approval_ids}]
+        assert len(ApprovalRepository(db_session).list_for_run(run_id)) == 1
+
 
 class TestRouteAfterApproval:
     def test_replan_bounded_by_cap(self) -> None:
@@ -527,6 +593,11 @@ class TestRouteAfterApproval:
         from packages.agent.graph import _route_after_approval
 
         assert _route_after_approval(_base_state(phase="approval_approved")) == "execute"
+
+    def test_waiting_routes_back_to_approval(self) -> None:
+        from packages.agent.graph import _route_after_approval
+
+        assert _route_after_approval(_base_state(phase="approval_waiting")) == "wait"
 
 
 class TestPlanActionsNode:
@@ -980,6 +1051,58 @@ class TestExecuteActionNode:
         capability = result["execution_results"][0]["capability"]
         assert capability["bounded_irreversible"] is True
         assert "k8s_rollout" in capability["verify_gates"]
+
+    def test_live_restart_blocks_when_snapshot_target_mismatches(
+        self, db_session: Session
+    ) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("mismatched snapshot must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "payments",
+                        "namespace": "default",
+                        "replicas": 2,
+                        "ready_replicas": 2,
+                        "available_replicas": 2,
+                        "image": "payments:v1",
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "restart_service",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "snapshot does not match" in execution["message"]
+        assert backend.execute_calls == []
 
     def test_unknown_live_action_fails_closed_before_backend(self, db_session: Session) -> None:
         class LiveBackend:
@@ -1614,6 +1737,7 @@ class TestSnapshotVerifyRollbackFlow:
                     status="succeeded",
                     data={
                         "payload": {
+                            "name": query.service,
                             "revision": "7",
                             "replicas": 3,
                             "namespace": query.namespace,
@@ -1637,8 +1761,10 @@ class TestSnapshotVerifyRollbackFlow:
         )
 
         assert tool.query is not None
+        assert tool.query.service == "checkout"
         assert tool.query.namespace == "payments"
         assert result["pre_action_snapshot"]["k8s"]["revision"] == "7"
+        assert result["pre_action_snapshot"]["k8s_targets"]["checkout"]["revision"] == "7"
 
     def test_take_snapshot_preserves_original_snapshot_for_degraded_rollback(
         self, db_session: Session

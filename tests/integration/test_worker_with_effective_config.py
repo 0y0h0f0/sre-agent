@@ -135,6 +135,81 @@ class TestBuildDepsIntegration:
         assert deps.config_version_id == version.version_id
         assert deps.effective_config is not None
 
+    def test_published_jaeger_url_is_used_for_trace_backend(
+        self, db_session: Session
+    ):
+        """Trace backend must use EffectiveConfig URL, not settings default URL."""
+        from packages.common.ids import new_id
+        from packages.common.settings import Settings
+        from packages.common.time import utc_now
+        from packages.db.models import EffectiveConfigVersion
+
+        version = EffectiveConfigVersion(
+            version_id=new_id("ecv_"),
+            version_number=1,
+            status="published",
+            config_snapshot={"jaeger_url": "http://published-jaeger:16686"},
+            published_at=utc_now(),
+            published_by="test",
+        )
+        db_session.add(version)
+        db_session.flush()
+
+        settings = Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            app_env="production",
+            llm_provider="disabled",
+            embedding_provider="fake",
+            trace_backend="jaeger",
+            trace_enabled=True,
+        )
+
+        deps = _build_deps(db_session, settings, "run-1", "inc-1")
+
+        assert deps.trace_tool.backend.base_url == "http://published-jaeger:16686"
+
+    def test_active_override_beats_published_config_in_worker(
+        self, db_session: Session
+    ):
+        """Active override rows must participate in worker EffectiveConfig merge."""
+        from datetime import timedelta
+
+        from packages.common.ids import new_id
+        from packages.common.settings import Settings
+        from packages.common.time import utc_now
+        from packages.db.models import DiscoveryOverride, EffectiveConfigVersion
+        from packages.tools.metrics import MetricsTool
+
+        version = EffectiveConfigVersion(
+            version_id=new_id("ecv_"),
+            version_number=1,
+            status="published",
+            config_snapshot={"prometheus_url": "http://published-prom:9090"},
+            published_at=utc_now(),
+            published_by="test",
+        )
+        override = DiscoveryOverride(
+            override_id=new_id("dov_"),
+            backend_type="prometheus",
+            override_json={"url": "http://override-prom:9090"},
+            reason="temporary override",
+            expires_at=utc_now() + timedelta(hours=1),
+        )
+        db_session.add_all([version, override])
+        db_session.flush()
+
+        settings = Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            app_env="production",
+            llm_provider="disabled",
+            embedding_provider="fake",
+        )
+
+        deps = _build_deps(db_session, settings, "run-1", "inc-1")
+
+        assert isinstance(deps.metrics_tool, MetricsTool)
+        assert deps.metrics_tool.base_url == "http://override-prom:9090"
+
     def test_worker_does_not_use_unpublished_proposal(
         self, db_session: Session
     ):

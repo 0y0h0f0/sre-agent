@@ -6,9 +6,9 @@ metadata:
 data:
   # === Environment ===
   APP_ENV: "local"
-  AUTOMATION_LEVEL: "autopilot"
+  AUTOMATION_LEVEL: "supervised"
   APPROVAL_AUTO_APPROVE_MINUTES: "0"
-  APPROVAL_AUTO_APPROVE_MAX_RISK: "L3"
+  APPROVAL_AUTO_APPROVE_MAX_RISK: "L1"
 
   # === Observability Backends ===
   PROMETHEUS_URL: "http://prometheus.task-platform.svc.cluster.local:9090"
@@ -17,54 +17,57 @@ data:
   METRICS_SERVICE_LABEL: "job"
   LOGS_SERVICE_LABEL: "service"
 
-  # === LLM: DeepSeek 全开 ===
-  LLM_PROVIDER: "deepseek"
-  LLM_MODEL: "deepseek-v4-pro"
-  LLM_BASE_URL: "https://api.deepseek.com"
-  LLM_MAX_TOKENS: "4096"
+  # === LLM: safe deterministic default ===
+  LLM_PROVIDER: "fake"
+  LLM_MODEL: "fake-diagnosis-model"
+  LLM_BASE_URL: "http://localhost:8001/v1"
+  LLM_MAX_TOKENS: "512"
   LLM_TEMPERATURE: "0.1"
-  LLM_TIMEOUT_SECONDS: "120"
-  LLM_REASONING_ENABLED: "true"
-  LLM_REASONING_EFFORT: "high"
-  LLM_REASONING_NODES: "diagnose,diagnose_synthesize,synthesize_report,execute_action"
-  LLM_MULTI_PERSPECTIVE_ENABLED: "true"
+  LLM_TIMEOUT_SECONDS: "30"
+  LLM_REASONING_ENABLED: "false"
+  LLM_REASONING_EFFORT: "medium"
+  LLM_REASONING_NODES: ""
+  LLM_MULTI_PERSPECTIVE_ENABLED: "false"
 
   # === Embedding & RAG ===
-  EMBEDDING_PROVIDER: "bge_zh"
+  EMBEDDING_PROVIDER: "fake"
   EMBEDDING_BGE_ZH_URL: "http://bge-zh.sre-agent.svc.cluster.local:8083"
-  RERANKER_PROVIDER: "bge"
+  RERANKER_PROVIDER: "fake"
   RERANKER_BGE_BASE_URL: "http://bge-reranker.sre-agent.svc.cluster.local:8082"
 
-  # === 诊断工具全部 live ===
+  # === Diagnostic tools: read/fixture defaults ===
   TRACE_ENABLED: "true"
-  TRACE_BACKEND: "jaeger"
+  TRACE_BACKEND: "fixture"
+  TRACE_FIXTURE_PATH: "demo/faults/traces.json"
   JAEGER_URL: "http://jaeger.task-platform.svc.cluster.local:16686"
   TEMPO_URL: "http://tempo.task-platform.svc.cluster.local:3200"
-  DEPLOYMENT_BACKEND: "github"
+  DEPLOYMENT_BACKEND: "fixture"
+  GIT_CHANGES_FIXTURE_PATH: "demo/faults/git_changes.json"
   GITHUB_API_URL: "https://api.github.com"
-  GITHUB_REPO: "0y0h0f0/platform"
-  K8S_BACKEND: "live"
+  GITHUB_REPO: ""
+  K8S_BACKEND: "fixture"
   DB_DIAGNOSTICS_BACKEND: "fixture"
-  EXECUTOR_BACKEND: "live"
+  DB_DIAGNOSTICS_FIXTURE_PATH: "demo/faults/db_diagnostics.json"
+  EXECUTOR_BACKEND: "fixture"
   TOOL_TIMEOUT_SECONDS: "30"
-  EXECUTOR_TIMEOUT_SECONDS: "120"
+  EXECUTOR_TIMEOUT_SECONDS: "30"
 
-  # === 服务发现: 激进自动应用 ===
+  # === Discovery: no auto-publish in the base manifest ===
   DISCOVERY_ENABLED: "true"
-  DISCOVERY_APPLY_MODE: "autopilot"
+  DISCOVERY_APPLY_MODE: "inherit"
   DISCOVERY_MANUAL_RERUN_ENABLED: "true"
   BACKEND_URL_ALLOWLIST: "*.svc.cluster.local,*.svc,kubernetes.default.svc"
 
-  # === Tempo 自动发现 ===
-  TEMPO_DISCOVERY_ENABLED: "true"
+  # === Tempo discovery is an M9 capability; keep disabled by default ===
+  TEMPO_DISCOVERY_ENABLED: "false"
 
   # === K8s (comma-separated for multi-namespace) ===
   K8S_NAMESPACE: "task-platform"
   K8S_FIXTURE_PATH: "demo/faults/k8s.json"
   EXECUTOR_K8S_NAMESPACE: "task-platform"
 
-  # === 告警: Webhook + Poll 双开 ===
-  ALERT_SOURCE: "both"
+  # === Alerts: webhook by default, polling is explicit opt-in ===
+  ALERT_SOURCE: "webhook"
   ALERTMANAGER_URL: "http://alertmanager.task-platform.svc.cluster.local:9093"
   ALERT_POLL_INTERVAL_SECONDS: "15"
   ALERT_POLL_LOCK_TTL_SECONDS: "60"
@@ -76,20 +79,20 @@ data:
 
   # === Runbook ===
   RUNBOOK_TEMPLATE_GENERATION_ENABLED: "true"
-  RUNBOOK_LLM_GENERATION_ENABLED: "true"
-  RUNBOOK_WEB_SEARCH_ENABLED: "true"
+  RUNBOOK_LLM_GENERATION_ENABLED: "false"
+  RUNBOOK_WEB_SEARCH_ENABLED: "false"
   RUNBOOK_WEB_SEARCH_PROVIDER: "fake"
   RUNBOOK_WEB_SEARCH_TIMEOUT_SECONDS: "15"
   RUNBOOK_WEB_SEARCH_MAX_RESULTS: "10"
-  RUNBOOK_WEB_SEARCH_REQUIRE_HTTPS: "false"
+  RUNBOOK_WEB_SEARCH_REQUIRE_HTTPS: "true"
 
-  # === M9: 全部开启 ===
-  M9_EXTENSIONS_ENABLED: "true"
-  LLM_INCIDENT_DIFF_ENABLED: "true"
-  SEMANTIC_RUNBOOK_SEARCH_ENABLED: "true"
+  # === M9: default-off ===
+  M9_EXTENSIONS_ENABLED: "false"
+  LLM_INCIDENT_DIFF_ENABLED: "false"
+  SEMANTIC_RUNBOOK_SEARCH_ENABLED: "false"
   EXTERNAL_EMBEDDING_PROVIDER_ENABLED: "false"
-  LLM_EXTERNAL_PROVIDER_ALLOWED: "true"
-  GRAFANA_ALERT_INGEST_ENABLED: "true"
+  LLM_EXTERNAL_PROVIDER_ALLOWED: "false"
+  GRAFANA_ALERT_INGEST_ENABLED: "false"
   GRAFANA_WEBHOOK_SECRET_REF: ""
 
   # === SMTP ===
@@ -98,16 +101,16 @@ data:
   SMTP_TLS_MODE: "auto"
   SMTP_TIMEOUT_SECONDS: "30"
   SMTP_FROM: "sre-agent@example.local"
-  SRE_EMAIL_LIST: "1554092292@qq.com"
+  SRE_EMAIL_LIST: "sre@example.local"
   WEB_BASE_URL: "http://web.sre-agent.svc.cluster.local"
   NOTIFICATION_TIMEZONE: "UTC"
 
-  # === Auth (调试关闭) ===
-  API_KEY_AUTH_ENABLED: "false"
-  CORS_ALLOW_ORIGINS: "*"
+  # === Auth ===
+  API_KEY_AUTH_ENABLED: "true"
+  CORS_ALLOW_ORIGINS: "http://localhost:5173"
 
-  # === 影子模式 ===
-  SHADOW_MODE_ENABLED: "true"
+  # === Shadow mode ===
+  SHADOW_MODE_ENABLED: "false"
 
   # === 限流 ===
   RATE_LIMIT_MAX_REQUESTS: "1000"

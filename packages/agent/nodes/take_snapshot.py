@@ -76,24 +76,32 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
         }
         k8s_actions = [a for a in actions if str(a.get("type", "")).lower() in k8s_action_types]
         if k8s_actions and deps.k8s_tool:
+            k8s_targets: dict[str, Any] = {}
+            ordered_targets = _k8s_snapshot_targets(k8s_actions, state)
+            namespace = deps.settings.executor_k8s_namespace or "default"
             try:
-                svc = state.get("service_name", "unknown")
-                namespace = deps.settings.executor_k8s_namespace or "default"
-                result = deps.k8s_tool.run(
-                    K8sQuery(
-                        service=svc,
-                        operation="get_deployment",
-                        namespace=namespace,
+                for target in ordered_targets:
+                    result = deps.k8s_tool.run(
+                        K8sQuery(
+                            service=target,
+                            operation="get_deployment",
+                            namespace=namespace,
+                        )
                     )
-                )
-                snapshot["k8s"] = result.data.get("payload", {}) if result.data else {}
+                    k8s_targets[target] = result.data.get("payload", {}) if result.data else {}
+                snapshot["k8s_targets"] = k8s_targets
+                if ordered_targets:
+                    snapshot["k8s"] = k8s_targets.get(ordered_targets[0], {})
             except Exception:
                 logger.error(
-                    "take_snapshot: k8s query failed service=%s",
-                    svc,
+                    "take_snapshot: k8s query failed targets=%s",
+                    ordered_targets,
                     exc_info=True,
                 )
                 snapshot["k8s"] = {"error": "k8s_unreachable"}
+                snapshot["k8s_targets"] = {
+                    target: {"error": "k8s_unreachable"} for target in ordered_targets
+                }
 
         deps.node_tracer(
             node_id=node_id,
@@ -139,6 +147,23 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
 
 def _has_rollback_action(actions: list[dict[str, Any]]) -> bool:
     return any(str(action.get("type", "")).lower() in ROLLBACK_ACTION_TYPES for action in actions)
+
+
+def _k8s_snapshot_targets(
+    actions: list[dict[str, Any]],
+    state: IncidentState,
+) -> list[str]:
+    """Return unique Deployment targets to snapshot, preserving action order."""
+    fallback = str(state.get("service_name", "") or "unknown")
+    targets: list[str] = []
+    seen: set[str] = set()
+    for action in actions:
+        target = str(action.get("target") or fallback)
+        if target in seen:
+            continue
+        targets.append(target)
+        seen.add(target)
+    return targets
 
 
 def _usable_snapshot(snapshot: object) -> bool:

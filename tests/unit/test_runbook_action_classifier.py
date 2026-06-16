@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from packages.rag.runbook_action_classifier import (
     ActionClassification,
     ActionStep,

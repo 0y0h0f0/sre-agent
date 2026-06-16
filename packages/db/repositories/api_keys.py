@@ -22,6 +22,8 @@ class ApiKeyRepository:
         description: str,
         key_hash: str,
         created_by: str = "admin",
+        scopes: list[str] | None = None,
+        roles: list[str] | None = None,
         expires_at: datetime | None = None,
     ) -> ApiKey:
         key = ApiKey(
@@ -29,6 +31,8 @@ class ApiKeyRepository:
             description=description,
             key_hash=key_hash,
             created_by=created_by,
+            scopes=scopes or [],
+            roles=roles or [],
             expires_at=expires_at,
         )
         self._db.add(key)
@@ -51,6 +55,9 @@ class ApiKeyRepository:
                 select(ApiKey).order_by(ApiKey.created_at.desc())
             ).all()
         )
+
+    def has_any(self) -> bool:
+        return self._db.scalar(select(ApiKey.id).limit(1)) is not None
 
     def revoke(self, key_id: str) -> bool:
         key = self.get_by_public_id(key_id)

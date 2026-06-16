@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from apps.api.schemas.runbooks import (
     AmendmentDraftItem,
+    AmendmentProposalItem,
     AmendmentReviewRequest,
     IncidentDiffRequest,
     IncidentDiffResponse,
@@ -35,7 +36,10 @@ from packages.db.repositories.audit_logs import AuditLogRepository
 from packages.db.repositories.incidents import IncidentRepository
 from packages.db.repositories.runbook_drafts import RunbookDraftRepository
 from packages.db.repositories.runbook_versions import RunbookVersionRepository
-from packages.db.repositories.runbooks import RunbookChunkRepository
+from packages.db.repositories.runbooks import (
+    RunbookChunkRepository,
+    degraded_runbook_embedding,
+)
 from packages.rag.embedding_factory import build_embedding_provider
 from packages.rag.incident_diff import IncidentDiffAnalyzer
 from packages.rag.ingest import RunbookIngestor
@@ -364,7 +368,7 @@ class RunbookService:
 
         # Persist each proposal as an AmendmentDraft.
         amendment_ids: list[str] = []
-        proposal_items: list[dict[str, object]] = []
+        proposal_items: list[AmendmentProposalItem] = []
         runbook_version_id = (
             request.approved_runbook_version_id
             or request.linked_approved_runbook_version
@@ -392,15 +396,17 @@ class RunbookService:
             self.db.add(amendment)
             self.db.flush()
             amendment_ids.append(amendment.amendment_id)
-            proposal_items.append({
-                "amendment_type": p.amendment_type.value,
-                "rationale": p.rationale,
-                "proposed_content": p.proposed_content,
-                "evidence_refs": p.evidence_refs,
-                "confidence": p.confidence,
-                "proposal_kind": p.proposal_kind,
-                "can_apply": p.can_apply,
-            })
+            proposal_items.append(
+                AmendmentProposalItem(
+                    amendment_type=p.amendment_type.value,
+                    rationale=p.rationale,
+                    proposed_content=p.proposed_content,
+                    evidence_refs=list(p.evidence_refs),
+                    confidence=p.confidence,
+                    proposal_kind=p.proposal_kind,
+                    can_apply=p.can_apply,
+                )
+            )
             audit_repo.create(
                 incident_id=audit_incident_id,
                 actor=actor,
@@ -597,7 +603,8 @@ class RunbookService:
         """Ingest an approved draft's content into runbook_chunks.
 
         Embedding failures are non-fatal: if the embedding provider is unavailable,
-        chunks are stored with empty embeddings (keyword-only search still works).
+        chunks are stored with a 512-dim placeholder embedding and marked with
+        ``embedding_model="none"`` so keyword search still works on pgvector.
         """
         try:
             document = parse_runbook_markdown(
@@ -617,7 +624,7 @@ class RunbookService:
             embedding_provider = build_embedding_provider(get_settings())
         except Exception:
             logger.warning(
-                "Embedding provider unavailable for draft %s — storing chunks without embeddings",
+                "Embedding provider unavailable for draft %s — storing degraded embeddings",
                 draft.draft_id,
             )
             embedding_provider = None
@@ -626,7 +633,7 @@ class RunbookService:
         for cd in chunk_drafts:
             if self.repository.get_by_content_hash(cd.content_hash) is not None:
                 continue
-            embedding: list[float] = []
+            embedding: list[float] = degraded_runbook_embedding()
             embedding_model = "none"
             if embedding_provider is not None:
                 try:
@@ -634,7 +641,7 @@ class RunbookService:
                     embedding_model = embedding_provider.model_name
                 except Exception:
                     logger.warning(
-                        "Embedding failed for chunk '%s' in draft %s — storing without embedding",
+                        "Embedding failed for chunk '%s' in draft %s — storing degraded embedding",
                         cd.title,
                         draft.draft_id,
                     )

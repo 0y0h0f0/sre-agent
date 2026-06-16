@@ -338,6 +338,7 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
         effective_config = EffectiveConfig.from_operator_sources(
             settings,
             published_config=published_config,
+            active_overrides=_active_overrides_for_effective_config(db),
         )
     else:
         # Demo/local path: use settings defaults (backward compatible).
@@ -369,15 +370,7 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
     )
 
     # Trace tool with backend.
-    trace_tool: Any
-    if effective_config.jaeger.url:
-        trace_tool = TraceTool(
-            backend=build_trace_backend(settings),
-            timeout_seconds=timeout,
-            cache=cache,
-        )
-    else:
-        trace_tool = UnavailableTool("trace", reason="Jaeger backend not configured")
+    trace_tool = _build_trace_tool(settings, effective_config, timeout, cache)
 
     git_change_tool = GitChangeTool(
         backend=build_deployment_backend(settings), timeout_seconds=timeout, cache=cache
@@ -475,6 +468,75 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
         effective_config=effective_config,
         config_version_id=config_version_id,
     )
+
+
+def _active_overrides_for_effective_config(db: Session) -> list[dict[str, Any]]:
+    from packages.db.repositories.discovery_overrides import DiscoveryOverrideRepository
+
+    overrides: list[dict[str, Any]] = []
+    for override in DiscoveryOverrideRepository(db).list_active():
+        data = dict(override.override_json or {})
+        url = data.get("url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        overrides.append(
+            {
+                "backend_type": override.backend_type,
+                "url": url,
+                "auth_type": data.get("auth_type", "none"),
+            }
+        )
+    return overrides
+
+
+def _build_trace_tool(
+    settings: Any,
+    effective_config: Any,
+    timeout: float,
+    cache: RequestLocalToolCache,
+) -> Any:
+    backend_name = str(getattr(settings, "trace_backend", "fixture")).strip().lower()
+    if not getattr(settings, "trace_enabled", True) or backend_name == "disabled":
+        return TraceTool(
+            backend=build_trace_backend(settings),
+            timeout_seconds=timeout,
+            cache=cache,
+        )
+
+    if backend_name == "fixture":
+        if getattr(settings, "app_env", "local") == "production":
+            return UnavailableTool(
+                "trace",
+                reason="Trace fixture backend is not enabled for production deps",
+            )
+        return TraceTool(
+            backend=build_trace_backend(settings),
+            timeout_seconds=timeout,
+            cache=cache,
+        )
+
+    if backend_name == "jaeger":
+        url = getattr(effective_config.jaeger, "url", None)
+        if not url:
+            return UnavailableTool("trace", reason="Jaeger backend not configured")
+        return TraceTool(
+            backend=build_trace_backend(settings, base_url=url),
+            timeout_seconds=timeout,
+            cache=cache,
+        )
+
+    if backend_name == "tempo":
+        tempo_cfg = getattr(effective_config, "tempo", None)
+        url = getattr(tempo_cfg, "url", None)
+        if not url:
+            return UnavailableTool("trace", reason="Tempo backend not configured")
+        return TraceTool(
+            backend=build_trace_backend(settings, base_url=url),
+            timeout_seconds=timeout,
+            cache=cache,
+        )
+
+    return UnavailableTool("trace", reason=f"Unknown trace backend '{backend_name}'")
 
 
 def _build_or_unavailable(
@@ -1371,6 +1433,7 @@ def _poll_alertmanager_logic(
         effective_config = EffectiveConfig.from_operator_sources(
             settings,
             published_config=published_config,
+            active_overrides=_active_overrides_for_effective_config(db),
         )
 
         am_url = effective_config.alertmanager.url
@@ -1584,4 +1647,4 @@ def _audit_poll(
         source="beat",
     )
     db.add(entry)
-    db.flush()
+    db.commit()

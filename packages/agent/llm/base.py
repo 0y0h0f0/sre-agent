@@ -27,6 +27,9 @@ class LLMCallMetadata(TypedDict, total=False):
     usage: dict[str, int]
     reasoning_summary: str
     finish_reason: str
+    redaction_applied: bool
+    redaction_count: int
+    redaction_types: list[str]
 
 
 @runtime_checkable

@@ -35,10 +35,39 @@ def human_approval(state: IncidentState, deps: AgentDeps) -> IncidentState:
     raw_approval_ids = (
         approval_status.get("approval_ids", []) if isinstance(approval_status, dict) else []
     )
-    approval_ids = [str(item) for item in raw_approval_ids]
+    current_approval_status = (
+        approval_status.get("status") if isinstance(approval_status, dict) else ""
+    )
+    can_reuse_existing_batch = current_approval_status in (None, "", "waiting")
+    approval_ids = (
+        [str(item) for item in raw_approval_ids] if can_reuse_existing_batch else []
+    )
+    if can_reuse_existing_batch and not approval_ids:
+        approval_ids = _recover_existing_approval_batch(
+            state, approval_actions, approval_repo, action_repo
+        )
+        if approval_ids:
+            state["approval_status"] = {"status": "waiting", "approval_ids": approval_ids}
+    if can_reuse_existing_batch and approval_ids:
+        _link_actions_from_approvals(approval_actions, approval_ids, approval_repo, action_repo)
     previous_decision = state.get("approval_decision", "")
 
     try:
+        if can_reuse_existing_batch and approval_ids:
+            if previous_decision or _has_decided_approval(approval_ids, approval_repo):
+                return _apply_db_decisions(
+                    state, approval_actions, approval_ids, approval_repo
+                )
+            return _wait_for_existing_approvals(
+                state,
+                approval_actions,
+                approval_ids,
+                approval_repo,
+                deps,
+                node_id,
+                started_at,
+            )
+
         if not previous_decision:
             # First pass: create action + approval records for this batch.
             # Start a fresh approval_ids list so repeated replan cycles do not
@@ -85,12 +114,18 @@ def human_approval(state: IncidentState, deps: AgentDeps) -> IncidentState:
                 # Pause execution. With a checkpointer this raises GraphInterrupt;
                 # the graph resumes by re-running this node with
                 # ``approval_decision`` set (see the resume branch below).
-                interrupt(
+                resume_payload = interrupt(
                     {
                         "type": "approval_required",
                         "approval_ids": approval_ids,
                     }
                 )
+                decision = _resume_decision(resume_payload)
+                if decision:
+                    state["approval_decision"] = decision
+                    return _apply_db_decisions(
+                        state, approval_actions, approval_ids, approval_repo
+                    )
 
             # No checkpointer (dev/test): auto-approve the whole batch.
             return _auto_approve(state, approval_actions, approval_ids, approval_repo)
@@ -131,6 +166,138 @@ def human_approval(state: IncidentState, deps: AgentDeps) -> IncidentState:
         errors = list(state.get("errors", []))
         errors.append({"node": "human_approval", "error": str(exc)})
         return {**state, "errors": errors}
+
+
+def _recover_existing_approval_batch(
+    state: IncidentState,
+    approval_actions: list[dict[str, Any]],
+    approval_repo: ApprovalRepository,
+    action_repo: ActionRepository,
+) -> list[str]:
+    """Recover the current approval batch from DB if checkpoint state is sparse.
+
+    LangGraph may re-run an interrupted node from the beginning on resume. The
+    persisted approval rows are the source of truth, so a sparse checkpoint must
+    not cause the node to create a duplicate approval batch.
+    """
+    if not approval_actions:
+        return []
+
+    existing = list(approval_repo.list_for_run(state["agent_run_id"]))
+    if not existing:
+        return []
+
+    recovered: list[tuple[str, str]] = []
+    wanted = len(approval_actions)
+    for approval in existing:
+        action = action_repo.get_by_public_id(approval.action_id)
+        if action is None:
+            continue
+        if not _matches_any_action(action, approval_actions):
+            continue
+        recovered.append((approval.approval_id, action.action_id))
+        if len(recovered) >= wanted:
+            break
+
+    if not recovered:
+        return []
+
+    _assign_recovered_action_ids(approval_actions, [action_id for _, action_id in recovered])
+    return [approval_id for approval_id, _ in recovered]
+
+
+def _matches_any_action(db_action: Any, approval_actions: list[dict[str, Any]]) -> bool:
+    for action in approval_actions:
+        if str(action.get("type", "unknown")) != str(db_action.type):
+            continue
+        if str(action.get("target", "")) != str(db_action.target or ""):
+            continue
+        if str(action.get("risk_level", "L2")).upper() != str(db_action.risk_level).upper():
+            continue
+        return True
+    return False
+
+
+def _assign_recovered_action_ids(
+    approval_actions: list[dict[str, Any]], action_ids: list[str]
+) -> None:
+    unassigned = [action for action in approval_actions if not action.get("action_id")]
+    for action, action_id in zip(unassigned, action_ids, strict=False):
+        action["action_id"] = action_id
+
+
+def _link_actions_from_approvals(
+    approval_actions: list[dict[str, Any]],
+    approval_ids: list[str],
+    approval_repo: ApprovalRepository,
+    action_repo: ActionRepository,
+) -> None:
+    linked_action_ids: list[str] = []
+    for approval_id in approval_ids:
+        approval = approval_repo.get_by_public_id(approval_id)
+        if approval is None:
+            continue
+        action = action_repo.get_by_public_id(approval.action_id)
+        if action is None:
+            continue
+        if _matches_any_action(action, approval_actions):
+            linked_action_ids.append(action.action_id)
+    _assign_recovered_action_ids(approval_actions, linked_action_ids)
+
+
+def _has_decided_approval(
+    approval_ids: list[str], approval_repo: ApprovalRepository
+) -> bool:
+    for approval_id in approval_ids:
+        approval = approval_repo.get_by_public_id(approval_id)
+        if approval is not None and approval.status in {"approved", "rejected"}:
+            return True
+    return False
+
+
+def _wait_for_existing_approvals(
+    state: IncidentState,
+    approval_actions: list[dict[str, Any]],
+    approval_ids: list[str],
+    approval_repo: ApprovalRepository,
+    deps: AgentDeps,
+    node_id: str,
+    started_at: Any,
+) -> IncidentState:
+    """Re-use an existing all-waiting approval batch and pause again."""
+    state["approval_status"] = {"status": "waiting", "approval_ids": approval_ids}
+    deps.node_tracer(
+        node_id=node_id,
+        agent_run_id=state["agent_run_id"],
+        name="human_approval",
+        status="waiting_approval",
+        started_at=started_at,
+        finished_at=utc_now(),
+        input_summary=f"approvals={len(approval_actions)}",
+        output_summary=f"ids={approval_ids}",
+    )
+    if state.get("_interrupts_enabled", True):
+        resume_payload = interrupt(
+            {
+                "type": "approval_required",
+                "approval_ids": approval_ids,
+            }
+        )
+        decision = _resume_decision(resume_payload)
+        if decision:
+            state["approval_decision"] = decision
+            return _apply_db_decisions(state, approval_actions, approval_ids, approval_repo)
+    return _auto_approve(state, approval_actions, approval_ids, approval_repo)
+
+
+def _resume_decision(payload: Any) -> str:
+    if isinstance(payload, dict):
+        decision = payload.get("decision")
+        if decision in {"approved", "rejected"}:
+            return str(decision)
+    if payload in {"approved", "rejected"}:
+        return str(payload)
+    return ""
 
 
 def _auto_approve(
@@ -187,6 +354,7 @@ def _apply_db_decisions(
     """
     status_by_action: dict[str, str] = {}
     rejection_comments: list[str] = []
+    any_waiting = False
     for approval_id in approval_ids:
         approval = approval_repo.get_by_public_id(approval_id)
         if approval is not None:
@@ -203,6 +371,8 @@ def _apply_db_decisions(
         elif decision == "rejected":
             action["allowed"] = False
             action["requires_approval"] = False
+        else:
+            any_waiting = True
 
     actions = state.get("recommended_actions", [])
     rejection_feedback = "; ".join(rejection_comments) if rejection_comments else ""
@@ -216,6 +386,15 @@ def _apply_db_decisions(
             "approval_status": {"status": "approved", "approval_ids": approval_ids},
             "approval_decision": "",
             "phase": "approval_approved",
+        }  # type: ignore[typeddict-unknown-key]
+
+    if any_waiting:
+        return {
+            **state,
+            "recommended_actions": actions,
+            "approval_status": {"status": "waiting", "approval_ids": approval_ids},
+            "approval_decision": "",
+            "phase": "approval_waiting",
         }  # type: ignore[typeddict-unknown-key]
 
     # Nothing approved -> rejected. Clear approval_decision and reset the

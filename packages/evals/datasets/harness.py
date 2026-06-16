@@ -24,6 +24,7 @@ from packages.common.settings import Settings
 from packages.common.time import utc_now
 from packages.db.base import Base
 from packages.db.models import AgentRun, AgentRunNode, Incident
+from packages.db.repositories.actions import ActionRepository
 from packages.db.repositories.agent_runs import AgentRunRepository
 from packages.db.repositories.approvals import ApprovalRepository
 from packages.db.repositories.incidents import IncidentRepository
@@ -348,10 +349,14 @@ def run_case(case: EvalCase, *, suite: str, settings: Settings | None = None) ->
         initial_result = runner.run(
             incident.incident_id, agent_run.agent_run_id, _alert_payload(case)
         )
-        approval_interrupted = initial_result.get("status") == "waiting_approval"
+        approval_interrupted = (
+            initial_result.get("status") == "waiting_approval"
+            or bool(ApprovalRepository(session).list_for_run(agent_run.agent_run_id))
+        )
         final_result = initial_result
-        if approval_interrupted:
-            for _ in range(3):
+        if final_result.get("status") == "waiting_approval":
+            for _ in range(6):
+                _approve_waiting_approvals(session, agent_run.agent_run_id)
                 final_result = runner.resume(agent_run.agent_run_id, "approved")
                 if final_result.get("status") != "waiting_approval":
                     break
@@ -548,6 +553,40 @@ def _finalize_run(
         run.status = "waiting_approval"
         run.state = state
         incident.status = "waiting_approval"
+
+
+def _approve_waiting_approvals(session: Session, agent_run_id: str) -> int:
+    """Mirror the API approval side effect before resuming eval checkpoints.
+
+    Production approval endpoints persist per-approval decisions before enqueueing
+    the resume task. The eval harness drives ``AgentRunner`` directly, so it must
+    perform the same DB reconciliation step or the approval node will correctly
+    keep waiting.
+    """
+    approvals = ApprovalRepository(session)
+    actions = ActionRepository(session)
+    approved = 0
+    for approval in approvals.list_for_run(agent_run_id):
+        if approval.status != "waiting":
+            continue
+        action = actions.get_by_public_id(approval.action_id)
+        if action is not None and action.risk_level == "L3":
+            approvals.update_l3_confirmation(
+                approval,
+                risk_ack=True,
+                confirm_action_type=action.type,
+                confirm_target=action.target or "",
+            )
+        approvals.update_decision(
+            approval.approval_id,
+            status="approved",
+            approver="eval-auto-approver",
+        )
+        if action is not None:
+            actions.update_status(action.action_id, "approved")
+        approved += 1
+    session.flush()
+    return approved
 
 
 def _node_tracer(session: Session, agent_run_id: str) -> Callable[..., None]:

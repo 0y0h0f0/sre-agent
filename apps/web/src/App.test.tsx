@@ -109,7 +109,7 @@ const actionDetail = {
   status: 'waiting_approval',
   executor: 'mock',
   target: 'checkout-api',
-  params: {},
+  params: { to_revision: 42 },
   reason: 'new release correlated with 5xx spike',
   rollback_plan: 'redeploy previous stable version',
   execution_result: null,
@@ -174,6 +174,8 @@ test('generates and saves an API key from the authentication panel', async () =>
       description: '本地 Web 密钥',
       raw_key: 'web-raw-key',
       created_by: 'system',
+      scopes: ['api_key:admin'],
+      roles: ['operator'],
       expires_at: null,
       created_at: '2026-06-01T00:00:00Z'
     }, 201)
@@ -193,6 +195,12 @@ test('generates and saves an API key from the authentication panel', async () =>
     const createCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/api/api-keys' && init?.method === 'POST');
     expect(createCall).toBeTruthy();
     expect((createCall?.[1]?.headers as Headers).get('Authorization')).toBe('Bearer bootstrap-secret');
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      description: '本地 Web 密钥',
+      expires_in_days: 90,
+      scopes: ['api_key:admin'],
+      roles: ['operator']
+    });
   });
 });
 
@@ -286,8 +294,13 @@ test('shows dynamic run progress and live websocket node updates', async () => {
     }
   }
   vi.stubGlobal('WebSocket', MockWebSocket);
+  window.localStorage.setItem('sre_api_key', 'web-raw-key');
 
   mockFetch({
+    'POST /api/ws/incidents/inc_1/ticket': () => jsonResponse({
+      ticket: 'ws_ticket_123',
+      expires_at: '2026-06-01T00:01:00Z'
+    }),
     'GET /api/agent-runs/run_live': () => jsonResponse({
       agent_run_id: 'run_live',
       incident_id: 'inc_1',
@@ -322,6 +335,9 @@ test('shows dynamic run progress and live websocket node updates', async () => {
   expect(screen.getByText('collect_logs')).toBeInTheDocument();
   await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
   expect(MockWebSocket.instances[0].url).toContain('/api/ws/incidents/inc_1');
+  expect(MockWebSocket.instances[0].url).toContain('ticket=ws_ticket_123');
+  expect(MockWebSocket.instances[0].url).not.toContain('token=');
+  expect(MockWebSocket.instances[0].url).not.toContain('web-raw-key');
 
   act(() => {
     MockWebSocket.instances[0].onopen?.(new Event('open'));
@@ -350,6 +366,21 @@ test('renders the approval notification control', async () => {
   renderApp('/approvals');
 
   expect(await screen.findByRole('button', { name: /通知不可用|启用通知|通知已开启|通知已阻止/ })).toBeInTheDocument();
+});
+
+
+test('disables batch approval when an L3 approval is selected', async () => {
+  mockFetch({
+    'GET /api/approvals': () => jsonResponse({ items: [approval], total: 1, page: 1, page_size: 50 })
+  });
+
+  renderApp('/approvals');
+
+  await userEvent.click(await screen.findByRole('checkbox'));
+
+  expect(await screen.findByText('L3 需单独确认')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '批量批准' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '批量拒绝' })).not.toBeDisabled();
 });
 
 
@@ -407,6 +438,8 @@ test('opens a direct linked approval route in the review dialog', async () => {
   const dialog = await screen.findByRole('dialog', { name: '审核操作' });
   expect(within(dialog).getByText('apv_1')).toBeInTheDocument();
   expect(await within(dialog).findByText('checkout-api')).toBeInTheDocument();
+  expect(within(dialog).getByRole('region', { name: '执行参数' })).toHaveTextContent('To Revision');
+  expect(within(dialog).getByRole('region', { name: '执行参数' })).toHaveTextContent('42');
   expect(within(dialog).getByLabelText('确认操作类型')).toBeInTheDocument();
 });
 

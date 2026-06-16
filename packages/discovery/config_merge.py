@@ -35,6 +35,7 @@ class EffectiveConfig:
     prometheus: BackendConfig = field(default_factory=BackendConfig)
     loki: BackendConfig = field(default_factory=BackendConfig)
     jaeger: BackendConfig = field(default_factory=BackendConfig)
+    tempo: BackendConfig = field(default_factory=BackendConfig)
     alertmanager: BackendConfig = field(default_factory=BackendConfig)
     metrics_service_label: str = "service"
     logs_service_label: str = "service"
@@ -50,6 +51,7 @@ class EffectiveConfig:
             ),
             loki=BackendConfig(url=settings.loki_url, source="default"),
             jaeger=BackendConfig(url=settings.jaeger_url, source="default"),
+            tempo=BackendConfig(url=settings.tempo_url, source="default"),
             alertmanager=BackendConfig(
                 url=settings.alertmanager_url, source="default"
             ),
@@ -102,7 +104,7 @@ class EffectiveConfig:
 
             # 4. published config
             if published_config:
-                pub_url = published_config.get(f"{backend_key}_url")
+                pub_url = _published_backend_url(published_config, backend_key)
                 if pub_url:
                     return BackendConfig(url=pub_url, source="published")
 
@@ -141,6 +143,9 @@ class EffectiveConfig:
             jaeger=_resolve_with_warning(
                 "jaeger", "jaeger_url", "http://localhost:16686"
             ),
+            # Tempo is optional and only used when TRACE_BACKEND=tempo, so it
+            # should not create baseline production warnings by itself.
+            tempo=_resolve("tempo", "tempo_url", "http://localhost:3200"),
             alertmanager=_resolve_with_warning(
                 "alertmanager",
                 "alertmanager_url",
@@ -171,3 +176,19 @@ class EffectiveConfig:
             "alertmanager": self.alertmanager,
         }
         return [name for name, cfg in _map.items() if cfg.url is None]
+
+
+def _published_backend_url(
+    published_config: dict[str, Any],
+    backend_key: str,
+) -> str | None:
+    flat = published_config.get(f"{backend_key}_url")
+    if isinstance(flat, str) and flat.strip():
+        return flat
+
+    nested = published_config.get(backend_key)
+    if isinstance(nested, dict):
+        url = nested.get("url")
+        if isinstance(url, str) and url.strip():
+            return url
+    return None

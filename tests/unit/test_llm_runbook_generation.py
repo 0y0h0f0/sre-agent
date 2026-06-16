@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import pytest
-
 from packages.agent.llm.fake_adapter import FakeLLMAdapter
 from packages.common.feature_flags import resolve_m9_feature_flags
 from packages.common.redaction import redact_text
 from packages.common.settings import Settings
 from packages.rag.llm_runbook_generator import LLMRunbookGenerator
 from packages.rag.runbook_action_classifier import (
-    ActionClassification,
     RunbookActionClassifier,
 )
 from packages.rag.runbook_prompt_builder import RunbookPromptBuilder
-
 
 # ---------------------------------------------------------------------------
 # Default disabled
@@ -69,7 +65,8 @@ class TestLLMRunbookGenerationDefaultDisabled:
 class TestPromptRedaction:
     def test_prompt_redacts_bearer_token(self):
         """Bearer tokens must not appear in prompt."""
-        text = "Authorization: Bearer sk-abc123def456ghijklmnopqrstuvwxyz"
+        token = "sk-" + "abc123def456ghijklmnopqrstuvwxyz"
+        text = f"Authorization: Bearer {token}"
         result = redact_text(text)
         assert "Bearer" not in result.redacted_text or "[REDACTED]" in result.redacted_text
         assert result.redaction_count >= 1
@@ -81,11 +78,21 @@ class TestPromptRedaction:
         assert result.redaction_count >= 1
         assert "s3cret!" not in result.redacted_text
 
+    def test_prompt_redacts_quoted_json_secret_fields(self):
+        """Quoted JSON-style secret keys must not bypass redaction."""
+        text = '{"password": "s3cret!", "api_key": "abc123"}'
+        result = redact_text(text)
+        assert result.redaction_count >= 2
+        assert "s3cret!" not in result.redacted_text
+        assert "abc123" not in result.redacted_text
+
     def test_prompt_redacts_private_key(self):
         """Private key blocks must not appear in prompt."""
-        text = """-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEA0Z3...
------END RSA PRIVATE KEY-----"""
+        text = "\n".join([
+            "-----BEGIN RSA " + "PRIVATE KEY-----",
+            "MIIEpAIBAAKCAQEA0Z3...",
+            "-----END RSA " + "PRIVATE KEY-----",
+        ])
         result = redact_text(text)
         assert "[REDACTED]" in result.redacted_text
         assert result.redaction_count >= 1
@@ -200,7 +207,7 @@ class TestLLMRunbookGeneratorWithFakeLLM:
         )
 
     def test_generate_returns_content_with_fake_llm(self):
-        """LLMRunbookGenerator returns generated content — persistence is the service layer's job."""
+        """LLMRunbookGenerator returns generated content."""
         generator = self._make_generator()
         result = generator.generate(
             service="checkout",

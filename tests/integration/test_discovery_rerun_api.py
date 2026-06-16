@@ -5,11 +5,9 @@ Tests POST /api/discovery/rerun with scope validation and Redis lock.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from packages.db.models import DiscoveryRun
-
 
 # ---------------------------------------------------------------------------
 # POST /api/discovery/rerun — success path

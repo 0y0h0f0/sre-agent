@@ -7,8 +7,9 @@ backend URL discovery defaults requires_review/detected_only.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from packages.common.backend_url_safety import BackendUrlSafetyValidator
 from packages.common.feature_flags import is_m9_subfeature_enabled
@@ -86,7 +87,7 @@ class BackendEndpointDetector:
             if hasattr(url_validator, "services"):
                 self._initial_services = url_validator
             else:
-                self._initial_services = list(url_validator)
+                self._initial_services = list(cast(Iterable[Any], url_validator))
             url_validator = None
         self._url_validator = url_validator or BackendUrlSafetyValidator(
             allowlist_patterns=_parse_allowlist(settings.backend_url_allowlist),
@@ -343,6 +344,8 @@ def _port_number(port: Any) -> int | None:
         value = port.get("port")
     else:
         value = getattr(port, "port", None)
+    if value is None:
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):

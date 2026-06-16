@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from packages.common.ids import new_id
-from packages.db.repositories.runbooks import RunbookChunkRepository
+from packages.db.repositories.runbooks import RunbookChunkRepository, degraded_runbook_embedding
 from packages.db.session import SessionLocal
 from packages.rag.embedding_factory import (
     EmbeddingProvider,
@@ -16,6 +17,8 @@ from packages.rag.embedding_factory import (
 )
 from packages.rag.metadata import RunbookMetadataError, parse_runbook_markdown
 from packages.rag.splitter import split_markdown_document
+
+logger = logging.getLogger(__name__)
 
 
 class RunbookIngestResult(BaseModel):
@@ -37,7 +40,15 @@ class RunbookIngestor:
         self.repository = repository
         if embedding_provider is None:
             from packages.common.settings import get_settings
-            embedding_provider = build_embedding_provider(get_settings())
+            try:
+                embedding_provider = build_embedding_provider(get_settings())
+            except Exception:
+                logger.warning(
+                    "Embedding provider unavailable during runbook ingest; "
+                    "storing degraded embeddings",
+                    exc_info=True,
+                )
+                embedding_provider = None
         self.embedding_provider = embedding_provider
 
     def ingest_path(self, path: str | Path, *, reingest: bool = True) -> RunbookIngestResult:
@@ -61,6 +72,10 @@ class RunbookIngestor:
                     if self.repository.get_by_content_hash(draft.content_hash) is not None:
                         result.chunks_skipped += 1
                         continue
+                    embedding, embedding_model = self._embed_chunk(
+                        f"{draft.title}\n{draft.content}",
+                        title=draft.title,
+                    )
                     chunk = self.repository.create_chunk(
                         chunk_id=new_id("chk_"),
                         document_id=draft.document_id,
@@ -68,8 +83,8 @@ class RunbookIngestor:
                         title=draft.title,
                         content=draft.content,
                         content_hash=draft.content_hash,
-                        embedding=self.embedding_provider.embed_text(f"{draft.title}\n{draft.content}"),
-                        embedding_model=self.embedding_provider.model_name,
+                        embedding=embedding,
+                        embedding_model=embedding_model,
                         metadata=dict(draft.metadata),
                     )
                     chunk.language = document.metadata.language
@@ -79,6 +94,19 @@ class RunbookIngestor:
                 continue
         result.chunks_total = self.repository.count_chunks()
         return result
+
+    def _embed_chunk(self, text: str, *, title: str) -> tuple[list[float], str]:
+        if self.embedding_provider is None:
+            return degraded_runbook_embedding(), "none"
+        try:
+            return self.embedding_provider.embed_text(text), self.embedding_provider.model_name
+        except Exception:
+            logger.warning(
+                "Embedding failed for runbook chunk '%s'; storing degraded embedding",
+                title,
+                exc_info=True,
+            )
+            return degraded_runbook_embedding(), "none"
 
 
 def _markdown_files(path: Path) -> list[Path]:

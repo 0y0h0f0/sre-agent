@@ -121,11 +121,11 @@ from langgraph.checkpoint.postgres import PostgresSaver
 
 | 依赖 | 来源/说明 |
 |------|-----------|
-| Effective config | production 读取 latest published `EffectiveConfigVersion`；local/demo 使用 settings defaults |
+| Effective config | production 读取 latest published `EffectiveConfigVersion` 并合并 active override；local/demo 使用 settings defaults |
 | `RequestLocalToolCache` | 单次 run 内工具缓存和 hit/miss 统计 |
 | `MetricsTool` / `LogsTool` | 使用 effective Prometheus/Loki URL；URL 为空时 `UnavailableTool` |
-| `TraceTool` | 通过 `build_trace_backend(settings)`，默认 fixture；无 Jaeger effective URL 时 degraded |
-| `GitChangeTool` | fixture/GitHub/Argo CD deployment backend |
+| `TraceTool` | `TRACE_BACKEND` 决定 backend 类型，Jaeger/Tempo base URL 使用 EffectiveConfig；URL 为空时 `UnavailableTool` |
+| `GitChangeTool` | fixture/GitHub/Argo CD deployment backend；secret-bearing settings 不写入 EffectiveConfig |
 | `K8sDiagnosticsTool` | fixture 或 live read-only diagnostics |
 | `DbDiagnosticsTool` | fixture 或 live read-only PostgreSQL diagnostics |
 | `RunbookRetriever` + `RunbookSearchTool` | runbook chunk repository、hybrid search 配置 |

@@ -25,7 +25,12 @@ class ApiKeyService:
         self._db = db
         self._repo = ApiKeyRepository(db)
 
-    def create(self, data: ApiKeyCreateRequest) -> ApiKeyCreateResponse:
+    def create(
+        self,
+        data: ApiKeyCreateRequest,
+        *,
+        created_by: str = "admin",
+    ) -> ApiKeyCreateResponse:
         raw_key = secrets.token_hex(32)  # 64 hex chars
         key_hash = _hash_key(raw_key)
         expires_at = None
@@ -35,6 +40,9 @@ class ApiKeyService:
         key = self._repo.create(
             description=data.description,
             key_hash=key_hash,
+            created_by=created_by,
+            scopes=_dedupe(data.scopes),
+            roles=_dedupe(data.roles),
             expires_at=expires_at,
         )
         self._db.commit()
@@ -43,6 +51,8 @@ class ApiKeyService:
             description=key.description,
             raw_key=raw_key,
             created_by=key.created_by,
+            scopes=list(key.scopes) if key.scopes else [],
+            roles=list(key.roles) if key.roles else [],
             expires_at=key.expires_at,
             created_at=key.created_at,
         )
@@ -53,6 +63,15 @@ class ApiKeyService:
             items=[ApiKeyListItem.model_validate(k) for k in keys],
             total=len(keys),
         )
+
+    def has_any_keys(self) -> bool:
+        """Return whether any API key exists.
+
+        Bootstrap seed auth is intentionally limited to a pristine key store.
+        Revoked/expired keys still count so the seed cannot become a recovery
+        backdoor after first use.
+        """
+        return self._repo.has_any()
 
     def revoke(self, key_id: str) -> None:
         if not self._repo.revoke(key_id):
@@ -83,3 +102,15 @@ class ApiKeyService:
 
 def _hash_key(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        result.append(normalized)
+        seen.add(normalized)
+    return result

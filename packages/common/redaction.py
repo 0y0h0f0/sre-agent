@@ -22,12 +22,12 @@ _BASIC_AUTH_RE = re.compile(
     r"""Basic\s+[A-Za-z0-9+/]+=*""",
 )
 _API_KEY_HEADER_RE = re.compile(
-    r"""(?:X-?Api-?Key|api_key|apikey)\s*[:=]\s*[A-Za-z0-9\-._~+/]+""",
+    r"""["']?(?:X-?Api-?Key|api_key|apikey)["']?\s*[:=]\s*["']?[^"'\s,}]+["']?""",
     re.IGNORECASE,
 )
 # Matches "password": "value", password=value, etc.
 _PASSWORD_RE = re.compile(
-    r"""(?:password|passwd|pwd)\s*[:=]\s*["']?[^"'\s,}]+["']?""",
+    r"""["']?(?:password|passwd|pwd)["']?\s*[:=]\s*["']?[^"'\s,}]+["']?""",
     re.IGNORECASE,
 )
 # Matches private key blocks (PEM format) — lenient to catch truncated/shortened keys
@@ -162,12 +162,12 @@ def _redact_list(items: list[Any]) -> tuple[list[Any], int]:
             result.append(rr.redacted_text)
             total += rr.redaction_count
         elif isinstance(item, dict):
-            inner, inner_count = redact_dict_values(item)
-            result.append(inner)
+            inner_dict, inner_count = redact_dict_values(item)
+            result.append(inner_dict)
             total += inner_count
         elif isinstance(item, list):
-            inner, inner_count = _redact_list(item)
-            result.append(inner)
+            inner_list, inner_count = _redact_list(item)
+            result.append(inner_list)
             total += inner_count
         else:
             result.append(item)

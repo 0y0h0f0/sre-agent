@@ -50,6 +50,15 @@ test('reviews an incident and approval in the console', async ({ page }) => {
   await page.route('/api/incidents/inc_1/approvals', async (route) => {
     await route.fulfill({ json: [{ approval_id: 'apv_1', action_id: 'act_1', incident_id: 'inc_1', agent_run_id: 'run_1', service: 'checkout-api', action_type: 'rollback_release', risk_level: 'L3', approval_status: 'waiting', action_status: 'waiting_approval', reason: 'rollback needs confirmation', rollback_plan: 'redeploy previous version', requested_at: '2026-06-01T00:04:00Z', decided_at: null, approver: null, comment: null }] });
   });
+  await page.route('/api/incidents/inc_1/correlated', async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route('/api/incidents/inc_1/comments', async (route) => {
+    await route.fulfill({ json: { items: [], total: 0 } });
+  });
+  await page.route('/api/incidents/inc_1/audit', async (route) => {
+    await route.fulfill({ json: { items: [], total: 0 } });
+  });
   await page.route('/api/approvals?**', async (route) => {
     await route.fulfill({ json: { items: [{ approval_id: 'apv_1', action_id: 'act_1', incident_id: 'inc_1', agent_run_id: 'run_1', service: 'checkout-api', action_type: 'rollback_release', risk_level: 'L3', approval_status: 'waiting', action_status: 'waiting_approval', reason: 'rollback needs confirmation', rollback_plan: 'redeploy previous version', requested_at: '2026-06-01T00:04:00Z', decided_at: null, approver: null, comment: null }], total: 1, page: 1, page_size: 50 } });
   });

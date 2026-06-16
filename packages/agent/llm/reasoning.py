@@ -55,6 +55,8 @@ def format_call_metadata(meta: LLMCallMetadata | dict[str, Any] | None) -> str:
     usage = meta.get("usage") or {}
     if usage:
         parts.append(f"tok={usage.get('prompt_tokens', 0)}/{usage.get('completion_tokens', 0)}")
+    if "redaction_count" in meta:
+        parts.append(f"redact={meta.get('redaction_count', 0)}")
     return " ".join(parts)
 
 

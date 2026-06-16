@@ -31,6 +31,7 @@ class EvalService:
         )
         self._db.add(eval_run)
         self._db.flush()
+        self._db.commit()
 
         try:
             from apps.worker.eval_tasks import run_eval_suite_task
@@ -41,7 +42,7 @@ class EvalService:
             )
         except Exception:
             eval_run.status = "enqueue_failed"
-            self._db.flush()
+            self._db.commit()
 
         return EvalRunResponse(
             eval_run_id=eval_run.eval_run_id,

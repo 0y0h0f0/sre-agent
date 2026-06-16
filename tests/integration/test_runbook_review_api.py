@@ -5,8 +5,6 @@ Tests regenerate (never overwrites original) and template generation endpoints.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,8 +12,8 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client_with_drafts(db_session):
     """Create a TestClient with drafts pre-populated in the DB."""
-    from apps.api.main import app
     from apps.api.dependencies import get_db
+    from apps.api.main import app
     from packages.db.repositories.runbook_drafts import RunbookDraftRepository
 
     repo = RunbookDraftRepository(db_session)

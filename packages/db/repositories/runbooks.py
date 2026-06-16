@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from packages.db.models import RunbookChunk
 
+RUNBOOK_EMBEDDING_DIMENSION = 512
+
 
 class RunbookChunkRepository:
     def __init__(self, db: Session) -> None:
@@ -28,6 +30,11 @@ class RunbookChunkRepository:
         embedding_model: str,
         metadata: dict[str, Any],
     ) -> RunbookChunk:
+        if len(embedding) != RUNBOOK_EMBEDDING_DIMENSION:
+            raise ValueError(
+                "runbook chunk embedding dimension "
+                f"{len(embedding)} != {RUNBOOK_EMBEDDING_DIMENSION}"
+            )
         chunk = RunbookChunk(
             chunk_id=chunk_id,
             document_id=document_id,
@@ -118,6 +125,11 @@ class RunbookChunkRepository:
                 continue
             results.append((chunk, score))
         return results
+
+
+def degraded_runbook_embedding() -> list[float]:
+    """Return a deterministic placeholder vector for keyword-only fallback."""
+    return [0.0] * RUNBOOK_EMBEDDING_DIMENSION
 
 
 _TSQUERY_SAFE_RE = __import__("re").compile(r"^[a-z0-9_:*& ]+$")

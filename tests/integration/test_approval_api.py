@@ -486,6 +486,39 @@ class TestActionAPI:
         assert resp.status_code == 200
         assert resp.json()["status"] == "succeeded"
 
+    def test_execute_l3_rechecks_confirmation_matches_action(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        inc = _create_incident(db_session)
+        run_id = new_id("run_")
+        action = _create_action(
+            db_session,
+            inc.incident_id,
+            run_id,
+            type="rollback_release",
+            risk_level="L3",
+            status="approved",
+            target="checkout-api",
+        )
+        approval = _create_approval(
+            db_session, action.action_id, inc.incident_id, run_id, status="approved"
+        )
+        approval.risk_ack = True
+        approval.confirm_action_type = "rollback_release"
+        approval.confirm_target = "payments-api"
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/actions/{action.action_id}/execute",
+            json={"operator": "sre-oncall", "reason": "retry"},
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["error"]["code"] == "APPROVAL_REQUIRED"
+        db_session.refresh(action)
+        assert action.status == "approved"
+        assert action.execution_result is None
+
     def test_execute_l0_l1_auto(self, client: TestClient, db_session: Session) -> None:
         inc = _create_incident(db_session)
         run_id = new_id("run_")

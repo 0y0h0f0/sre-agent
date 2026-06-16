@@ -88,18 +88,26 @@ def create_api_key_middleware() -> Callable[[Request, RequestCallNext], Awaitabl
         if not raw_key:
             return _unauthorized(request)
 
-        # Bootstrap: check initial seed key when no keys exist yet
-        if _check_initial_key(raw_key):
-            request.state.api_key = {
-                "key_id": "apik_initial",
-                "description": "initial-seed",
-                "created_by": "system",
-            }
-            return await call_next(request)
-
         db: Session = SessionLocal()
         try:
             service = ApiKeyService(db)
+            # Bootstrap: the initial seed is valid only before any API key has
+            # ever been created. After first use it must not remain an admin
+            # credential.
+            if _check_initial_key(raw_key):
+                if service.has_any_keys():
+                    logger.warning("bootstrap API key seed rejected after key store initialization")
+                    return _unauthorized(request)
+                request.state.api_key = {
+                    "key_id": "apik_initial",
+                    "description": "initial-seed",
+                    "created_by": "system",
+                    "scopes": ["api_key:admin"],
+                    "roles": ["bootstrap"],
+                    "is_bootstrap": True,
+                }
+                return await call_next(request)
+
             identity = service.verify(raw_key)
             if identity is None:
                 return _unauthorized(request)

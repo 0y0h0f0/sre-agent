@@ -58,7 +58,7 @@ class ActionService:
                 "status": "blocked",
                 "message": "L4 destructive actions are permanently blocked",
             }
-            self.db.flush()
+            self.db.commit()
             raise ApprovalRequiredError(
                 "L4 actions cannot be executed",
                 details={"action_id": action_id, "risk_level": "L4"},
@@ -85,10 +85,29 @@ class ActionService:
                         "L3 action missing confirm_action_type",
                         details={"action_id": action_id, "missing": "confirm_action_type"},
                     )
+                if approved_approval.confirm_action_type != action.type:
+                    raise ApprovalRequiredError(
+                        "L3 action confirm_action_type mismatch",
+                        details={
+                            "action_id": action_id,
+                            "expected": action.type,
+                            "provided": approved_approval.confirm_action_type,
+                        },
+                    )
                 if not approved_approval.confirm_target:
                     raise ApprovalRequiredError(
                         "L3 action missing confirm_target",
                         details={"action_id": action_id, "missing": "confirm_target"},
+                    )
+                expected_target = action.target or ""
+                if approved_approval.confirm_target != expected_target:
+                    raise ApprovalRequiredError(
+                        "L3 action confirm_target mismatch",
+                        details={
+                            "action_id": action_id,
+                            "expected": expected_target,
+                            "provided": approved_approval.confirm_target,
+                        },
                     )
 
         # Validate not already executed
@@ -118,7 +137,7 @@ class ActionService:
         # Update action status
         action.status = ActionStatus.SUCCEEDED.value
         action.execution_result = exec_result.model_dump()
-        self.db.flush()
+        self.db.commit()
 
         execution_id = new_id("exec_")
         return ExecuteResponse(

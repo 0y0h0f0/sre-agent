@@ -1,6 +1,6 @@
 # 文档更新批次计划
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-15
 
 目标：让开发者只通过文档就能系统了解项目的目标、架构、数据模型、运行路径、安全边界、开发方式、测试方式、部署方式和运维方式。
 
@@ -26,6 +26,8 @@
 | B4 | 前端、演示和本地体验 | `react-console.md`、`quick-start.md`、`local-demo.md`、`demo-playbook.md` | 能跑通本地 demo、定位页面数据来源、验证审批流程 | 已完成 |
 | B5 | 测试、评估、运维、生产 | `testing-strategy.md`、`evaluation.md`、`development-workflow.md`、`runbook.md`、`production-checklist.md`、`final-pre-execution-checklist.md` | 能判断一个变更需要哪些测试、如何发布和回滚 | 已完成 |
 | B6 | M9 与参考资料深化 | `m9-rollout.md`、`m9-data-flow.md`、`m9-threat-model.md`、`configuration.md`、`status-and-ids.md`、`glossary.md` | 能理解 M9 默认关闭、独立回滚、外部调用安全和配置含义 | 已完成 |
+| B7 | K8s 部署和后端对接校准 | `k8s-backend-verification.md`、`backend-connectivity.md`、`configuration.md` | 能确认 K8s 中是否读到目标后端，并理解单实例单后端环境、多服务诊断的边界 | 已完成 |
+| B8 | 技术深挖系列 | `alert-to-report-deep-dive.md`、`full-project-technical-map.md`，后续按主题增补 | 能沿代码路径解释核心链路、模块契约、状态持久化、幂等、审批恢复和调试入口 | 进行中 |
 
 ## 每批工作流
 
@@ -192,6 +194,43 @@ B6 已完成内容：
 - `configuration.md` 按当前 `Settings` 默认值重写，覆盖 Compose 差异、配置优先级、工具后端、executor、RAG/LLM/M9、认证、告警轮询、通知、HA 和生产 minimums。
 - `status-and-ids.md` 校准当前 public ID 前缀、公共状态 enum、runbook/discovery/config/email/eval 状态和 legacy/test-only 前缀说明。
 - `glossary.md` 重写核心架构、Agent、工具、审批、RAG、记忆、M9、安全、测试和运维术语。
+
+## B7 计划与输出
+
+目标：补齐 K8s 部署后最容易混淆的两个问题：如何确认 Agent 真的读到了目标后端，以及当前是否支持一个实例并联多套后端。
+
+B7 已完成内容：
+
+- 新增 `docs/08-deploy/k8s-backend-verification.md`，按配置下发、基础连通、discovery 状态、Agent run 工具调用四层验证 K8s 后端对接。
+- 新增 `docs/11-reference/backend-connectivity.md`，明确当前是单 Agent 实例对接一套后端环境、支持多业务服务，但不支持同实例并联多个 Prometheus/Loki/trace/K8s 集群。
+- 在 `docs/README.md`、`docs/00-overview/repository-map.md`、`docs/11-reference/configuration.md` 和 `deploy/k8s/README.md` 增加入口和短边界说明。
+
+## B8 计划与输出
+
+目标：在不一次性扩写所有文档的前提下，按核心链路逐篇补充代码级技术细节，形成能用于讲解、调试和评审的深挖材料。
+
+本批原则：
+
+- 一次只补一个主题，优先选择跨模块链路。
+- 每篇深挖文档必须指向具体代码入口、持久化对象、状态转换和失败/调试路径。
+- 不复制 API 参考、数据模型或工作流文档的完整内容，只解释它们如何在真实执行路径中组合。
+- 不把 roadmap 或未启用能力写成默认可用行为。
+
+B8.1 已完成内容：
+
+- 新增 `docs/00-overview/alert-to-report-deep-dive.md`，按当前代码路径串起 `POST /api/alerts`、fingerprint 去重、AgentRun 创建、Celery 幂等领取、LangGraph checkpoint、并行证据采集、审批 interrupt/resume、执行验证、版本化报告和前端读取。
+- 在 `docs/README.md` 中增加技术深挖入口。
+
+B8.2 已完成内容：
+
+- 新增 `docs/00-overview/full-project-technical-map.md`，从全项目视角说明运行面、共享库依赖方向、项目级数据对象、API/worker/agent/tool/RAG/memory/frontend/discovery 契约、安全边界、配置影响范围、变更落点和横向调试入口。
+- 在 `docs/README.md` 和 `docs/00-overview/repository-map.md` 中增加全项目技术地图入口。
+
+后续建议分批：
+
+- B8.3：Guardrail/approval 深挖，重点解释 L2/L3/L4、批量审批、email token、stale approval 和 live executor 的边界。
+- B8.4：工具层与 evidence 深挖，重点解释 cache key、降级结果、tool_calls、evidence ID 和 verify gates。
+- B8.5：RAG/memory/context 深挖，重点解释 runbook chunk、embedding 维度、hybrid search、context budget、压缩和 provider/app cache 指标拆分。
 
 ## 完成定义
 

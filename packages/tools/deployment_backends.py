@@ -201,18 +201,24 @@ def _change_from_github_commit(
     service: str,
     files: list[str],
 ) -> dict[str, Any]:
-    commit = detail.get("commit") if isinstance(detail.get("commit"), dict) else {}
-    fallback_commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
-    commit_payload = commit or fallback_commit
-    committer = commit_payload.get("committer") or commit_payload.get("author") or {}
-    author = detail.get("author") or item.get("author") or {}
+    detail_commit = detail.get("commit")
+    commit = detail_commit if isinstance(detail_commit, dict) else {}
+    item_commit = item.get("commit")
+    fallback_commit = item_commit if isinstance(item_commit, dict) else {}
+    commit_payload: dict[str, Any] = commit or fallback_commit
+    committer_payload = commit_payload.get("committer") or commit_payload.get("author")
+    committer = committer_payload if isinstance(committer_payload, dict) else {}
+    author_payload = detail.get("author") or item.get("author")
+    author = author_payload if isinstance(author_payload, dict) else {}
+    commit_author_payload = commit_payload.get("author")
+    commit_author = commit_author_payload if isinstance(commit_author_payload, dict) else {}
     sha = str(detail.get("sha") or item.get("sha") or "")
     message = str(commit_payload.get("message") or sha).splitlines()[0]
     return {
         "service": service,
         "deployed_at": committer.get("date"),
         "commit_sha": sha[:7],
-        "author": author.get("login") or (commit_payload.get("author") or {}).get("name"),
+        "author": author.get("login") or commit_author.get("name"),
         "summary": message,
         "files": files[:20],
     }

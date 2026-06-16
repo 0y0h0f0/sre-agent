@@ -5,10 +5,9 @@ Verifies hard safety constraints from the global constraints (§C).
 
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
 from packages.common.settings import Settings
-
 
 # ---------------------------------------------------------------------------
 # Production defaults
@@ -193,6 +192,7 @@ class TestExecutorSafety:
 class TestOverrideSafety:
     def test_expired_override_not_used(self):
         from datetime import timedelta
+
         from packages.common.time import utc_now
 
         now = utc_now()
@@ -253,6 +253,14 @@ class TestRunbookSafety:
         from apps.api.schemas.runbooks import RunbookDraftRegenerateRequest
         req = RunbookDraftRegenerateRequest(reviewer="test-reviewer")
         assert req.reviewer == "test-reviewer"
+
+    def test_docker_image_keeps_demo_runbook_markdown(self):
+        runbooks = sorted(Path("demo/runbooks").rglob("*.md"))
+        dockerignore = Path(".dockerignore").read_text(encoding="utf-8").splitlines()
+
+        assert len(runbooks) == 12
+        assert "*.md" in dockerignore
+        assert "!demo/runbooks/**/*.md" in dockerignore
 
 
 # ---------------------------------------------------------------------------

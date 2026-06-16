@@ -3,8 +3,9 @@
 Clients connect to /api/ws/incidents/{incident_id} and receive
 JSON events published by the Celery worker via Redis Pub/Sub.
 
-Authentication is via ``?token=<api_key>`` query parameter when
-``api_key_auth_enabled`` is True (Phase 7.1).
+Authentication is via a short-lived ``?ticket=...`` query parameter when
+``api_key_auth_enabled`` is True (Phase 7.1). The ticket is issued by an HTTP
+endpoint authenticated with the normal Authorization header.
 """
 
 from __future__ import annotations
@@ -12,42 +13,72 @@ from __future__ import annotations
 import json
 import logging
 
-import redis
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+import redis.asyncio as redis
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
-from apps.api.services.api_key_service import ApiKeyService
-from packages.common.settings import get_settings
-from packages.db.session import SessionLocal
+from apps.api.dependencies import get_app_settings, get_current_api_key
+from apps.api.services.ws_ticket_service import WebSocketTicketService
+from packages.common.settings import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
+class WebSocketTicketResponse(BaseModel):
+    ticket: str
+    expires_at: str
+
+
+@router.post(
+    "/api/ws/incidents/{incident_id}/ticket",
+    response_model=WebSocketTicketResponse,
+)
+def create_incident_ws_ticket(
+    incident_id: str,
+    identity: dict[str, object] = Depends(get_current_api_key),
+    settings: Settings = Depends(get_app_settings),
+) -> WebSocketTicketResponse:
+    if settings.api_key_auth_enabled and not identity:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        issued = WebSocketTicketService(settings).issue(incident_id, identity)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return WebSocketTicketResponse(
+        ticket=issued.ticket,
+        expires_at=issued.expires_at.isoformat(),
+    )
+
+
 @router.websocket("/api/ws/incidents/{incident_id}")
 async def incident_events(
     websocket: WebSocket,
     incident_id: str,
-    token: str = Query(default=""),
+    ticket: str = Query(default=""),
 ) -> None:
     settings = get_settings()
 
     if settings.api_key_auth_enabled:
-        if not token:
-            await websocket.close(code=4001, reason="missing token")
+        if not ticket:
+            await websocket.close(code=4001, reason="missing ticket")
             return
-        db = SessionLocal()
         try:
-            identity = ApiKeyService(db).verify(token)
-            if identity is None:
-                await websocket.close(code=4001, reason="invalid token")
-                return
-        finally:
-            db.close()
+            payload = WebSocketTicketService(settings).verify(
+                ticket,
+                incident_id=incident_id,
+            )
+        except RuntimeError:
+            await websocket.close(code=1011, reason="ticket validation unavailable")
+            return
+        if payload is None:
+            await websocket.close(code=4001, reason="invalid ticket")
+            return
 
     await websocket.accept()
 
-    pubsub: redis.client.PubSub | None = None
+    pubsub: object | None = None
     client: redis.Redis | None = None
 
     try:
@@ -57,20 +88,31 @@ async def incident_events(
             socket_timeout=settings.redis_socket_timeout,
             retry_on_timeout=settings.redis_retry_on_timeout,
         )
-        pubsub = client.pubsub()  # type: ignore[no-untyped-call]
-        pubsub.subscribe(f"incident:{incident_id}")  # type: ignore[no-untyped-call]
+        pubsub = client.pubsub()
+        await pubsub.subscribe(f"incident:{incident_id}")  # type: ignore[attr-defined]
 
         await websocket.send_json({"type": "connected", "incident_id": incident_id})
 
-        for message in pubsub.listen():
-            if message["type"] != "message":
+        while True:
+            message = await pubsub.get_message(  # type: ignore[attr-defined]
+                ignore_subscribe_messages=True,
+                timeout=1.0,
+            )
+            if message is None:
+                continue
+            if message.get("type") != "message":
                 continue
             if message.get("data") is None:
                 continue
 
             try:
                 raw = message["data"]
-                data = json.loads(raw) if isinstance(raw, bytes) else raw
+                if isinstance(raw, bytes):
+                    data = json.loads(raw.decode())
+                elif isinstance(raw, str):
+                    data = json.loads(raw)
+                else:
+                    data = raw
             except (json.JSONDecodeError, TypeError):
                 continue
 
@@ -83,20 +125,20 @@ async def incident_events(
     finally:
         if pubsub is not None:
             try:
-                pubsub.unsubscribe(f"incident:{incident_id}")  # type: ignore[no-untyped-call]
+                await pubsub.unsubscribe(f"incident:{incident_id}")  # type: ignore[attr-defined]
             except Exception:
                 logger.warning(
                     "failed to unsubscribe pubsub for incident %s", incident_id, exc_info=True
                 )
             try:
-                pubsub.close()
+                await pubsub.aclose()  # type: ignore[attr-defined]
             except Exception:
                 logger.warning(
                     "failed to close pubsub for incident %s", incident_id, exc_info=True
                 )
         if client is not None:
             try:
-                client.close()
+                await client.aclose()
             except Exception:
                 logger.warning(
                     "failed to close redis client for incident %s", incident_id, exc_info=True

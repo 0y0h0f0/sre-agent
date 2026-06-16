@@ -36,13 +36,9 @@ spec:
           livenessProbe:
             exec:
               command:
-                - celery
-                - -A
-                - apps.worker.tasks:celery_app
-                - inspect
-                - ping
-                - -d
-                - celery@$HOSTNAME
+                - sh
+                - -c
+                - PROMETHEUS_METRICS_ENABLED=false exec celery -A apps.worker.tasks:celery_app inspect ping -d celery@$HOSTNAME
             initialDelaySeconds: 30
             periodSeconds: 60
             timeoutSeconds: 10

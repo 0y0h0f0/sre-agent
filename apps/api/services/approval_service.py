@@ -233,45 +233,160 @@ class ApprovalService:
         )
 
     def batch_decide(self, request: BatchApprovalRequest) -> list[ApprovalDecisionResponse]:
-        """Process multiple approvals in a single request."""
+        """Process multiple approvals atomically.
+
+        The batch is preflighted before any row is updated. This avoids the
+        unsafe partial-success case where an L2 action could be approved while
+        a sibling L3 approval in the same request failed confirmation.
+        """
+        pairs = self._preflight_batch(request)
         results: list[ApprovalDecisionResponse] = []
-        errors: list[dict[str, Any]] = []
+        impacted_runs: dict[str, str] = {}
+        approved = request.decision == "approve"
+        approval_status = (
+            ApprovalStatus.APPROVED.value if approved else ApprovalStatus.REJECTED.value
+        )
+        audit_action = "approve" if approved else "reject"
+        resume_decision = "approved" if approved else "rejected"
 
+        for approval, action in pairs:
+            if approved and action.risk_level == "L3":
+                self.approvals.update_l3_confirmation(
+                    approval,
+                    risk_ack=request.risk_ack,
+                    confirm_action_type=request.confirm_action_type or "",
+                    confirm_target=request.confirm_target or "",
+                )
+
+            self.approvals.update_decision(
+                approval.approval_id,
+                status=approval_status,
+                approver=request.approver,
+                comment=request.comment,
+            )
+            self.actions.update_status(action.action_id, approval_status)
+            self.audit.create(
+                incident_id=approval.incident_id,
+                actor=request.approver,
+                action=audit_action,
+                resource_type="approval",
+                resource_id=approval.approval_id,
+                details={"action_id": action.action_id, "risk_level": action.risk_level},
+            )
+            impacted_runs[approval.agent_run_id] = resume_decision
+            results.append(
+                ApprovalDecisionResponse(
+                    approval_id=approval.approval_id,
+                    action_id=approval.action_id,
+                    status=ApprovalStatus(approval_status),
+                    agent_run_id=approval.agent_run_id,
+                )
+            )
+
+        self.db.flush()
+        self.db.commit()
+
+        for agent_run_id, decision in impacted_runs.items():
+            self._maybe_resume(agent_run_id, decision)
+
+        return results
+
+    def _preflight_batch(self, request: BatchApprovalRequest) -> list[tuple[Approval, Action]]:
+        seen: set[str] = set()
+        duplicates: list[str] = []
         for approval_id in request.approval_ids:
-            try:
-                if request.decision == "approve":
-                    approve_req = ApproveRequest(
-                        approver=request.approver,
-                        comment=request.comment,
-                        risk_ack=request.risk_ack,
-                        confirm_action_type=request.confirm_action_type,
-                        confirm_target=request.confirm_target,
-                    )
-                    results.append(self.approve(approval_id, approve_req))
-                else:
-                    reject_req = RejectRequest(
-                        approver=request.approver,
-                        comment=request.comment,
-                    )
-                    results.append(self.reject(approval_id, reject_req))
-            except (NotFoundError, ConflictError, ValidationAppError) as exc:
-                errors.append({"approval_id": approval_id, "error": str(exc)})
-
-        if errors and not results:
+            if approval_id in seen:
+                duplicates.append(approval_id)
+            seen.add(approval_id)
+        if duplicates:
             raise ValidationAppError(
-                "all batch approvals failed",
+                "batch approval_ids must be unique",
+                details={"duplicates": sorted(set(duplicates))},
+            )
+
+        pairs: list[tuple[Approval, Action]] = []
+        errors: list[dict[str, Any]] = []
+        for approval_id in request.approval_ids:
+            approval = (
+                self.approvals.get_for_update(approval_id)
+                or self.approvals.get_by_public_id(approval_id)
+            )
+            if approval is None:
+                errors.append({"approval_id": approval_id, "error": "approval not found"})
+                continue
+            if approval.status != ApprovalStatus.WAITING.value:
+                errors.append(
+                    {
+                        "approval_id": approval_id,
+                        "error": "approval has already been decided",
+                        "current_status": approval.status,
+                    }
+                )
+                continue
+            action = self.actions.get_by_public_id(approval.action_id)
+            if action is None:
+                errors.append(
+                    {
+                        "approval_id": approval_id,
+                        "action_id": approval.action_id,
+                        "error": "action not found",
+                    }
+                )
+                continue
+            if request.decision == "approve" and action.risk_level == "L3":
+                missing_or_mismatch = self._l3_confirmation_errors(action, request)
+                if missing_or_mismatch:
+                    errors.append(
+                        {
+                            "approval_id": approval_id,
+                            "action_id": action.action_id,
+                            "risk_level": action.risk_level,
+                            "errors": missing_or_mismatch,
+                        }
+                    )
+                    continue
+            pairs.append((approval, action))
+
+        if errors:
+            raise ValidationAppError(
+                "batch approvals validation failed",
                 details={"errors": errors},
             )
-        if errors:
-            import logging
 
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "batch_decide partial failure: %d succeeded, %d failed",
-                len(results),
-                len(errors),
+        return pairs
+
+    @staticmethod
+    def _l3_confirmation_errors(
+        action: Action,
+        request: BatchApprovalRequest,
+    ) -> list[dict[str, str]]:
+        errors: list[dict[str, str]] = []
+        if not request.risk_ack:
+            errors.append({"field": "risk_ack", "error": "required_true"})
+        if not request.confirm_action_type:
+            errors.append({"field": "confirm_action_type", "error": "required"})
+        elif request.confirm_action_type != action.type:
+            errors.append(
+                {
+                    "field": "confirm_action_type",
+                    "error": "mismatch",
+                    "expected": action.type,
+                    "provided": request.confirm_action_type,
+                }
             )
-        return results
+        expected_target = action.target or ""
+        if not request.confirm_target:
+            errors.append({"field": "confirm_target", "error": "required"})
+        elif request.confirm_target != expected_target:
+            errors.append(
+                {
+                    "field": "confirm_target",
+                    "error": "mismatch",
+                    "expected": expected_target,
+                    "provided": request.confirm_target,
+                }
+            )
+        return errors
 
     def generate_email_token(self, approval_id: str) -> str:
         """Generate a single-use email token for an approval. Expires in 24h."""

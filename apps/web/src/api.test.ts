@@ -69,6 +69,8 @@ test('createApiKey posts with the bootstrap token instead of the stored key', as
       description: 'local web key',
       raw_key: 'new-browser-key',
       created_by: 'system',
+      scopes: [],
+      roles: [],
       expires_at: null,
       created_at: '2026-06-01T00:00:00Z'
     }, 201)

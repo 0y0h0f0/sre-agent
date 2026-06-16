@@ -1889,7 +1889,7 @@ ALERT_POLL_MAX_INCIDENTS_PER_SERVICE_PER_MINUTE=5
 # 生产默认不启用 LLM，诊断使用确定性证据 + Runbook 检索。
 # 如环境评审允许 LLM，取消注释以下行并选择一种 profile（deepseek/openai/anthropic/vllm）。
 # export LLM_PROVIDER=deepseek          # 示例：云端 LLM
-# export LLM_API_KEY=sk-xxx
+# export LLM_API_KEY=<provider-api-key>
 # 或本地 LLM:
 # export LLM_PROVIDER=vllm
 # export LLM_BASE_URL=http://vllm:8000/v1
@@ -1899,7 +1899,7 @@ ALERT_POLL_MAX_INCIDENTS_PER_SERVICE_PER_MINUTE=5
 export AUTOMATION_LEVEL=supervised
 export ALERT_SOURCE=poll
 export ALERTMANAGER_URL=http://alertmanager-main.monitoring.svc:9093
-export ALERTMANAGER_READ_TOKEN=sk-readonly-alertmanager
+export ALERTMANAGER_READ_TOKEN=<alertmanager-read-token>
 export ALERT_POLL_LOCK_TTL_SECONDS=60
 export ALERT_POLL_RECEIVER_FILTER='sre|platform'
 export ALERT_POLL_FILTER_MATCHERS='severity=~"critical|warning",namespace=~"prod"'
@@ -1934,13 +1934,13 @@ export PROMETHEUS_URL=http://prom:9090
 export LOKI_URL=http://loki:3100
 export JAEGER_URL=http://jaeger:16686
 export ALERTMANAGER_URL=http://alertmanager:9093
-export ALERTMANAGER_READ_TOKEN=sk-readonly-alertmanager
+export ALERTMANAGER_READ_TOKEN=<alertmanager-read-token>
 export ALERT_SOURCE=poll             # 不改 Alertmanager 配置时使用 poll；可改 receiver 时也可使用 webhook/both
 export ALERT_POLL_LOCK_TTL_SECONDS=60
 export ALERT_POLL_FILTER_MATCHERS='severity=~"critical|warning",service=~"checkout|payment"'
 # 如环境评审允许 LLM：
 # export LLM_PROVIDER=deepseek
-# export LLM_API_KEY=sk-xxx
+# export LLM_API_KEY=<provider-api-key>
 
 docker compose up -d api worker web postgres redis
 

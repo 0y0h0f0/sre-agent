@@ -26,6 +26,7 @@ from apps.api.schemas.runbooks import (
     RunbookVersionItem,
     WebSearchRequest,
     WebSearchResponse,
+    WebSearchResultItem,
 )
 from apps.api.services.runbook_service import RunbookService
 from packages.agent.llm.factory import build_llm
@@ -173,16 +174,16 @@ def web_search(
         status=result.status,
         purpose=result.purpose,
         results=[
-            {
-                "title": r.title,
-                "original_url": r.original_url,
-                "final_url": r.final_url,
-                "retrieved_at": r.retrieved_at,
-                "snippet": r.snippet,
-                "content_hash": r.content_hash,
-                "provider": r.provider,
-                "redaction_version": r.redaction_version,
-            }
+            WebSearchResultItem(
+                title=r.title,
+                original_url=r.original_url,
+                final_url=r.final_url,
+                retrieved_at=r.retrieved_at,
+                snippet=r.snippet,
+                content_hash=r.content_hash,
+                provider=r.provider,
+                redaction_version=r.redaction_version,
+            )
             for r in result.results
         ],
         query_redacted=result.query_redacted,

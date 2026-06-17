@@ -54,11 +54,14 @@ kubectl auth can-i list pods -n task-platform \
 kubectl auth can-i get deployments.apps -n task-platform \
   --as=system:serviceaccount:sre-agent:sre-agent
 
+kubectl auth can-i get statefulsets.apps -n task-platform \
+  --as=system:serviceaccount:sre-agent:sre-agent
+
 kubectl auth can-i get pods/log -n task-platform \
   --as=system:serviceaccount:sre-agent:sre-agent
 ```
 
-如果启用了 `EXECUTOR_BACKEND=live`，还要单独确认受控 patch/scale/rollback 权限；普通诊断路径只应依赖只读权限。
+如果启用了 `EXECUTOR_BACKEND=live`，还要单独确认受控 Deployment/StatefulSet patch、Deployment scale/rollback 权限；普通诊断路径只应依赖只读权限。
 
 ## 3. Discovery 状态
 

@@ -298,6 +298,13 @@ def _failed_preflight_checks(
         elif check == "k8s_deployment_exists":
             if k8s_snapshot.get("error") or not k8s_snapshot.get("name"):
                 failed.append(check)
+        elif check == "k8s_statefulset_exists":
+            if (
+                k8s_snapshot.get("error")
+                or not k8s_snapshot.get("name")
+                or k8s_snapshot.get("kind") != "StatefulSet"
+            ):
+                failed.append(check)
         elif check == "k8s_replicas_gt_zero":
             try:
                 if int(k8s_snapshot.get("replicas", 0)) <= 0:
@@ -307,11 +314,23 @@ def _failed_preflight_checks(
         elif check == "k8s_rollout_not_failed":
             if _rollout_failed(k8s_snapshot):
                 failed.append(check)
+        elif check == "k8s_rollout_not_paused":
+            if k8s_snapshot.get("paused") is not False:
+                failed.append(check)
+        elif check == "k8s_rollout_paused":
+            if k8s_snapshot.get("paused") is not True:
+                failed.append(check)
         elif check == "k8s_rolling_restart_patch_only":
             if canonical_action_type(action.get("type")) not in {"restart_pod", "restart_service"}:
                 failed.append(check)
+        elif check == "k8s_statefulset_restart_patch_only":
+            if canonical_action_type(action.get("type")) != "restart_statefulset":
+                failed.append(check)
         elif check == "k8s_rollout_pause_patch_only":
             if canonical_action_type(action.get("type")) != "pause_rollout":
+                failed.append(check)
+        elif check == "k8s_rollout_resume_patch_only":
+            if canonical_action_type(action.get("type")) != "resume_rollout":
                 failed.append(check)
         else:
             failed.append(check)

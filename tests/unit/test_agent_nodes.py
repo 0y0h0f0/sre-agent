@@ -1082,6 +1082,7 @@ class TestExecuteActionNode:
                         "name": "checkout",
                         "namespace": "default",
                         "replicas": 2,
+                        "paused": False,
                         "image": "checkout:v2",
                         "conditions": [{"type": "Progressing", "status": "False"}],
                     }
@@ -1105,6 +1106,266 @@ class TestExecuteActionNode:
         capability = result["execution_results"][0]["capability"]
         assert capability["bounded_irreversible"] is True
         assert "k8s_rollout" in capability["verify_gates"]
+
+    def test_live_pause_rollout_blocks_when_already_paused(
+        self, db_session: Session
+    ) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("already-paused rollout must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "replicas": 2,
+                        "paused": True,
+                        "image": "checkout:v2",
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "pause_rollout",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "k8s_rollout_not_paused" in execution["details"]["failed_preflight_checks"]
+        assert backend.execute_calls == []
+
+    def test_live_restart_statefulset_executes_when_preflight_passes(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                return ExecutionResult(status="succeeded", message="live statefulset restart")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "data"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "kind": "StatefulSet",
+                        "name": "postgres",
+                        "namespace": "data",
+                        "replicas": 3,
+                        "ready_replicas": 3,
+                        "image": "postgres:16",
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "restart_statefulset",
+                        "target": "postgres",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert backend.execute_calls
+        assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
+        capability = result["execution_results"][0]["capability"]
+        assert capability["bounded_irreversible"] is True
+        assert "k8s_rollout" in capability["verify_gates"]
+
+    def test_live_restart_statefulset_blocks_wrong_snapshot_kind(
+        self, db_session: Session
+    ) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("wrong-kind statefulset snapshot must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "data"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "kind": "Deployment",
+                        "name": "postgres",
+                        "namespace": "data",
+                        "replicas": 3,
+                        "ready_replicas": 3,
+                        "image": "postgres:16",
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "restart_statefulset",
+                        "target": "postgres",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "k8s_statefulset_exists" in execution["details"]["failed_preflight_checks"]
+        assert backend.execute_calls == []
+
+    def test_live_resume_rollout_requires_paused_snapshot_after_approval(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                return ExecutionResult(status="succeeded", message="live resume")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "replicas": 2,
+                        "paused": True,
+                        "image": "checkout:v2",
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "resume_rollout",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert backend.execute_calls
+        assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
+
+    def test_live_resume_rollout_blocks_when_not_paused(
+        self, db_session: Session
+    ) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("unpaused rollout resume must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "replicas": 2,
+                        "paused": False,
+                        "image": "checkout:v2",
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "resume_rollout",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "k8s_rollout_paused" in execution["details"]["failed_preflight_checks"]
+        assert backend.execute_calls == []
 
     def test_live_restart_blocks_when_snapshot_target_mismatches(
         self, db_session: Session
@@ -1416,6 +1677,71 @@ class TestSnapshotVerifyRollbackFlow:
         assert gates["metrics_logs"]["verdict"] == "resolved"
         assert gates["k8s_rollout"]["verdict"] == "resolved"
         assert gates["k8s_rollout"]["evidence_ids"][0].startswith("evi_")
+
+    def test_verify_restart_statefulset_uses_statefulset_status(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_statefulset"
+        agent_run_id = "run_verify_statefulset"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "get_statefulset",
+                    "payload": {
+                        "kind": "StatefulSet",
+                        "replicas": 3,
+                        "updated_replicas": 3,
+                        "ready_replicas": 3,
+                    },
+                },
+                summary="statefulset ready",
+                evidence=[{"type": "k8s", "source": "fixture", "summary": "statefulset ready"}],
+                duration_ms=1,
+            ),
+        )
+        deps.k8s_tool = k8s_tool
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="postgres",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {"risk_level": "L2", "type": "restart_statefulset", "target": "postgres"}
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        assert result["verify_result"] == "resolved"
+        assert k8s_tool.queries[0].operation == "get_statefulset"
 
     def test_verify_k8s_rollout_failure_prevents_resolved(
         self, db_session: Session, monkeypatch
@@ -1839,6 +2165,7 @@ class TestSnapshotVerifyRollbackFlow:
                         "payload": {
                             "name": query.service,
                             "replicas": 2,
+                            "paused": False,
                             "namespace": query.namespace,
                             "image": "checkout:v2",
                         }
@@ -1862,6 +2189,100 @@ class TestSnapshotVerifyRollbackFlow:
         assert tool.query is not None
         assert tool.query.operation == "get_deployment"
         assert result["pre_action_snapshot"]["k8s"]["image"] == "checkout:v2"
+        assert result["pre_action_snapshot"]["k8s"]["paused"] is False
+
+    def test_take_snapshot_captures_resume_rollout_target(self, db_session: Session) -> None:
+        from packages.agent.nodes.take_snapshot import take_snapshot
+        from packages.tools.base import ToolResult
+
+        class K8sTool:
+            name = "k8s"
+            timeout_seconds = 1.0
+
+            def __init__(self) -> None:
+                self.query = None
+
+            def run(self, query):
+                self.query = query
+                return ToolResult(
+                    status="succeeded",
+                    data={
+                        "payload": {
+                            "name": query.service,
+                            "replicas": 2,
+                            "paused": True,
+                            "namespace": query.namespace,
+                            "image": "checkout:v2",
+                        }
+                    },
+                    summary="deployment snapshot",
+                    duration_ms=1,
+                )
+
+        deps = _make_deps(db_session)
+        tool = K8sTool()
+        deps.k8s_tool = tool
+
+        result = take_snapshot(
+            _base_state(
+                service_name="checkout",
+                recommended_actions=[{"type": "resume_rollout", "target": "checkout"}],
+            ),
+            deps,
+        )
+
+        assert tool.query is not None
+        assert tool.query.operation == "get_deployment"
+        assert result["pre_action_snapshot"]["k8s"]["paused"] is True
+
+    def test_take_snapshot_captures_restart_statefulset_target(
+        self, db_session: Session
+    ) -> None:
+        from packages.agent.nodes.take_snapshot import take_snapshot
+        from packages.tools.base import ToolResult
+
+        class K8sTool:
+            name = "k8s"
+            timeout_seconds = 1.0
+
+            def __init__(self) -> None:
+                self.query = None
+
+            def run(self, query):
+                self.query = query
+                return ToolResult(
+                    status="succeeded",
+                    data={
+                        "payload": {
+                            "kind": "StatefulSet",
+                            "name": query.service,
+                            "replicas": 3,
+                            "namespace": query.namespace,
+                            "image": "postgres:16",
+                            "ready_replicas": 3,
+                        }
+                    },
+                    summary="statefulset snapshot",
+                    duration_ms=1,
+                )
+
+        deps = _make_deps(db_session)
+        deps.settings.executor_k8s_namespace = "data"
+        tool = K8sTool()
+        deps.k8s_tool = tool
+
+        result = take_snapshot(
+            _base_state(
+                service_name="postgres",
+                recommended_actions=[{"type": "restart_statefulset", "target": "postgres"}],
+            ),
+            deps,
+        )
+
+        assert tool.query is not None
+        assert tool.query.operation == "get_statefulset"
+        assert tool.query.namespace == "data"
+        assert result["pre_action_snapshot"]["k8s"]["kind"] == "StatefulSet"
 
     def test_take_snapshot_preserves_original_snapshot_for_degraded_rollback(
         self, db_session: Session

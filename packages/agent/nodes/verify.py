@@ -312,7 +312,12 @@ def _run_k8s_rollout_gate(
 
     target = str(gate.get("target") or service)
     namespace = deps.settings.executor_k8s_namespace or deps.settings.k8s_namespace or "default"
-    query = K8sQuery(service=target, operation="rollout_status", namespace=namespace)
+    operation = (
+        "get_statefulset"
+        if str(gate.get("action_type", "")).lower() == "restart_statefulset"
+        else "rollout_status"
+    )
+    query = K8sQuery(service=target, operation=operation, namespace=namespace)
     try:
         result = deps.k8s_tool.run(query)
         deps.tool_call_recorder(
@@ -321,7 +326,9 @@ def _run_k8s_rollout_gate(
             tool_name=deps.k8s_tool.name,
             query=query,
             result=result,
-            input_summary=f"verify k8s_rollout service={target} namespace={namespace}",
+            input_summary=(
+                f"verify k8s_rollout service={target} namespace={namespace} operation={operation}"
+            ),
         )
     except Exception as exc:
         logger.error(

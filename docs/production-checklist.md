@@ -117,7 +117,7 @@ pytest tests/unit/test_backend_url_safety.py tests/unit/test_production_safety.p
 
 ### Live K8s diagnostics
 
-- 只允许 describe/logs/events/rollout status/get deployment 等只读诊断。
+- 只允许 describe/logs/events/rollout status/get deployment/get statefulset 等只读诊断。
 - kubeconfig/service account 权限必须只读。
 - 工具失败返回 degraded，不阻塞 Agent 启动。
 
@@ -133,7 +133,9 @@ pytest tests/unit/test_backend_url_safety.py tests/unit/test_production_safety.p
 只有显式 `EXECUTOR_BACKEND=live` 才能启用，并且只允许：
 
 - `restart_pod` / `restart_service`：Deployment patch 触发 rolling restart。
+- `restart_statefulset`：StatefulSet patch 触发 rolling restart。
 - `pause_rollout`：Deployment patch 设置 `spec.paused=true`，暂停 rollout。
+- `resume_rollout`：Deployment patch 设置 `spec.paused=false`，恢复 rollout。
 - `scale_deployment` / `scale_back`：Deployment scale patch。
 - `rollback_release`：Deployment rollback subresource。
 

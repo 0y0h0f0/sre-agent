@@ -20,6 +20,8 @@ _RISK_TABLE: dict[str, tuple[str, bool, str]] = {
     "scale_deployment": ("L2", True, "scaling needs approval"),
     "restart_service": ("L2", True, "service restart needs approval"),
     "pause_rollout": ("L2", True, "rollout pause needs approval"),
+    "resume_rollout": ("L2", True, "rollout resume needs approval"),
+    "restart_statefulset": ("L2", True, "statefulset restart needs approval"),
     "increase_memory_limit": ("L2", True, "memory limit change needs approval"),
     "enable_rate_limit": ("L3", True, "rate-limit change needs L3"),
     "raise_rate_limit": ("L3", True, "rate-limit change needs L3"),

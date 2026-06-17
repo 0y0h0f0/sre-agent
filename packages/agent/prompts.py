@@ -208,7 +208,9 @@ _ALLOWED_ACTIONS = {
     "restart_pod": "L2",
     "scale_deployment": "L2",
     "restart_service": "L2",
+    "restart_statefulset": "L2",
     "pause_rollout": "L2",
+    "resume_rollout": "L2",
     "increase_memory_limit": "L2",
     "enable_rate_limit": "L3",
     "raise_rate_limit": "L3",
@@ -246,10 +248,14 @@ Rules:
 - restart_pod and restart_service are bounded irreversible rolling restarts:
   use them only when evidence supports a restart, and do not claim they can be
   rolled back or fully restored
+- restart_statefulset is a bounded irreversible StatefulSet rolling restart:
+  use it only when evidence identifies the target as a StatefulSet workload
 - rollback_plan for restart actions must describe monitoring/verification or
   follow-up escalation, not a guaranteed undo
 - pause_rollout pauses a Deployment rollout by setting spec.paused=true; use it
   only for an unsafe in-progress rollout and do not claim it resumes rollout
+- resume_rollout resumes a previously paused Deployment rollout by setting
+  spec.paused=false; use it only when snapshot evidence shows it is paused
 - scale_deployment means changing Deployment replicas only; params must include replicas
 - scale_deployment/scale_back are replica-count changes; use the pre-action
   snapshot when planning scale_back after degradation

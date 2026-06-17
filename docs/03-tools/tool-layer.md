@@ -129,12 +129,12 @@ GitHub backend 先读 deployments API；如果没有 deployment records，再按
 - 文件：`k8s.py`
 - Query：`K8sQuery(service, operation, namespace, pod)`
 - Backend：`fixture`、`live`
-- 允许操作：`describe_pod`、`logs`、`events`、`rollout_status`、`get_deployment`
+- 允许操作：`describe_pod`、`logs`、`events`、`rollout_status`、`get_deployment`、`get_statefulset`
 - 禁止行为：任何非 read-only operation 直接返回 `failed`
 
 live backend 只调用 Kubernetes read API。它不执行 restart、scale、rollback、cordon、drain 等写操作。`build_remediation_suggestions()` 只生成 dry-run command suggestion，不执行。
 
-`verify` 节点的 `k8s_rollout` gate 使用 `operation="rollout_status"` 重新读取 Deployment rollout 状态；该 gate 仍只读，失败会阻止整体验证结果变成 `resolved`。
+`verify` 节点的 `k8s_rollout` gate 默认使用 `operation="rollout_status"` 重新读取 Deployment rollout 状态；`restart_statefulset` 使用 `operation="get_statefulset"` 读取 StatefulSet status。该 gate 仍只读，失败会阻止整体验证结果变成 `resolved`。
 
 ### DbDiagnosticsTool
 
@@ -171,11 +171,11 @@ class ExecutorBackend(Protocol):
 | Backend | 默认 | 行为 |
 |---------|------|------|
 | `FixtureExecutorBackend` | 是 | 返回确定性 mock result，供测试、本地 demo、CI 使用 |
-| `LiveK8sExecutorBackend` | 否 | `EXECUTOR_BACKEND=live` 显式 opt-in，只支持 restart/pause/scale/rollback 类 Kubernetes mutation |
+| `LiveK8sExecutorBackend` | 否 | `EXECUTOR_BACKEND=live` 显式 opt-in，只支持 restart/pause/resume/scale/rollback 类 Kubernetes mutation |
 
-live executor 当前支持：`restart_pod`、`restart_service`、`pause_rollout`、`scale_deployment`、`scale_back`、`rollback_release`。`rollback_deployment` 是兼容别名，会规范化为 `rollback_release` 并调用同一个 Deployment rollback subresource。其它动作失败关闭。
+live executor 当前支持：`restart_pod`、`restart_service`、`restart_statefulset`、`pause_rollout`、`resume_rollout`、`scale_deployment`、`scale_back`、`rollback_release`。`rollback_deployment` 是兼容别名，会规范化为 `rollback_release` 并调用同一个 Deployment rollback subresource。其它动作失败关闭。
 
-Live K8s action capability metadata 会声明执行后必须运行的 verify gates。Restart/pause/scale 类能力至少包含 `k8s_rollout` 和 `metrics_logs`；rollback 类能力还包含 `db_readonly`。Gate 执行由 Agent `verify` 节点完成，不由 executor backend 直接执行。Restart/pause 类动作是 bounded irreversible Deployment patch，不提供 restore/undo 保证；executor 只负责执行受控 patch，后续恢复判断由只读 verify gates 和 replan 循环完成。
+Live K8s action capability metadata 会声明执行后必须运行的 verify gates。Restart/pause/resume/scale 类能力至少包含 `k8s_rollout` 和 `metrics_logs`；rollback 类能力还包含 `db_readonly`。Gate 执行由 Agent `verify` 节点完成，不由 executor backend 直接执行。Restart/pause/resume 类动作是 bounded irreversible Deployment/StatefulSet patch，不提供 restore/undo 保证；executor 只负责执行受控 patch，后续恢复判断由只读 verify gates 和 replan 循环完成。
 
 ## Worker 中的依赖构造
 

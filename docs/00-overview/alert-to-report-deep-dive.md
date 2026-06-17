@@ -187,7 +187,7 @@ resume 不会盲信传入的单个 `decision`。`human_approval._apply_db_decisi
 take_snapshot -> execute_action -> verify
 ```
 
-`take_snapshot` 保存执行前证据/K8s 状态。`execute_action` 使用注入的 executor backend，默认 fixture；live backend 只能在显式启用后执行已允许的 Kubernetes restart/pause/scale/rollback。`verify` 按 action capability metadata 执行只读 gates，最多 `MAX_VERIFY_CYCLES=2` 次验证/重规划。
+`take_snapshot` 保存执行前证据/K8s 状态。`execute_action` 使用注入的 executor backend，默认 fixture；live backend 只能在显式启用后执行已允许的 Kubernetes restart/pause/resume/scale/rollback。`verify` 按 action capability metadata 执行只读 gates，最多 `MAX_VERIFY_CYCLES=2` 次验证/重规划。
 
 报告由 `generate_report` 节点创建：
 

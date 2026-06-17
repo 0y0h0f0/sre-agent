@@ -47,7 +47,7 @@
 - API 请求中不内联运行 LangGraph；诊断必须通过 Celery。
 - Worker 使用 LangGraph `PostgresSaver` checkpoint；`agent_runs.state` 只做展示快照。
 - 默认使用 FakeLLM、fixture 工具和 fixture executor；CI 与 smoke eval 不依赖真实 LLM。
-- Live K8s executor 必须显式启用，且只允许已记录的 restart/pause/scale/rollback Kubernetes mutation。
+- Live K8s executor 必须显式启用，且只允许已记录的 restart/pause/resume/scale/rollback Kubernetes mutation。
 - L2/L3 操作必须审批；L3 必须带二次确认字段；L4 永远不进入审批。
 - 原始密钥不落库、不进日志、不进审计、不进提示词。
 - 大日志和超预算证据必须先压缩，诊断输出要保留 evidence ID 或 runbook chunk ID。

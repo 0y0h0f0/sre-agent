@@ -57,9 +57,10 @@ class Settings(BaseSettings):
     k8s_backend: str = "fixture"
     k8s_fixture_path: str = "demo/faults/k8s.json"
     k8s_namespace: str = "default"
-    # Executor backend: fixture | live (Phase 2.5). "live" performs real K8s
-    # mutations (restart, scale, rollback) and requires EXECUTOR_BACKEND=live
-    # plus the full guardrail -> approval -> second-confirmation chain.
+    # Executor backend: fixture | live (Phase 2.5). "live" performs only
+    # explicitly supported K8s mutations (restart, pause/resume, scale,
+    # rollback) and requires EXECUTOR_BACKEND=live plus the full guardrail ->
+    # approval -> second-confirmation chain.
     executor_backend: str = "fixture"
     executor_timeout_seconds: float = Field(default=30.0, gt=0)
     executor_k8s_namespace: str = "default"

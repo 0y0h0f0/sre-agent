@@ -98,12 +98,35 @@ _K8S_RESTART_PREFLIGHT = (
     "k8s_rollout_not_failed",
     "k8s_rolling_restart_patch_only",
 )
+_K8S_STATEFULSET_RESTART_SNAPSHOT = (
+    *_K8S_DEPLOYMENT_IDENTITY,
+    "k8s.kind",
+    "k8s.replicas",
+    "k8s.ready_replicas",
+    "k8s.image",
+)
+_K8S_STATEFULSET_RESTART_PREFLIGHT = (
+    "k8s_target_name_valid",
+    "k8s_namespace_valid",
+    "k8s_statefulset_exists",
+    "k8s_replicas_gt_zero",
+    "k8s_statefulset_restart_patch_only",
+)
 _K8S_PAUSE_PREFLIGHT = (
     "k8s_target_name_valid",
     "k8s_namespace_valid",
     "k8s_deployment_exists",
     "k8s_replicas_gt_zero",
+    "k8s_rollout_not_paused",
     "k8s_rollout_pause_patch_only",
+)
+_K8S_RESUME_PREFLIGHT = (
+    "k8s_target_name_valid",
+    "k8s_namespace_valid",
+    "k8s_deployment_exists",
+    "k8s_replicas_gt_zero",
+    "k8s_rollout_paused",
+    "k8s_rollout_resume_patch_only",
 )
 _K8S_VERIFY = ("k8s_rollout", "metrics_logs")
 
@@ -180,14 +203,36 @@ _CAPABILITIES: dict[str, ActionCapability] = {
         verify_gates=_K8S_VERIFY,
         risk_level_expectation="L2",
     ),
+    "restart_statefulset": _cap(
+        "restart_statefulset",
+        "live_mutating_bounded_irreversible",
+        live_backend="k8s",
+        bounded_irreversible=True,
+        required_snapshot_paths=_K8S_STATEFULSET_RESTART_SNAPSHOT,
+        optional_snapshot_paths=("k8s.current_revision", "k8s.update_revision"),
+        preflight_checks=_K8S_STATEFULSET_RESTART_PREFLIGHT,
+        verify_gates=_K8S_VERIFY,
+        risk_level_expectation="L2",
+    ),
     "pause_rollout": _cap(
         "pause_rollout",
         "live_mutating_bounded_irreversible",
         live_backend="k8s",
         bounded_irreversible=True,
-        required_snapshot_paths=_K8S_DEPLOYMENT_PATCH_SNAPSHOT,
+        required_snapshot_paths=(*_K8S_DEPLOYMENT_PATCH_SNAPSHOT, "k8s.paused"),
         optional_snapshot_paths=("k8s.revision", "k8s.ready_replicas", "k8s.available_replicas"),
         preflight_checks=_K8S_PAUSE_PREFLIGHT,
+        verify_gates=_K8S_VERIFY,
+        risk_level_expectation="L2",
+    ),
+    "resume_rollout": _cap(
+        "resume_rollout",
+        "live_mutating_bounded_irreversible",
+        live_backend="k8s",
+        bounded_irreversible=True,
+        required_snapshot_paths=(*_K8S_DEPLOYMENT_PATCH_SNAPSHOT, "k8s.paused"),
+        optional_snapshot_paths=("k8s.revision", "k8s.ready_replicas", "k8s.available_replicas"),
+        preflight_checks=_K8S_RESUME_PREFLIGHT,
         verify_gates=_K8S_VERIFY,
         risk_level_expectation="L2",
     ),

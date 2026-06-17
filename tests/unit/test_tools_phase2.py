@@ -453,6 +453,28 @@ def test_k8s_tool_refuses_write_operation() -> None:
     assert "read-only" in (result.error_message or "")
 
 
+def test_k8s_tool_uses_backend_namespace_when_query_omits_it() -> None:
+    captured: dict[str, str] = {}
+
+    class _Backend:
+        name = "live"
+        namespace = "payments"
+
+        def fetch(self, query: K8sQuery) -> dict[str, object]:
+            captured["namespace"] = query.namespace
+            return {
+                "operation": query.operation,
+                "payload": {"namespace": query.namespace},
+            }
+
+    tool = K8sDiagnosticsTool(backend=_Backend())
+    result = tool.run(K8sQuery(service="checkout", operation="events"))
+
+    assert result.status == "succeeded"
+    assert captured["namespace"] == "payments"
+    assert result.data["payload"]["namespace"] == "payments"
+
+
 def test_k8s_tool_degrades_on_bad_fixture(tmp_path: object) -> None:
     bad = f"{tmp_path}/missing.json"  # type: ignore[str-bytes-safe]
     tool = K8sDiagnosticsTool(fixture_path=bad)
@@ -664,6 +686,114 @@ def test_live_k8s_backend_falls_back_to_kube_config(monkeypatch) -> None:
     )
     assert out["operation"] == "events"
     assert calls == ["incluster", "kubeconfig"]
+
+
+def test_live_k8s_backend_get_deployment_includes_paused(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _AppsV1Api:
+        def read_namespaced_deployment(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ):
+            return types.SimpleNamespace(
+                metadata=types.SimpleNamespace(
+                    annotations={"deployment.kubernetes.io/revision": "8"}
+                ),
+                spec=types.SimpleNamespace(
+                    replicas=3,
+                    paused=True,
+                    template=types.SimpleNamespace(
+                        spec=types.SimpleNamespace(
+                            containers=[types.SimpleNamespace(image="checkout:v2")]
+                        )
+                    ),
+                ),
+                status=types.SimpleNamespace(
+                    ready_replicas=2,
+                    available_replicas=2,
+                    conditions=[types.SimpleNamespace(type="Progressing", status="True")],
+                ),
+            )
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: object(),
+        AppsV1Api=lambda: _AppsV1Api(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="get_deployment")
+    )
+
+    assert out["operation"] == "get_deployment"
+    assert out["payload"]["namespace"] == "payments"
+    assert out["payload"]["replicas"] == 3
+    assert out["payload"]["paused"] is True
+    assert out["payload"]["revision"] == "8"
+    assert out["payload"]["image"] == "checkout:v2"
+
+
+def test_live_k8s_backend_get_statefulset_maps_status(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _AppsV1Api:
+        def read_namespaced_stateful_set(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ):
+            return types.SimpleNamespace(
+                spec=types.SimpleNamespace(
+                    replicas=3,
+                    template=types.SimpleNamespace(
+                        spec=types.SimpleNamespace(
+                            containers=[types.SimpleNamespace(image="postgres:16")]
+                        )
+                    ),
+                ),
+                status=types.SimpleNamespace(
+                    ready_replicas=3,
+                    current_replicas=3,
+                    updated_replicas=3,
+                    current_revision="postgres-7",
+                    update_revision="postgres-8",
+                    conditions=[types.SimpleNamespace(type="Ready", status="True")],
+                ),
+            )
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: object(),
+        AppsV1Api=lambda: _AppsV1Api(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="data").fetch(
+        K8sQuery(service="postgres", operation="get_statefulset")
+    )
+
+    assert out["operation"] == "get_statefulset"
+    assert out["payload"]["kind"] == "StatefulSet"
+    assert out["payload"]["namespace"] == "data"
+    assert out["payload"]["replicas"] == 3
+    assert out["payload"]["ready_replicas"] == 3
+    assert out["payload"]["updated_replicas"] == 3
+    assert out["payload"]["current_revision"] == "postgres-7"
+    assert out["payload"]["update_revision"] == "postgres-8"
+    assert out["payload"]["image"] == "postgres:16"
 
 
 # --- 2.2/2.3 cross-validation participation ---

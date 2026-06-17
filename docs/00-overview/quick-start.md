@@ -182,7 +182,7 @@ npm run test:e2e
 | `API_KEY_AUTH_ENABLED` | Compose 默认 `false` |
 | `M9_EXTENSIONS_ENABLED` | `false` |
 
-不要为了本地 demo 开启 `EXECUTOR_BACKEND=live`。live executor 是显式 operator opt-in，只允许 restart/pause/scale/rollback 受控 Kubernetes mutation，并且仍要经过 guardrail 和审批。
+不要为了本地 demo 开启 `EXECUTOR_BACKEND=live`。live executor 是显式 operator opt-in，只允许 restart/pause/resume/scale/rollback 受控 Kubernetes mutation，并且仍要经过 guardrail 和审批。
 
 ## 故障排查
 

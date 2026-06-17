@@ -116,7 +116,11 @@ _FIXTURE_RESULTS: dict[str, ExecutionResult] = {
     "restart_service": ExecutionResult(
         status="succeeded", message="mock service restart completed"
     ),
+    "restart_statefulset": ExecutionResult(
+        status="succeeded", message="mock statefulset restart completed"
+    ),
     "pause_rollout": ExecutionResult(status="succeeded", message="mock rollout pause completed"),
+    "resume_rollout": ExecutionResult(status="succeeded", message="mock rollout resume completed"),
     "scale_deployment": ExecutionResult(status="succeeded", message="mock scaling completed"),
     "rollback_release": ExecutionResult(status="succeeded", message="mock rollback completed"),
     "enable_rate_limit": ExecutionResult(status="succeeded", message="mock rate limit enabled"),
@@ -326,6 +330,36 @@ def _live_restart_pod(
     )
 
 
+def _live_restart_statefulset(
+    atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
+) -> ExecutionResult:
+    """Trigger a StatefulSet rolling restart by patching its pod template."""
+    _ensure_k8s_client()
+    from kubernetes import client  # type: ignore[import-untyped]
+
+    body = {
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "kubectl.kubernetes.io/restartedAt": _now_iso(),
+                    }
+                }
+            }
+        }
+    }
+    client.AppsV1Api().patch_namespaced_stateful_set(
+        name=target,
+        namespace=ns,
+        body=body,
+        _request_timeout=timeout,
+    )
+    return ExecutionResult(
+        status="succeeded",
+        message=f"restart triggered for statefulset/{target} in {ns}",
+    )
+
+
 def _live_scale_deployment(
     atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
 ) -> ExecutionResult:
@@ -373,6 +407,27 @@ def _live_pause_rollout(
         status="succeeded",
         message=f"paused rollout for deployment/{target} in {ns}",
         details={"paused": True},
+    )
+
+
+def _live_resume_rollout(
+    atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
+) -> ExecutionResult:
+    """Resume a Deployment rollout by setting spec.paused=false."""
+    _ensure_k8s_client()
+    from kubernetes import client  # type: ignore[import-untyped]
+
+    body = {"spec": {"paused": False}}
+    client.AppsV1Api().patch_namespaced_deployment(
+        name=target,
+        namespace=ns,
+        body=body,
+        _request_timeout=timeout,
+    )
+    return ExecutionResult(
+        status="succeeded",
+        message=f"resumed rollout for deployment/{target} in {ns}",
+        details={"paused": False},
     )
 
 
@@ -430,8 +485,10 @@ def _live_not_implemented(
 
 _LIVE_HANDLERS: dict[str, _LiveHandler] = {
     "restart_pod": _live_restart_pod,
+    "restart_statefulset": _live_restart_statefulset,
     "scale_deployment": _live_scale_deployment,
     "pause_rollout": _live_pause_rollout,
+    "resume_rollout": _live_resume_rollout,
     "rollback_release": _live_rollback_release,
     "scale_back": _live_scale_back,
     "restart_service": _live_restart_service,
@@ -448,6 +505,7 @@ _LIVE_ROLLBACK_HANDLERS: dict[str, _LiveHandler] = {
     "scale_deployment": _live_scale_back,
     "revert_config": _live_not_implemented,
     "restart_pod": _live_not_implemented,
+    "restart_statefulset": _live_not_implemented,
     "restart_service": _live_not_implemented,
 }
 

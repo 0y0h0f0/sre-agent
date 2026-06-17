@@ -1,8 +1,9 @@
 """Kubernetes read-only diagnosis tool (roadmap Phase 2.2).
 
-MVP scope is read-only: describe pod, logs, events, rollout status. The fixture
-backend keeps tests deterministic and local dev offline; the live backend uses
-the kubernetes client against an explicitly configured cluster.
+MVP scope is read-only: describe pod, logs, events, rollout status, and
+Deployment/StatefulSet snapshots. The fixture backend keeps tests deterministic
+and local dev offline; the live backend uses the kubernetes client against an
+explicitly configured cluster.
 
 Hard boundary (``00-overview/scope.md``): this tool never performs production
 writes. Write-class remediations (cordon/restart/scale/rollout-undo) are only
@@ -25,14 +26,14 @@ from packages.tools.base import ToolResult, ToolStatus, compact_summary, elapsed
 # the read-only check in K8sDiagnosticsTool.run is the single, testable
 # enforcement point — a write-class operation reaches the tool and is refused.
 _READ_ONLY_OPERATIONS: frozenset[str] = frozenset(
-    {"describe_pod", "logs", "events", "rollout_status", "get_deployment"}
+    {"describe_pod", "logs", "events", "rollout_status", "get_deployment", "get_statefulset"}
 )
 
 
 class K8sQuery(BaseModel):
     service: str = Field(min_length=1)
     operation: str = "describe_pod"
-    namespace: str = "default"
+    namespace: str = ""
     pod: str | None = None
 
     @field_validator("service", "namespace", "operation")
@@ -119,6 +120,7 @@ class LiveK8sBackend:
                     "name": query.service,
                     "namespace": ns,
                     "replicas": spec.replicas if spec else None,
+                    "paused": bool(getattr(spec, "paused", False)) if spec else False,
                     "revision": deploy.metadata.annotations.get(
                         "deployment.kubernetes.io/revision"
                     ) if deploy.metadata and deploy.metadata.annotations else None,
@@ -139,6 +141,45 @@ class LiveK8sBackend:
                 return {"operation": "get_deployment", "payload": payload}
             except Exception:
                 return {"operation": "get_deployment", "payload": {"error": "not_found"}}
+        if query.operation == "get_statefulset":  # pragma: no cover
+            apps = client.AppsV1Api()
+            try:
+                statefulset = apps.read_namespaced_stateful_set(
+                    query.service, ns, _request_timeout=timeout
+                )
+                spec: Any = statefulset.spec or {}
+                status: Any = statefulset.status or {}
+                payload = {
+                    "kind": "StatefulSet",
+                    "name": query.service,
+                    "namespace": ns,
+                    "replicas": spec.replicas if spec else None,
+                    "image": (
+                        spec.template.spec.containers[0].image
+                        if spec and spec.template
+                        and spec.template.spec
+                        and spec.template.spec.containers
+                        else None
+                    ),
+                    "ready_replicas": getattr(status, "ready_replicas", None) if status else None,
+                    "current_replicas": getattr(status, "current_replicas", None)
+                    if status
+                    else None,
+                    "updated_replicas": getattr(status, "updated_replicas", None)
+                    if status
+                    else None,
+                    "current_revision": getattr(status, "current_revision", None)
+                    if status
+                    else None,
+                    "update_revision": getattr(status, "update_revision", None) if status else None,
+                    "conditions": [
+                        {"type": c.type, "status": c.status}
+                        for c in (status.conditions or [])
+                    ] if status else [],
+                }
+                return {"operation": "get_statefulset", "payload": payload}
+            except Exception:
+                return {"operation": "get_statefulset", "payload": {"error": "not_found"}}
         return {"operation": query.operation, "payload": {}}  # pragma: no cover
 
 
@@ -160,6 +201,12 @@ class K8sDiagnosticsTool:
 
     def run(self, query: BaseModel) -> ToolResult:
         k8s_query = K8sQuery.model_validate(query)
+        effective_namespace = (
+            k8s_query.namespace
+            or str(getattr(self.backend, "namespace", "") or "")
+            or "default"
+        )
+        k8s_query = k8s_query.model_copy(update={"namespace": effective_namespace})
         started_at = start_timer()
         if k8s_query.operation not in _READ_ONLY_OPERATIONS:
             return ToolResult(

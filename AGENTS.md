@@ -63,13 +63,15 @@ Do not replace these with OpenAI Agents SDK, Dramatiq, Elasticsearch, Next.js, S
 - The default executor is `fixture`; tests, local demo, and CI must keep using fixture/mock execution.
 - `EXECUTOR_BACKEND=live` is an explicit operator opt-in. In that mode, the current live executor may perform only these Kubernetes mutations after guardrails and approval:
   - rolling restart via Deployment patch for `restart_pod` / `restart_service`
+  - rolling restart via StatefulSet patch for `restart_statefulset`
   - rollout pause via Deployment patch for `pause_rollout`
+  - rollout resume via Deployment patch for `resume_rollout`
   - Deployment scale patch for `scale_deployment` / `scale_back`
   - Deployment rollback subresource call for `rollback_release`
 - Do not perform real cloud resource write operations.
 - Do not delete data, modify application databases, truncate tables, or flush real caches.
 - Live database diagnostics must remain read-only and limited to predefined SELECT queries.
-- Live Kubernetes diagnostics must remain read-only and limited to describe/logs/events/rollout status/get deployment.
+- Live Kubernetes diagnostics must remain read-only and limited to describe/logs/events/rollout status/get deployment/get statefulset.
 - L2 and L3 actions require human approval.
 - L3 approval requires explicit second confirmation fields:
   - `risk_ack=true`
@@ -357,7 +359,7 @@ Tools:
 - `RunbookSearchTool`: RAG wrapper.
 - Executor backends:
   - `FixtureExecutorBackend`: default for tests, local demo, and CI.
-  - `LiveK8sExecutorBackend`: opt-in via `EXECUTOR_BACKEND=live`; limited to restart/pause/scale/rollback Kubernetes mutations after guardrails and approval.
+  - `LiveK8sExecutorBackend`: opt-in via `EXECUTOR_BACKEND=live`; limited to restart/pause/resume/scale/rollback Kubernetes mutations after guardrails and approval.
 
 Tool cache rules:
 

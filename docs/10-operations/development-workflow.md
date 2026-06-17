@@ -173,7 +173,7 @@ alembic upgrade head
 - `POST /api/alerts` 只创建 incident/run 并入队 Celery，不内联跑 LangGraph。
 - CI 和默认本地 demo 使用 FakeLLM。
 - 默认 executor 是 `fixture`。
-- `EXECUTOR_BACKEND=live` 是显式选择加入，只允许 restart/pause/scale/rollback 受控 K8s mutation。
+- `EXECUTOR_BACKEND=live` 是显式选择加入，只允许 restart/pause/resume/scale/rollback 受控 K8s mutation。
 - live K8s diagnostics 和 live DB diagnostics 均只读。
 - L2/L3 需要审批，L3 需要二次确认，L4 直接拒绝。
 - M9 子能力受 `M9_EXTENSIONS_ENABLED` 和独立开关共同控制；生产默认关闭。

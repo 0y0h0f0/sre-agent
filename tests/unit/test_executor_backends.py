@@ -13,6 +13,8 @@ from packages.tools.executor_backends import (
     ExecutionResult,
     LiveK8sExecutorBackend,
     _live_pause_rollout,
+    _live_restart_statefulset,
+    _live_resume_rollout,
 )
 
 
@@ -97,6 +99,70 @@ def test_live_pause_rollout_patches_only_paused_true(monkeypatch) -> None:
         "name": "checkout",
         "namespace": "payments",
         "body": {"spec": {"paused": True}},
+        "timeout": 12.5,
+    }
+
+
+def test_live_resume_rollout_patches_only_paused_false(monkeypatch) -> None:
+    captured = {}
+
+    class AppsV1Api:
+        def patch_namespaced_deployment(self, *, name, namespace, body, _request_timeout):
+            captured["name"] = name
+            captured["namespace"] = namespace
+            captured["body"] = body
+            captured["timeout"] = _request_timeout
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(AppsV1Api=lambda: AppsV1Api())  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+    monkeypatch.setattr("packages.tools.executor_backends._ensure_k8s_client", lambda: None)
+
+    result = _live_resume_rollout("resume_rollout", "checkout", {}, "payments", 12.5)
+
+    assert result.status == "succeeded"
+    assert result.details == {"paused": False}
+    assert captured == {
+        "name": "checkout",
+        "namespace": "payments",
+        "body": {"spec": {"paused": False}},
+        "timeout": 12.5,
+    }
+
+
+def test_live_restart_statefulset_patches_only_template_annotation(monkeypatch) -> None:
+    captured = {}
+
+    class AppsV1Api:
+        def patch_namespaced_stateful_set(self, *, name, namespace, body, _request_timeout):
+            captured["name"] = name
+            captured["namespace"] = namespace
+            captured["body"] = body
+            captured["timeout"] = _request_timeout
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(AppsV1Api=lambda: AppsV1Api())  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+    monkeypatch.setattr("packages.tools.executor_backends._ensure_k8s_client", lambda: None)
+    monkeypatch.setattr("packages.tools.executor_backends._now_iso", lambda: "2026-06-17T00:00:00Z")
+
+    result = _live_restart_statefulset("restart_statefulset", "postgres", {}, "data", 12.5)
+
+    assert result.status == "succeeded"
+    assert captured == {
+        "name": "postgres",
+        "namespace": "data",
+        "body": {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            "kubectl.kubernetes.io/restartedAt": "2026-06-17T00:00:00Z"
+                        }
+                    }
+                }
+            }
+        },
         "timeout": 12.5,
     }
 

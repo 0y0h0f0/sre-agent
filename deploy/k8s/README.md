@@ -157,7 +157,11 @@ kubectl logs -n sre-agent deployment/worker --tail=20
 # 检查 base RBAC 权限：只读应允许，写权限应拒绝
 kubectl auth can-i get pods --as=system:serviceaccount:sre-agent:sre-agent
 kubectl auth can-i list deployments --as=system:serviceaccount:sre-agent:sre-agent
+kubectl auth can-i get statefulsets --as=system:serviceaccount:sre-agent:sre-agent
+# → yes
+
 kubectl auth can-i patch deployments --as=system:serviceaccount:sre-agent:sre-agent
+kubectl auth can-i patch statefulsets --as=system:serviceaccount:sre-agent:sre-agent
 # → no
 
 # 创建第一个 API Key（用于后续操作）
@@ -206,7 +210,7 @@ resources:
 
 ## 可选：启用 Live Executor
 
-如果需要 Agent 在审批后执行真实的 K8s 操作（重启 Pod、扩缩容、回滚），这是单独的高风险 opt-in。除了修改 ConfigMap，还必须在目标 namespace 创建独立、namespace-scoped 的写权限 Role/RoleBinding；base RBAC 不包含任何写权限。
+如果需要 Agent 在审批后执行真实的 K8s 操作（Deployment/StatefulSet 重启、rollout pause/resume、Deployment 扩缩容/回滚），这是单独的高风险 opt-in。除了修改 ConfigMap，还必须在目标 namespace 创建独立、namespace-scoped 的写权限 Role/RoleBinding；base RBAC 不包含任何写权限。
 
 ```yaml
 EXECUTOR_BACKEND: "live"
@@ -224,6 +228,9 @@ metadata:
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
     verbs: ["get", "patch"]
   - apiGroups: ["apps"]
     resources: ["deployments/scale"]
@@ -247,7 +254,7 @@ subjects:
     namespace: sre-agent
 ```
 
-> **注意：** Live executor 仍只允许现有 restart/scale/rollback Kubernetes mutation。L2 操作需审批，L3 操作需审批 + 二次确认；不要授予 cluster-wide 写权限。
+> **注意：** Live executor 仍只允许现有 restart/pause/resume/scale/rollback Kubernetes mutation。StatefulSet 仅允许通过 pod template annotation 触发滚动重启，不允许 StatefulSet scale、PVC/storage 修改或任意 patch。L2 操作需审批，L3 操作需审批 + 二次确认；不要授予 cluster-wide 写权限。
 
 ## 可选：在集群已有可观测性时对接
 

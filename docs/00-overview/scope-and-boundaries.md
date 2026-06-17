@@ -37,7 +37,7 @@
 | Logs | Loki 查询或 fixture | Loki read API | 只读 |
 | Traces | fixture | Jaeger/Tempo read API | 只读 |
 | Deployment | fixture | GitHub/Argo CD read adapter | 只读，不执行部署写入 |
-| K8s diagnostics | fixture | describe/logs/events/rollout/get deployment | 只读 |
+| K8s diagnostics | fixture | describe/logs/events/rollout/get deployment/get statefulset | 只读 |
 | DB diagnostics | fixture | 预定义 SELECT + read-only transaction + timeout | 只读，不修改应用数据库 |
 | Executor | fixture | `LiveK8sExecutorBackend` | 仅允许已列出的 K8s mutation |
 | LLM | FakeLLM/disabled | 手动启用 provider | 不授予执行权限；M9 只产出待审草稿 |
@@ -49,7 +49,9 @@
 只有 `EXECUTOR_BACKEND=live` 且动作通过 guardrail、审批和二次确认要求后，才允许 live executor 执行以下 Kubernetes mutation：
 
 - `restart_pod` / `restart_service`：bounded irreversible rolling restart，通过 patch Deployment pod template 触发；不提供 restore/undo 保证。
-- `pause_rollout`：bounded irreversible rollout pause，通过 patch Deployment `spec.paused=true` 暂停 rollout；不提供自动 resume/undo 保证。
+- `restart_statefulset`：bounded irreversible rolling restart，通过 patch StatefulSet pod template 触发；要求执行前 snapshot 显示目标是 StatefulSet。
+- `pause_rollout`：bounded irreversible rollout pause，通过 patch Deployment `spec.paused=true` 暂停 rollout；要求执行前 snapshot 显示 Deployment 尚未 paused。
+- `resume_rollout`：bounded irreversible rollout resume，通过 patch Deployment `spec.paused=false` 恢复 rollout；要求执行前 snapshot 显示 Deployment 已 paused。
 - `scale_deployment` / `scale_back`：通过 Deployment scale patch 调整副本数。
 - `rollback_release`：调用 Deployment rollback subresource；`rollback_deployment` 是兼容别名，会规范化为同一操作。
 
@@ -74,7 +76,7 @@
 |------|------|------|
 | L0 | `query_metrics`、`query_logs`、`query_traces`、`query_git` | 只读，自动执行 |
 | L1 | `create_ticket`、`generate_report`、`warmup_cache`、`adjust_connection_pool` | 低风险，自动执行 |
-| L2 | `restart_pod`、`scale_deployment`、`restart_service`、`pause_rollout`、`increase_memory_limit`、`scale_back`、`revert_config` | 需要人工审批 |
+| L2 | `restart_pod`、`scale_deployment`、`restart_service`、`restart_statefulset`、`pause_rollout`、`resume_rollout`、`increase_memory_limit`、`scale_back`、`revert_config` | 需要人工审批 |
 | L3 | `enable_rate_limit`、`raise_rate_limit`、`rollback_release`、`rollback_deployment`、`enable_circuit_breaker`、`switch_dns_resolver`、`failover`、`cancel_deployment` | 需要审批和二次确认 |
 | L4 | `delete_data`、`truncate_table`、`flush_cache`、`modify_database` | 直接拒绝，永不执行 |
 

@@ -133,7 +133,7 @@ This glossary defines terms used across the SRE Incident Response Agent document
 |------|---------|
 | Safe-by-default | Default local/demo/CI posture uses FakeLLM, fixture executor, fixture diagnostics, and no real external mutation. |
 | Read-only diagnostics | Live K8s/DB diagnostic modes may read only predefined safe data and must not mutate external systems. |
-| Live executor | Explicit opt-in executor that can perform only narrow approved K8s restart/pause/scale/rollback mutations. |
+| Live executor | Explicit opt-in executor that can perform only narrow approved K8s restart/pause/resume/scale/rollback mutations. |
 | Secret reference | A pointer such as `env:VAR_NAME` used instead of storing raw secret values. |
 | Redaction | Deterministic removal of tokens, passwords, private keys, internal URLs, private IPs, and similar sensitive strings. |
 | SSRF protection | Backend URL validation that blocks unsafe schemes, metadata endpoints, and production localhost/private IPs unless allowlisted. |

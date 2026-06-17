@@ -69,7 +69,9 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
         k8s_action_types = {
             "restart_pod",
             "restart_service",
+            "restart_statefulset",
             "pause_rollout",
+            "resume_rollout",
             "scale_deployment",
             "rollback_release",
             "rollback_deployment",
@@ -82,10 +84,11 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
             namespace = deps.settings.executor_k8s_namespace or "default"
             try:
                 for target in ordered_targets:
+                    operation = _k8s_snapshot_operation(k8s_actions, target)
                     result = deps.k8s_tool.run(
                         K8sQuery(
                             service=target,
-                            operation="get_deployment",
+                            operation=operation,
                             namespace=namespace,
                         )
                     )
@@ -165,6 +168,17 @@ def _k8s_snapshot_targets(
         targets.append(target)
         seen.add(target)
     return targets
+
+
+def _k8s_snapshot_operation(actions: list[dict[str, Any]], target: str) -> str:
+    for action in actions:
+        action_target = str(action.get("target") or target)
+        if action_target != target:
+            continue
+        if str(action.get("type", "")).lower() == "restart_statefulset":
+            return "get_statefulset"
+        return "get_deployment"
+    return "get_deployment"
 
 
 def _usable_snapshot(snapshot: object) -> bool:

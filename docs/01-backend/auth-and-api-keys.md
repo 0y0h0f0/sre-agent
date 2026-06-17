@@ -20,6 +20,12 @@
 
 路径匹配是规范化后的边界感知前缀匹配。因此 `/docs/oauth2-redirect` 会被 `/docs` 覆盖。`/redoc` 当前不在默认开放路径中。
 
+下图概括 HTTP API key 中间件、scope dependency、bootstrap seed 限制和 WebSocket ticket 的关系。
+
+<p>
+  <img src="assets/api-key-auth-flow.png" alt="API Key 鉴权与 WebSocket Ticket" width="900" />
+</p>
+
 ## HTTP 认证
 
 受保护 HTTP endpoint 需要：

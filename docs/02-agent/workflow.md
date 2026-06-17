@@ -23,7 +23,9 @@ Agent 工作流由 `packages/agent/graph.py` 构建，是一个 18 节点 LangGr
 
 下图展示 Agent 的主执行路径，以及三个受预算限制的循环：缺失证据补采、审批拒绝后的重规划、验证未恢复后的重规划。
 
-![Agent 工作流流程图](assets/agent-workflow.png)
+<p>
+  <img src="assets/agent-workflow.png" alt="Agent 工作流流程图" width="900" />
+</p>
 
 ```text
 parse_alert

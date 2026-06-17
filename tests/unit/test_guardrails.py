@@ -29,6 +29,7 @@ _RISK_MATRIX = [
     ("restart_pod", "L2", True, True),
     ("scale_deployment", "L2", True, True),
     ("restart_service", "L2", True, True),
+    ("pause_rollout", "L2", True, True),
     ("increase_memory_limit", "L2", True, True),
     # L3: approval + secondary confirmation
     ("enable_rate_limit", "L3", True, True),

@@ -17,6 +17,12 @@ There are two related configuration layers:
 env > active override > profile > published EffectiveConfigVersion > safe default
 ```
 
+The diagram below separates application `Settings` loading from effective backend config merging and the worker read boundary.
+
+<p>
+  <img src="assets/config-precedence-flow.png" alt="配置来源与合并优先级" width="900" />
+</p>
+
 Important rules:
 
 - Explicit environment variables always win.
@@ -107,6 +113,7 @@ Current backend connectivity is a single-environment model: each Agent instance 
 `EXECUTOR_BACKEND=live` may perform only the existing guarded Kubernetes mutations after guardrails and approval:
 
 - rolling restart for `restart_pod` / `restart_service`,
+- rollout pause patch for `pause_rollout`,
 - deployment scale patch for `scale_deployment` / `scale_back`,
 - deployment rollback subresource call for `rollback_release` (`rollback_deployment` is normalized to this same operation).
 
@@ -328,4 +335,4 @@ DB_DIAGNOSTICS_BACKEND=live
 DB_DIAGNOSTICS_URL=<read-only database URL>
 ```
 
-If enabling the live executor, treat it as a separate high-risk rollout and keep it limited to the supported K8s restart/scale/rollback mutations.
+If enabling the live executor, treat it as a separate high-risk rollout and keep it limited to the supported K8s restart/pause/scale/rollback mutations.

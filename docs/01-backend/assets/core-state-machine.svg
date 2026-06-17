@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1100" viewBox="0 0 1800 1100" role="img" aria-labelledby="title desc">
+  <title id="title">核心对象状态机</title>
+  <desc id="desc">Incident、AgentRun、Action、Approval、Report 以及配置和 Runbook 草稿状态之间的关键转换。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}
+      .subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}
+      .lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}
+      .state{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:9}
+      .active{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}
+      .wait{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}
+      .done{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}
+      .bad{fill:#fef2f2;stroke:#dc2626;stroke-width:3;rx:9}
+      .meta{fill:#f8fafc;stroke:#64748b;stroke-width:3;rx:9}
+      .label{font:700 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}
+      .arrow-green{stroke:#15803d;stroke-width:3.5;fill:none;marker-end:url(#arrow-green)}
+      .arrow-red{stroke:#b91c1c;stroke-width:3.5;fill:none;marker-end:url(#arrow-red)}
+      .dash{stroke-dasharray:10 8}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1100"/>
+  <text class="title" x="900" y="66">核心对象状态机</text>
+  <text class="subtitle" x="900" y="105">业务状态服务于去重、恢复、审批和展示；LangGraph checkpoint 仍是恢复来源</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="170"/>
+  <text class="lane-title" x="110" y="195">Incident</text>
+  <rect class="state" x="170" y="225" width="170" height="64"/><text class="label" x="255" y="257">open</text>
+  <rect class="active" x="450" y="225" width="190" height="64"/><text class="label" x="545" y="257">diagnosing</text>
+  <rect class="wait" x="750" y="225" width="230" height="64"/><text class="label" x="865" y="257">waiting_approval</text>
+  <rect class="done" x="1090" y="225" width="210" height="64"/><text class="label" x="1195" y="257">mitigated</text>
+  <rect class="done" x="1410" y="225" width="170" height="64"/><text class="label" x="1495" y="257">resolved</text>
+  <rect class="bad" x="1090" y="155" width="210" height="54"/><text class="label" x="1195" y="182">failed</text>
+  <path class="arrow" d="M340 257H450"/>
+  <path class="arrow" d="M640 257H750"/>
+  <path class="arrow-green" d="M980 257H1090"/>
+  <path class="arrow-green" d="M1300 257H1410"/>
+  <path class="arrow-red" d="M640 238C790 175 940 168 1090 182"/>
+
+  <rect class="lane" x="70" y="350" width="1660" height="170"/>
+  <text class="lane-title" x="110" y="400">AgentRun</text>
+  <rect class="state" x="145" y="430" width="160" height="64"/><text class="label" x="225" y="462">queued</text>
+  <rect class="active" x="405" y="430" width="170" height="64"/><text class="label" x="490" y="462">running</text>
+  <rect class="wait" x="675" y="430" width="230" height="64"/><text class="label" x="790" y="462">waiting_approval</text>
+  <rect class="active" x="1005" y="430" width="170" height="64"/><text class="label" x="1090" y="462">running</text>
+  <rect class="done" x="1275" y="430" width="190" height="64"/><text class="label" x="1370" y="462">succeeded</text>
+  <rect class="bad" x="1535" y="390" width="140" height="54"/><text class="label" x="1605" y="417">failed</text>
+  <rect class="bad" x="1535" y="465" width="140" height="54"/><text class="label" x="1605" y="492">cancelled</text>
+  <path class="arrow" d="M305 462H405"/>
+  <path class="arrow" d="M575 462H675"/>
+  <path class="arrow-green" d="M905 462H1005"/>
+  <path class="arrow-green" d="M1175 462H1275"/>
+  <path class="arrow-red" d="M1175 445C1300 400 1420 400 1535 417"/>
+  <path class="arrow-red" d="M1175 480C1300 520 1420 510 1535 492"/>
+
+  <rect class="lane" x="70" y="555" width="1660" height="190"/>
+  <text class="lane-title" x="110" y="605">Action 与 Approval</text>
+  <rect class="meta" x="385" y="575" width="995" height="48"/>
+  <text class="small" x="883" y="599">Approval status: waiting -> approved / rejected / expired</text>
+  <rect class="state" x="135" y="655" width="170" height="64"/><text class="label" x="220" y="687">proposed</text>
+  <rect class="wait" x="405" y="655" width="230" height="64"/><text class="label" x="520" y="687">waiting_approval</text>
+  <rect class="done" x="735" y="655" width="170" height="64"/><text class="label" x="820" y="687">approved</text>
+  <rect class="active" x="1005" y="655" width="170" height="64"/><text class="label" x="1090" y="687">executing</text>
+  <rect class="done" x="1275" y="655" width="170" height="64"/><text class="label" x="1360" y="687">succeeded</text>
+  <rect class="bad" x="1495" y="620" width="160" height="54"/><text class="label" x="1575" y="647">blocked</text>
+  <rect class="bad" x="1495" y="692" width="160" height="54"/><text class="label" x="1575" y="719">failed</text>
+  <path class="arrow" d="M305 687H405"/>
+  <path class="arrow-green" d="M635 687H735"/>
+  <path class="arrow-green" d="M905 687H1005"/>
+  <path class="arrow-green" d="M1175 687H1275"/>
+  <path class="arrow-red" d="M305 667C690 610 1115 600 1495 647"/>
+  <path class="arrow-red" d="M1175 710C1290 740 1400 740 1495 719"/>
+
+  <rect class="lane" x="70" y="780" width="1660" height="190"/>
+  <text class="lane-title" x="110" y="830">版本化对象与配置</text>
+  <rect class="meta" x="145" y="865" width="230" height="70"/>
+  <text class="small" x="260" y="890">IncidentReport</text>
+  <text class="small" x="260" y="914">version+1 不覆盖</text>
+  <rect class="state" x="465" y="865" width="170" height="70"/>
+  <text class="small" x="550" y="890">Draft</text>
+  <text class="small" x="550" y="914">pending_review</text>
+  <rect class="done" x="725" y="865" width="170" height="70"/>
+  <text class="small" x="810" y="890">published</text>
+  <text class="small" x="810" y="914">RunbookVersion</text>
+  <rect class="bad" x="985" y="865" width="170" height="70"/>
+  <text class="small" x="1070" y="890">rejected</text>
+  <text class="small" x="1070" y="914">不 ingest</text>
+  <rect class="done" x="1245" y="865" width="185" height="70"/>
+  <text class="small" x="1338" y="890">EffectiveConfig</text>
+  <text class="small" x="1338" y="914">published</text>
+  <rect class="meta" x="1510" y="865" width="170" height="70"/>
+  <text class="small" x="1595" y="890">superseded</text>
+  <text class="small" x="1595" y="914">rolled_back</text>
+  <path class="arrow-green" d="M635 900H725"/>
+  <path class="arrow-red" d="M635 900C720 835 900 835 985 900"/>
+  <path class="arrow" d="M1430 900H1510"/>
+  <text class="note" x="900" y="1020">agent_runs.state 是展示快照；审批恢复必须使用 PostgresSaver checkpoint pointer</text>
+</svg>

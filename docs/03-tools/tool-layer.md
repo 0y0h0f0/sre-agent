@@ -8,6 +8,12 @@
 
 默认本地/CI 路径使用 fixture 或 unavailable backend，避免真实外部写入。只有显式配置的 live/read backend 才会访问真实系统。
 
+下图展示普通诊断工具、缓存、降级和 executor 写入边界之间的关系。新增工具时应保持这些边界不变。
+
+<p>
+  <img src="assets/tool-layer-execution-flow.png" alt="工具层调用边界" width="900" />
+</p>
+
 ## 模块地图（15 个模块）
 
 | 模块 | 职责 |
@@ -165,11 +171,11 @@ class ExecutorBackend(Protocol):
 | Backend | 默认 | 行为 |
 |---------|------|------|
 | `FixtureExecutorBackend` | 是 | 返回确定性 mock result，供测试、本地 demo、CI 使用 |
-| `LiveK8sExecutorBackend` | 否 | `EXECUTOR_BACKEND=live` 显式 opt-in，只支持 restart/scale/rollback 类 Kubernetes mutation |
+| `LiveK8sExecutorBackend` | 否 | `EXECUTOR_BACKEND=live` 显式 opt-in，只支持 restart/pause/scale/rollback 类 Kubernetes mutation |
 
-live executor 当前支持：`restart_pod`、`restart_service`、`scale_deployment`、`scale_back`、`rollback_release`。`rollback_deployment` 是兼容别名，会规范化为 `rollback_release` 并调用同一个 Deployment rollback subresource。其它动作失败关闭。
+live executor 当前支持：`restart_pod`、`restart_service`、`pause_rollout`、`scale_deployment`、`scale_back`、`rollback_release`。`rollback_deployment` 是兼容别名，会规范化为 `rollback_release` 并调用同一个 Deployment rollback subresource。其它动作失败关闭。
 
-Live K8s action capability metadata 会声明执行后必须运行的 verify gates。Restart/scale 类能力至少包含 `k8s_rollout` 和 `metrics_logs`；rollback 类能力还包含 `db_readonly`。Gate 执行由 Agent `verify` 节点完成，不由 executor backend 直接执行。Restart 类动作是 bounded irreversible rolling restart，不提供 restore/undo 保证；executor 只负责执行受控 patch，后续恢复判断由只读 verify gates 和 replan 循环完成。
+Live K8s action capability metadata 会声明执行后必须运行的 verify gates。Restart/pause/scale 类能力至少包含 `k8s_rollout` 和 `metrics_logs`；rollback 类能力还包含 `db_readonly`。Gate 执行由 Agent `verify` 节点完成，不由 executor backend 直接执行。Restart/pause 类动作是 bounded irreversible Deployment patch，不提供 restore/undo 保证；executor 只负责执行受控 patch，后续恢复判断由只读 verify gates 和 replan 循环完成。
 
 ## Worker 中的依赖构造
 

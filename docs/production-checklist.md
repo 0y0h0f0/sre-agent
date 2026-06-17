@@ -24,6 +24,12 @@
 | `LLM_EXTERNAL_PROVIDER_ALLOWED` | 默认 `false` |
 | `TRACE_BACKEND` | `fixture`、`jaeger`、`tempo`、`disabled` 之一；M9 全局关闭不能禁用 M8 Jaeger |
 
+下图把生产默认值、P0/P1/M9 检查、发布记录和回滚验证放在同一条发布门禁链路中。
+
+<p>
+  <img src="assets/production-release-gate-flow.png" alt="生产发布门禁与回滚" width="900" />
+</p>
+
 ## P0 阻塞项
 
 | # | 检查项 | 验证方法 | 通过标准 |
@@ -127,6 +133,7 @@ pytest tests/unit/test_backend_url_safety.py tests/unit/test_production_safety.p
 只有显式 `EXECUTOR_BACKEND=live` 才能启用，并且只允许：
 
 - `restart_pod` / `restart_service`：Deployment patch 触发 rolling restart。
+- `pause_rollout`：Deployment patch 设置 `spec.paused=true`，暂停 rollout。
 - `scale_deployment` / `scale_back`：Deployment scale patch。
 - `rollback_release`：Deployment rollback subresource。
 

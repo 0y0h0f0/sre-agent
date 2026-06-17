@@ -116,6 +116,7 @@ _FIXTURE_RESULTS: dict[str, ExecutionResult] = {
     "restart_service": ExecutionResult(
         status="succeeded", message="mock service restart completed"
     ),
+    "pause_rollout": ExecutionResult(status="succeeded", message="mock rollout pause completed"),
     "scale_deployment": ExecutionResult(status="succeeded", message="mock scaling completed"),
     "rollback_release": ExecutionResult(status="succeeded", message="mock rollback completed"),
     "enable_rate_limit": ExecutionResult(status="succeeded", message="mock rate limit enabled"),
@@ -354,6 +355,27 @@ def _live_scale_deployment(
     )
 
 
+def _live_pause_rollout(
+    atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
+) -> ExecutionResult:
+    """Pause a Deployment rollout by setting spec.paused=true."""
+    _ensure_k8s_client()
+    from kubernetes import client  # type: ignore[import-untyped]
+
+    body = {"spec": {"paused": True}}
+    client.AppsV1Api().patch_namespaced_deployment(
+        name=target,
+        namespace=ns,
+        body=body,
+        _request_timeout=timeout,
+    )
+    return ExecutionResult(
+        status="succeeded",
+        message=f"paused rollout for deployment/{target} in {ns}",
+        details={"paused": True},
+    )
+
+
 def _live_rollback_release(
     atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
 ) -> ExecutionResult:
@@ -409,6 +431,7 @@ def _live_not_implemented(
 _LIVE_HANDLERS: dict[str, _LiveHandler] = {
     "restart_pod": _live_restart_pod,
     "scale_deployment": _live_scale_deployment,
+    "pause_rollout": _live_pause_rollout,
     "rollback_release": _live_rollback_release,
     "scale_back": _live_scale_back,
     "restart_service": _live_restart_service,

@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1050" viewBox="0 0 1800 1050" role="img" aria-labelledby="title desc">
+  <title id="title">Guardrail 与审批恢复流程</title>
+  <desc id="desc">从 Agent 提出动作到确定性风险分类、人工审批、二次确认、快照、执行、验证和重新规划的流程图。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b45309"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}
+      .subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}
+      .lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}
+      .box{fill:#fff;stroke:#2563eb;stroke-width:3;rx:9}
+      .policy{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}
+      .auto{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}
+      .approval{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}
+      .danger{fill:#fef2f2;stroke:#dc2626;stroke-width:3;rx:9}
+      .verify{fill:#eef2ff;stroke:#4f46e5;stroke-width:3;rx:9}
+      .label{font:700 24px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .branch{font:700 19px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155;text-anchor:middle}
+      .arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}
+      .arrow-green{stroke:#15803d;stroke-width:3.5;fill:none;marker-end:url(#arrow-green)}
+      .arrow-amber{stroke:#b45309;stroke-width:3.5;fill:none;marker-end:url(#arrow-amber)}
+      .arrow-red{stroke:#b91c1c;stroke-width:3.5;fill:none;marker-end:url(#arrow-red)}
+      .dash{stroke-dasharray:10 8}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1050"/>
+  <text class="title" x="900" y="66">Guardrail 与审批恢复流程</text>
+  <text class="subtitle" x="900" y="105">模型只提出动作；最终执行权限由确定性策略、审批状态和 executor 边界共同决定</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="210"/>
+  <text class="lane-title" x="110" y="195">风险分类</text>
+  <rect class="box" x="145" y="235" width="230" height="76"/>
+  <text class="small" x="260" y="260">plan_actions</text>
+  <text class="small" x="260" y="286">提出动作</text>
+  <rect class="policy" x="465" y="235" width="265" height="76"/>
+  <text class="small" x="598" y="260">classify_risk_level</text>
+  <text class="small" x="598" y="286">表驱动 + 禁用词</text>
+  <rect class="policy" x="820" y="235" width="265" height="76"/>
+  <text class="small" x="953" y="260">guardrail_check</text>
+  <text class="small" x="953" y="286">写 allowed / approval</text>
+  <rect class="danger" x="1175" y="235" width="265" height="76"/>
+  <text class="small" x="1308" y="260">L4 破坏性动作</text>
+  <text class="small" x="1308" y="286">直接 blocked</text>
+  <rect class="verify" x="1500" y="235" width="160" height="76"/>
+  <text class="small" x="1580" y="260">报告</text>
+  <text class="small" x="1580" y="286">记录原因</text>
+  <path class="arrow" d="M375 273H465"/>
+  <path class="arrow" d="M730 273H820"/>
+  <path class="arrow-red" d="M1085 273H1175"/>
+  <path class="arrow-red" d="M1440 273H1500"/>
+
+  <rect class="lane" x="70" y="395" width="1660" height="250"/>
+  <text class="lane-title" x="110" y="445">可执行路径</text>
+  <rect class="auto" x="140" y="505" width="240" height="78"/>
+  <text class="small" x="260" y="530">L0 / L1</text>
+  <text class="small" x="260" y="556">自动通过</text>
+  <rect class="approval" x="460" y="475" width="260" height="78"/>
+  <text class="small" x="590" y="500">L2</text>
+  <text class="small" x="590" y="526">创建 Approval</text>
+  <rect class="approval" x="460" y="575" width="260" height="78"/>
+  <text class="small" x="590" y="600">L3</text>
+  <text class="small" x="590" y="626">审批 + 二次确认</text>
+  <rect class="approval" x="805" y="525" width="265" height="86"/>
+  <text class="small" x="938" y="550">API approve / reject</text>
+  <text class="small" x="938" y="576">先提交 DB</text>
+  <rect class="approval" x="1155" y="525" width="265" height="86"/>
+  <text class="small" x="1288" y="550">Celery resume</text>
+  <text class="small" x="1288" y="576">同一 checkpoint</text>
+  <rect class="auto" x="1500" y="525" width="170" height="86"/>
+  <text class="small" x="1585" y="550">清除</text>
+  <text class="small" x="1585" y="576">approval 标记</text>
+  <path class="arrow-green" d="M380 544H430V568H805"/>
+  <path class="arrow-amber" d="M720 514H770V552H805"/>
+  <path class="arrow-amber" d="M720 614H770V584H805"/>
+  <path class="arrow-amber" d="M1070 568H1155"/>
+  <path class="arrow-amber" d="M1420 568H1500"/>
+
+  <rect class="lane" x="70" y="685" width="1660" height="245"/>
+  <text class="lane-title" x="110" y="735">执行、验证与回退</text>
+  <rect class="auto" x="145" y="795" width="230" height="78"/>
+  <text class="small" x="260" y="820">take_snapshot</text>
+  <text class="small" x="260" y="846">写执行前状态</text>
+  <rect class="auto" x="465" y="795" width="230" height="78"/>
+  <text class="small" x="580" y="820">execute_action</text>
+  <text class="small" x="580" y="846">fixture / live opt-in</text>
+  <rect class="verify" x="785" y="795" width="230" height="78"/>
+  <text class="small" x="900" y="820">verify gates</text>
+  <text class="small" x="900" y="846">只读检查</text>
+  <rect class="verify" x="1105" y="795" width="230" height="78"/>
+  <text class="small" x="1220" y="820">resolved</text>
+  <text class="small" x="1220" y="846">生成报告</text>
+  <rect class="approval" x="1425" y="795" width="230" height="78"/>
+  <text class="small" x="1540" y="820">degraded / reject</text>
+  <text class="small" x="1540" y="846">回到 plan_actions</text>
+  <path class="arrow-green" d="M375 834H465"/>
+  <path class="arrow-green" d="M695 834H785"/>
+  <path class="arrow-green" d="M1015 834H1105"/>
+  <path class="arrow-amber" d="M1015 862C1170 940 1370 940 1510 873"/>
+  <path class="arrow-amber dash" d="M1425 834C1190 700 610 700 290 795"/>
+  <text class="note" x="900" y="970">L3 必须满足 risk_ack=true、confirm_action_type 和 confirm_target；L4 永不进入审批</text>
+  <path class="arrow-green" d="M1585 611V720C1585 755 260 755 260 795"/>
+</svg>

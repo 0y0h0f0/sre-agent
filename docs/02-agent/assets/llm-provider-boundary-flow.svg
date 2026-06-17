@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1040" viewBox="0 0 1800 1040" role="img" aria-labelledby="title desc">
+  <title id="title">LLM Provider 与提示词安全边界</title>
+  <desc id="desc">Settings 选择 LLM provider，经脱敏、JSON 解析、repair 和 deterministic fallback 后回到 Agent 节点，动作权限仍由 guardrail 决定。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b45309"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}
+      .subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}
+      .lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}
+      .node{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:9}
+      .safe{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}
+      .local{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}
+      .warn{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}
+      .deny{fill:#fef2f2;stroke:#dc2626;stroke-width:3;rx:9}
+      .ok{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}
+      .small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}
+      .arrow-green{stroke:#15803d;stroke-width:3.5;fill:none;marker-end:url(#arrow-green)}
+      .arrow-amber{stroke:#b45309;stroke-width:3.5;fill:none;marker-end:url(#arrow-amber)}
+      .arrow-red{stroke:#b91c1c;stroke-width:3.5;fill:none;marker-end:url(#arrow-red)}
+      .dash{stroke-dasharray:10 8}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1040"/>
+  <text class="title" x="900" y="66">LLM Provider 与提示词安全边界</text>
+  <text class="subtitle" x="900" y="105">真实 provider 只在显式配置时使用；脱敏和 fallback 不改变 guardrail 执行权限</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="225"/>
+  <text class="lane-title" x="110" y="195">Provider 工厂</text>
+  <rect class="node" x="130" y="250" width="220" height="76"/>
+  <text class="small" x="240" y="275">Settings</text>
+  <text class="small" x="240" y="301">LLM_PROVIDER</text>
+  <rect class="safe" x="430" y="250" width="230" height="76"/>
+  <text class="small" x="545" y="275">fake</text>
+  <text class="small" x="545" y="301">确定性 FakeLLM</text>
+  <rect class="safe" x="730" y="250" width="230" height="76"/>
+  <text class="small" x="845" y="275">disabled</text>
+  <text class="small" x="845" y="301">生产安全默认</text>
+  <rect class="local" x="1030" y="250" width="230" height="76"/>
+  <text class="small" x="1145" y="275">vllm</text>
+  <text class="small" x="1145" y="301">自托管 endpoint</text>
+  <rect class="warn" x="1330" y="250" width="250" height="76"/>
+  <text class="small" x="1455" y="275">cloud provider</text>
+  <text class="small" x="1455" y="301">需 explicit allow</text>
+  <path class="arrow-green" d="M350 288H430"/>
+  <path class="arrow-green" d="M350 288C500 218 635 218 730 288"/>
+  <path class="arrow" d="M350 288C650 180 910 190 1030 288"/>
+  <path class="arrow-amber" d="M350 288C780 150 1210 170 1330 288"/>
+
+  <rect class="lane" x="70" y="410" width="1660" height="250"/>
+  <text class="lane-title" x="110" y="460">调用与脱敏</text>
+  <rect class="node" x="135" y="515" width="220" height="78"/>
+  <text class="small" x="245" y="540">Agent 节点</text>
+  <text class="small" x="245" y="566">diagnose / plan</text>
+  <rect class="node" x="440" y="515" width="220" height="78"/>
+  <text class="small" x="550" y="540">Prompt Builder</text>
+  <text class="small" x="550" y="566">证据 ID / schema</text>
+  <rect class="warn" x="745" y="515" width="245" height="78"/>
+  <text class="small" x="868" y="540">Adapter boundary</text>
+  <text class="small" x="868" y="566">cloud 递归脱敏</text>
+  <rect class="local" x="1075" y="515" width="245" height="78"/>
+  <text class="small" x="1198" y="540">Provider.invoke</text>
+  <text class="small" x="1198" y="566">timeout / usage</text>
+  <rect class="ok" x="1405" y="515" width="220" height="78"/>
+  <text class="small" x="1515" y="540">llm_calls</text>
+  <text class="small" x="1515" y="566">安全 metadata</text>
+  <path class="arrow" d="M355 554H440"/>
+  <path class="arrow" d="M660 554H745"/>
+  <path class="arrow-amber" d="M990 554H1075"/>
+  <path class="arrow-green" d="M1320 554H1405"/>
+  <path class="arrow-amber dash" d="M1455 326C1455 405 868 405 868 515"/>
+
+  <rect class="lane" x="70" y="700" width="1660" height="210"/>
+  <text class="lane-title" x="110" y="750">结构化输出与回退</text>
+  <rect class="ok" x="135" y="795" width="220" height="76"/>
+  <text class="small" x="245" y="820">generate_json</text>
+  <text class="small" x="245" y="846">期望 schema</text>
+  <rect class="ok" x="440" y="795" width="220" height="76"/>
+  <text class="small" x="550" y="820">extract_json</text>
+  <text class="small" x="550" y="846">容忍 fence</text>
+  <rect class="ok" x="745" y="795" width="220" height="76"/>
+  <text class="small" x="855" y="820">Pydantic parse</text>
+  <text class="small" x="855" y="846">有效结构</text>
+  <rect class="warn" x="1050" y="795" width="220" height="76"/>
+  <text class="small" x="1160" y="820">repair prompt</text>
+  <text class="small" x="1160" y="846">只返回 JSON</text>
+  <rect class="safe" x="1355" y="795" width="245" height="76"/>
+  <text class="small" x="1478" y="820">rules fallback</text>
+  <text class="small" x="1478" y="846">确定性诊断兜底</text>
+  <path class="arrow-green" d="M355 833H440"/>
+  <path class="arrow-green" d="M660 833H745"/>
+  <path class="arrow-amber" d="M965 833H1050"/>
+  <path class="arrow-amber" d="M1270 833H1355"/>
+  <path class="arrow-green dash" d="M1515 593V685C1515 720 245 720 245 795"/>
+  <text class="note" x="900" y="965">LLM 输出动作建议；执行许可仍由 deterministic guardrail、approval 和 executor backend 决定</text>
+</svg>

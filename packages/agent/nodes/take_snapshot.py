@@ -69,6 +69,7 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
         k8s_action_types = {
             "restart_pod",
             "restart_service",
+            "pause_rollout",
             "scale_deployment",
             "rollback_release",
             "rollback_deployment",

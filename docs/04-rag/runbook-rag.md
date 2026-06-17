@@ -47,6 +47,12 @@ Runbook 搜索主要读写：
 
 FakeEmbeddingProvider 和 BGE-ZH 都输出 512 维向量，匹配当前 `runbook_chunks.embedding`。`Text2VecEmbeddingProvider` 输出 1024 维，使用前需要确认目标存储路径和迁移是否匹配。
 
+下图概括 runbook 从摄取、检索到草稿审查的生命周期。RAG 只提供证据上下文，不改变 remediation 的最终执行权限。
+
+<p>
+  <img src="assets/runbook-rag-lifecycle.png" alt="Runbook RAG 生命周期" width="900" />
+</p>
+
 ## 摄取流程
 
 ```text

@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1050" viewBox="0 0 1800 1050" role="img" aria-labelledby="title desc">
+  <title id="title">应用与共享库依赖方向</title>
+  <desc id="desc">apps/api、apps/worker、apps/web 与 packages/common、db、agent、tools、rag、memory、discovery、evals 的依赖边界图。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/></marker>
+    <style>
+      .bg{fill:#f8fafc}.title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}.subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}.lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}.lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}.app{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:9}.core{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}.pkg{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}.hub{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}.infra{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}.risk{fill:#fff7ed;stroke:#ea580c;stroke-width:3;rx:9}.small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}.tiny{font:400 18px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle;dominant-baseline:central}.note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}.arrow{stroke:#15803d;stroke-width:4;fill:none;marker-end:url(#arrow)}.muted{stroke:#94a3b8;stroke-width:2;fill:none}
+    </style>
+  </defs>
+  <rect class="bg" width="1800" height="1050"/>
+  <text class="title" x="900" y="66">应用与共享库依赖方向</text>
+  <text class="subtitle" x="900" y="105">应用入口编排共享库；底层 common/db 不反向依赖应用层；Agent node 不直接创建外部 client</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="250"/>
+  <text class="lane-title" x="110" y="195">应用入口</text>
+  <rect class="app" x="130" y="230" width="430" height="116"/>
+  <text class="small" x="345" y="262">apps/api</text>
+  <text class="tiny" x="345" y="294">FastAPI router 调 service/repository</text>
+  <text class="tiny" x="345" y="322">创建 incident / run 后入队，不跑 Agent</text>
+  <rect class="app" x="685" y="230" width="430" height="116"/>
+  <text class="small" x="900" y="262">apps/worker</text>
+  <text class="tiny" x="900" y="294">Celery task 构建 AgentDeps</text>
+  <text class="tiny" x="900" y="322">通过 LangGraph runner 诊断和恢复</text>
+  <rect class="app" x="1240" y="230" width="430" height="116"/>
+  <text class="small" x="1455" y="262">apps/web</text>
+  <text class="tiny" x="1455" y="294">React console 只调用 /api</text>
+  <text class="tiny" x="1455" y="322">不直接依赖 Python packages</text>
+
+  <path class="arrow" d="M900 395V433"/>
+
+  <rect class="lane" x="70" y="435" width="1660" height="300"/>
+  <text class="lane-title" x="110" y="485">共享库与注入边界</text>
+  <rect class="core" x="120" y="530" width="260" height="76"/>
+  <text class="small" x="250" y="556">packages/common</text>
+  <text class="tiny" x="250" y="584">settings / errors / ids</text>
+  <rect class="core" x="430" y="530" width="260" height="76"/>
+  <text class="small" x="560" y="556">packages/db</text>
+  <text class="tiny" x="560" y="584">models / repositories</text>
+  <rect class="pkg" x="740" y="530" width="260" height="76"/>
+  <text class="small" x="870" y="556">packages/agent</text>
+  <text class="tiny" x="870" y="584">graph / nodes / guardrail</text>
+  <rect class="hub" x="1050" y="530" width="260" height="76"/>
+  <text class="small" x="1180" y="556">AgentDeps</text>
+  <text class="tiny" x="1180" y="584">注入工具、存储和适配器</text>
+  <rect class="pkg" x="1360" y="530" width="260" height="76"/>
+  <text class="small" x="1490" y="556">packages/tools</text>
+  <text class="tiny" x="1490" y="584">diagnostics / executor</text>
+
+  <rect class="pkg" x="275" y="640" width="260" height="66"/>
+  <text class="small" x="405" y="663">packages/memory</text>
+  <text class="tiny" x="405" y="687">budget / compression</text>
+  <rect class="pkg" x="585" y="640" width="260" height="66"/>
+  <text class="small" x="715" y="663">packages/rag</text>
+  <text class="tiny" x="715" y="687">runbook search</text>
+  <rect class="pkg" x="895" y="640" width="260" height="66"/>
+  <text class="small" x="1025" y="663">packages/discovery</text>
+  <text class="tiny" x="1025" y="687">proposal / config</text>
+  <rect class="pkg" x="1205" y="640" width="260" height="66"/>
+  <text class="small" x="1335" y="663">packages/evals</text>
+  <text class="tiny" x="1335" y="687">runner / datasets</text>
+
+  <path class="muted" d="M380 568H430"/>
+  <path class="arrow" d="M1000 568H1050"/>
+  <path class="arrow" d="M1310 568H1360"/>
+  <text class="note" x="900" y="506">允许方向：apps 编排 packages；agent node 通过 AgentDeps 访问工具、RAG、memory 和 DB</text>
+
+  <path class="arrow" d="M900 735V772"/>
+
+  <rect class="lane" x="70" y="775" width="1660" height="145"/>
+  <text class="lane-title" x="110" y="824">本地基础设施访问</text>
+  <rect class="infra" x="130" y="842" width="250" height="58"/>
+  <text class="small" x="255" y="871">PostgreSQL + pgvector</text>
+  <rect class="infra" x="445" y="842" width="210" height="58"/>
+  <text class="small" x="550" y="871">Redis</text>
+  <rect class="infra" x="720" y="842" width="250" height="58"/>
+  <text class="small" x="845" y="871">Prometheus / Loki</text>
+  <rect class="infra" x="1035" y="842" width="250" height="58"/>
+  <text class="small" x="1160" y="871">Grafana / OTel</text>
+  <rect class="infra" x="1350" y="842" width="210" height="58"/>
+  <text class="small" x="1455" y="871">demo-service</text>
+  <rect class="risk" x="1590" y="842" width="100" height="58"/>
+  <text class="small" x="1640" y="871">Live</text>
+
+  <text class="note" x="900" y="970">写入 remediation 只能经 executor backend，并且必须先经过 guardrail、approval、snapshot 和 verify</text>
+</svg>

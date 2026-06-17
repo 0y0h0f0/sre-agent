@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="940" viewBox="0 0 1800 940" role="img" aria-labelledby="title desc">
+  <title id="title">Eval Harness 执行链路</title>
+  <desc id="desc">Eval suite case 从数据集加载、内存环境构建、Agent 执行到指标和报告输出的流程图。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,1 L11,6 L0,11 Z" fill="#334155"/></marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/></marker>
+    <style>
+      .bg{fill:#f8fafc}.title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}.subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}.lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}.lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}.case{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:9}.env{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}.agent{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}.metric{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}.warn{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}.small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}.note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}.arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}.arrow-green{stroke:#15803d;stroke-width:3.5;fill:none;marker-end:url(#arrow-green)}
+    </style>
+  </defs>
+  <rect class="bg" width="1800" height="940"/>
+  <text class="title" x="900" y="66">Eval Harness 执行链路</text>
+  <text class="subtitle" x="900" y="105">CI smoke 使用 FakeLLM 和 fixture 后端；真实 provider eval 只能手动 opt-in，不能作为稳定门禁</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="205"/>
+  <text class="lane-title" x="110" y="195">Suite 与 Case</text>
+  <rect class="case" x="145" y="245" width="240" height="76"/><text class="small" x="265" y="270">smoke / full suite</text><text class="small" x="265" y="296">加载 JSON case</text>
+  <rect class="case" x="485" y="245" width="240" height="76"/><text class="small" x="605" y="270">EvalCase</text><text class="small" x="605" y="296">alert + fixtures</text>
+  <rect class="case" x="825" y="245" width="240" height="76"/><text class="small" x="945" y="270">expected</text><text class="small" x="945" y="296">root cause / risk</text>
+  <rect class="warn" x="1165" y="245" width="240" height="76"/><text class="small" x="1285" y="270">deterministic</text><text class="small" x="1285" y="296">无随机/无网络</text>
+  <path class="arrow" d="M385 283H485"/><path class="arrow" d="M725 283H825"/><path class="arrow" d="M1065 283H1165"/>
+
+  <rect class="lane" x="70" y="390" width="1660" height="230"/>
+  <text class="lane-title" x="110" y="440">内存运行环境</text>
+  <rect class="env" x="135" y="505" width="245" height="78"/><text class="small" x="258" y="530">SQLite in-memory</text><text class="small" x="258" y="556">metadata create_all</text>
+  <rect class="env" x="470" y="505" width="245" height="78"/><text class="small" x="593" y="530">seed runbooks</text><text class="small" x="593" y="556">demo/runbooks</text>
+  <rect class="agent" x="805" y="505" width="245" height="78"/><text class="small" x="928" y="530">AgentDeps</text><text class="small" x="928" y="556">fixture tools + memory</text>
+  <rect class="agent" x="1140" y="505" width="245" height="78"/><text class="small" x="1263" y="530">InMemorySaver</text><text class="small" x="1263" y="556">eval checkpoint</text>
+  <rect class="agent" x="1475" y="505" width="190" height="78"/><text class="small" x="1570" y="530">AgentRunner</text><text class="small" x="1570" y="556">run/resume</text>
+  <path class="arrow-green" d="M380 544H470"/><path class="arrow-green" d="M715 544H805"/><path class="arrow-green" d="M1050 544H1140"/><path class="arrow-green" d="M1385 544H1475"/>
+
+  <rect class="lane" x="70" y="660" width="1660" height="170"/>
+  <text class="lane-title" x="110" y="710">结果与门禁指标</text>
+  <rect class="metric" x="150" y="735" width="245" height="72"/><text class="small" x="273" y="760">state / report</text><text class="small" x="273" y="784">case result</text>
+  <rect class="metric" x="500" y="735" width="245" height="72"/><text class="small" x="623" y="760">tool/node traces</text><text class="small" x="623" y="784">audit 统计</text>
+  <rect class="metric" x="850" y="735" width="245" height="72"/><text class="small" x="973" y="760">suite metrics</text><text class="small" x="973" y="784">hit rate / JSON valid</text>
+  <rect class="metric" x="1200" y="735" width="245" height="72"/><text class="small" x="1323" y="760">reports/eval-*.json</text><text class="small" x="1323" y="784">Markdown report</text>
+  <path class="arrow-green" d="M1570 583V650C1570 705 273 705 273 735"/><path class="arrow-green" d="M395 771H500"/><path class="arrow-green" d="M745 771H850"/><path class="arrow-green" d="M1095 771H1200"/>
+  <text class="note" x="900" y="880">CI smoke 硬门禁：4 cases、根因命中、证据覆盖、高风险拦截、JSON validity、报告生成均满足预期</text>
+</svg>

@@ -26,6 +26,12 @@
 
 Worker 还会在 `PROMETHEUS_METRICS_ENABLED=true` 且非 eager 模式下启动 Prometheus metrics HTTP server，端口为 `CELERY_METRICS_PORT`。
 
+下图先给出诊断任务的生命周期：从 API 入队到 worker 幂等锁、AgentRunner 执行、审批暂停和恢复。
+
+<p>
+  <img src="assets/celery-task-lifecycle.png" alt="Celery 诊断任务生命周期" width="900" />
+</p>
+
 ## Task 清单
 
 | Task | 定义位置 | 触发方式 | 用途 |

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="980" viewBox="0 0 1800 980" role="img" aria-labelledby="title desc">
+  <title id="title">本地 Demo 运行路径</title>
+  <desc id="desc">Docker Compose 本地演示中 Web、API、PostgreSQL、Redis、Worker、工具后端、demo-service 和 Grafana 的运行关系。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,1 L11,6 L0,11 Z" fill="#334155"/></marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/></marker>
+    <style>
+      .bg{fill:#f8fafc}.title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}.subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}.lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}.lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}.user{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:9}.api{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}.infra{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}.tool{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}.safe{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}.small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}.note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}.arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}.arrow-green{stroke:#15803d;stroke-width:3.5;fill:none;marker-end:url(#arrow-green)}.dash{stroke-dasharray:10 8}
+    </style>
+  </defs>
+  <rect class="bg" width="1800" height="980"/>
+  <text class="title" x="900" y="66">本地 Demo 运行路径</text>
+  <text class="subtitle" x="900" y="105">Compose 默认使用 FakeLLM、fixture executor、fixture 诊断后端；真实写路径默认不启用</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="210"/>
+  <text class="lane-title" x="110" y="195">用户入口</text>
+  <rect class="user" x="135" y="245" width="230" height="72"/><text class="small" x="250" y="270">Browser</text><text class="small" x="250" y="294">React console</text>
+  <rect class="user" x="465" y="245" width="230" height="72"/><text class="small" x="580" y="270">web :5173</text><text class="small" x="580" y="294">Vite proxy /api</text>
+  <rect class="api" x="795" y="245" width="230" height="72"/><text class="small" x="910" y="270">api :8000</text><text class="small" x="910" y="294">FastAPI + routers</text>
+  <rect class="infra" x="1125" y="245" width="230" height="72"/><text class="small" x="1240" y="270">PostgreSQL</text><text class="small" x="1240" y="294">DB + checkpoint</text>
+  <rect class="infra" x="1455" y="245" width="230" height="72"/><text class="small" x="1570" y="270">Redis</text><text class="small" x="1570" y="294">broker/cache/pubsub</text>
+  <path class="arrow" d="M365 281H465"/><path class="arrow" d="M695 281H795"/><path class="arrow" d="M1025 281H1125"/><path class="arrow" d="M1025 298C1160 360 1420 360 1570 317"/>
+
+  <rect class="lane" x="70" y="395" width="1660" height="230"/>
+  <text class="lane-title" x="110" y="445">诊断执行</text>
+  <rect class="api" x="165" y="505" width="260" height="78"/><text class="small" x="295" y="530">POST /api/alerts</text><text class="small" x="295" y="556">incident + run + enqueue</text>
+  <rect class="infra" x="535" y="505" width="230" height="78"/><text class="small" x="650" y="530">Celery broker</text><text class="small" x="650" y="556">Redis db 1</text>
+  <rect class="api" x="875" y="505" width="230" height="78"/><text class="small" x="990" y="530">worker</text><text class="small" x="990" y="556">LangGraph run</text>
+  <rect class="tool" x="1215" y="505" width="260" height="78"/><text class="small" x="1345" y="530">fixture tools</text><text class="small" x="1345" y="556">trace/git/k8s/db</text>
+  <rect class="safe" x="1550" y="505" width="140" height="78"/><text class="small" x="1620" y="530">report</text><text class="small" x="1620" y="556">memory</text>
+  <path class="arrow-green" d="M425 544H535"/><path class="arrow-green" d="M765 544H875"/><path class="arrow-green" d="M1105 544H1215"/><path class="arrow-green" d="M1475 544H1550"/>
+
+  <rect class="lane" x="70" y="665" width="1660" height="180"/>
+  <text class="lane-title" x="110" y="715">观测与演示目标</text>
+  <rect class="tool" x="150" y="745" width="245" height="72"/><text class="small" x="273" y="770">demo-service :8080</text><text class="small" x="273" y="794">fault injection</text>
+  <rect class="tool" x="500" y="745" width="245" height="72"/><text class="small" x="623" y="770">Prometheus :9090</text><text class="small" x="623" y="794">metrics</text>
+  <rect class="tool" x="850" y="745" width="245" height="72"/><text class="small" x="973" y="770">Loki :3100</text><text class="small" x="973" y="794">logs</text>
+  <rect class="tool" x="1200" y="745" width="245" height="72"/><text class="small" x="1323" y="770">Grafana :3000</text><text class="small" x="1323" y="794">dashboard</text>
+  <rect class="tool" x="1550" y="745" width="140" height="72"/><text class="small" x="1620" y="770">Mailpit</text><text class="small" x="1620" y="794">dev profile</text>
+  <path class="arrow-green dash" d="M273 745C450 690 520 690 623 745"/><path class="arrow-green dash" d="M273 745C620 675 840 680 973 745"/><path class="arrow-green dash" d="M623 745C780 700 1150 700 1323 745"/>
+  <text class="note" x="900" y="900">API 和 worker 可水平扩展；beat 必须保持单实例；默认 executor=fixture 不会真实修改 Kubernetes 或云资源</text>
+</svg>

@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1100" viewBox="0 0 1800 1100" role="img" aria-labelledby="title desc">
+  <title id="title">M9 总门禁与数据出口</title>
+  <desc id="desc">M9 全局门禁、子功能开关、外部数据出口安全控制、持久化边界和回滚路径总览。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b45309"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}
+      .subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}
+      .lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}
+      .settings{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:9}
+      .gate{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}
+      .safe{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}
+      .egress{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}
+      .persist{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}
+      .deny{fill:#fef2f2;stroke:#dc2626;stroke-width:3;rx:9}
+      .small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}
+      .arrow-green{stroke:#15803d;stroke-width:3.5;fill:none;marker-end:url(#arrow-green)}
+      .arrow-amber{stroke:#b45309;stroke-width:3.5;fill:none;marker-end:url(#arrow-amber)}
+      .arrow-red{stroke:#b91c1c;stroke-width:3.5;fill:none;marker-end:url(#arrow-red)}
+      .dash{stroke-dasharray:10 8}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1100"/>
+  <text class="title" x="900" y="66">M9 总门禁与数据出口</text>
+  <text class="subtitle" x="900" y="105">M9 是默认关闭的受控增强；外部调用必须经过 feature gate、脱敏、审计、降级和回滚开关</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="205"/>
+  <text class="lane-title" x="110" y="195">门禁解析</text>
+  <rect class="settings" x="135" y="245" width="230" height="76"/>
+  <text class="small" x="250" y="270">Settings</text>
+  <text class="small" x="250" y="296">环境变量</text>
+  <rect class="settings" x="455" y="245" width="275" height="76"/>
+  <text class="small" x="593" y="270">resolve_m9_feature_flags</text>
+  <text class="small" x="593" y="296">计算 effective flags</text>
+  <rect class="gate" x="820" y="245" width="250" height="76"/>
+  <text class="small" x="945" y="270">Global gate</text>
+  <text class="small" x="945" y="296">M9_EXTENSIONS_ENABLED</text>
+  <rect class="deny" x="1160" y="245" width="230" height="76"/>
+  <text class="small" x="1275" y="270">global=false</text>
+  <text class="small" x="1275" y="296">强制关闭子功能</text>
+  <rect class="safe" x="1480" y="245" width="180" height="76"/>
+  <text class="small" x="1570" y="270">conflict</text>
+  <text class="small" x="1570" y="296">log + metric</text>
+  <path class="arrow" d="M365 283H455"/>
+  <path class="arrow" d="M730 283H820"/>
+  <path class="arrow-red" d="M1070 283H1160"/>
+  <path class="arrow-red" d="M1390 283H1480"/>
+
+  <rect class="lane" x="70" y="390" width="1660" height="260"/>
+  <text class="lane-title" x="110" y="440">子功能入口</text>
+  <rect class="gate" x="135" y="495" width="250" height="78"/>
+  <text class="small" x="260" y="520">LLM drafts</text>
+  <text class="small" x="260" y="546">Runbook / Diff</text>
+  <rect class="gate" x="470" y="495" width="250" height="78"/>
+  <text class="small" x="595" y="520">Web search</text>
+  <text class="small" x="595" y="546">allowed domains</text>
+  <rect class="gate" x="805" y="495" width="250" height="78"/>
+  <text class="small" x="930" y="520">Tempo / Grafana</text>
+  <text class="small" x="930" y="546">trace + alert helper</text>
+  <rect class="gate" x="1140" y="495" width="250" height="78"/>
+  <text class="small" x="1265" y="520">Semantic search</text>
+  <text class="small" x="1265" y="546">embedding jobs</text>
+  <rect class="gate" x="1475" y="495" width="190" height="78"/>
+  <text class="small" x="1570" y="520">External</text>
+  <text class="small" x="1570" y="546">embedding</text>
+  <path class="arrow-amber" d="M945 321V380C945 450 260 450 260 495"/>
+  <path class="arrow-amber" d="M945 321V380C945 455 595 455 595 495"/>
+  <path class="arrow-amber" d="M945 321V380C945 460 930 460 930 495"/>
+  <path class="arrow-amber" d="M945 321V380C945 455 1265 455 1265 495"/>
+  <path class="arrow-amber" d="M945 321V380C945 450 1570 450 1570 495"/>
+
+  <rect class="lane" x="70" y="690" width="1660" height="220"/>
+  <text class="lane-title" x="110" y="740">外部出口安全控制</text>
+  <rect class="safe" x="130" y="790" width="220" height="76"/>
+  <text class="small" x="240" y="815">redaction</text>
+  <text class="small" x="240" y="841">文本和配置脱敏</text>
+  <rect class="safe" x="430" y="790" width="220" height="76"/>
+  <text class="small" x="540" y="815">allowlist</text>
+  <text class="small" x="540" y="841">URL / domain</text>
+  <rect class="safe" x="730" y="790" width="220" height="76"/>
+  <text class="small" x="840" y="815">timeout</text>
+  <text class="small" x="840" y="841">retry / breaker</text>
+  <rect class="safe" x="1030" y="790" width="220" height="76"/>
+  <text class="small" x="1140" y="815">audit / metric</text>
+  <text class="small" x="1140" y="841">低基数标签</text>
+  <rect class="egress" x="1330" y="790" width="250" height="76"/>
+  <text class="small" x="1455" y="815">external call</text>
+  <text class="small" x="1455" y="841">LLM / Web / Embedding</text>
+  <path class="arrow-green" d="M350 828H430"/>
+  <path class="arrow-green" d="M650 828H730"/>
+  <path class="arrow-green" d="M950 828H1030"/>
+  <path class="arrow-green" d="M1250 828H1330"/>
+  <path class="arrow-green dash" d="M1570 573V665C1570 705 240 705 240 790"/>
+
+  <rect class="lane" x="70" y="950" width="1660" height="105"/>
+  <text class="lane-title" x="110" y="1000">持久化与回滚</text>
+  <rect class="persist" x="360" y="985" width="270" height="52"/>
+  <text class="small" x="495" y="1011">pending_review drafts only</text>
+  <rect class="deny" x="760" y="985" width="270" height="52"/>
+  <text class="small" x="895" y="1011">不 auto publish / execute</text>
+  <rect class="persist" x="1160" y="985" width="270" height="52"/>
+  <text class="small" x="1295" y="1011">独立 rollback switch</text>
+  <path class="arrow-green" d="M1455 866V935C1455 960 495 960 495 985"/>
+  <path class="arrow-red" d="M630 1011H760"/>
+  <path class="arrow-green" d="M1030 1011H1160"/>
+  <text class="note" x="900" y="1080">Raw secrets 永不进入 DB、audit、logs、prompt、Agent state 或 metrics labels</text>
+</svg>

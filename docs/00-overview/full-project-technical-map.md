@@ -37,6 +37,12 @@ packages/db -> common time/base only
 
 `packages/common` 和 `packages/db` 是底层支撑；`apps/api` 和 `apps/worker` 是编排层；`packages/agent` 是诊断工作流核心。不要让底层包反向依赖应用层，也不要让 Agent node 直接创建外部 client 或 DB session。
 
+下图概括应用入口、共享库和本地基础设施之间的依赖方向。详细目录职责见后续各节。
+
+<p>
+  <img src="assets/project-dependency-map.png" alt="应用与共享库依赖方向" width="900" />
+</p>
+
 ## 运行面划分
 
 | 运行面 | 代码入口 | 运行职责 | 不应承担 |

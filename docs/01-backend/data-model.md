@@ -16,6 +16,12 @@
 
 当前 `packages/db/models.py` 有 32 个 SQLAlchemy ORM 模型。
 
+下图先给出核心业务对象的状态机。表字段和约束仍以后续模型表和迁移说明为准。
+
+<p>
+  <img src="assets/core-state-machine.png" alt="核心对象状态机" width="900" />
+</p>
+
 ### Incident 与 Agent Run
 
 | 模型 | 表 | 关键字段 | 说明 |

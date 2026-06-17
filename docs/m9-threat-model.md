@@ -19,6 +19,10 @@ M9 introduces optional AI and external-context paths. This threat model defines 
 
 ## Trust Boundaries
 
+<p>
+  <img src="assets/m9-gates-data-egress-flow.png" alt="M9 总门禁与数据出口" width="900" />
+</p>
+
 ```text
 Browser / operator
         |

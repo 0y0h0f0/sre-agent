@@ -9,6 +9,7 @@ from __future__ import annotations
 MOCK_EXECUTOR_RESULTS: dict[str, dict[str, str]] = {
     "restart_pod": {"status": "succeeded", "message": "mock pod restart completed"},
     "restart_service": {"status": "succeeded", "message": "mock service restart completed"},
+    "pause_rollout": {"status": "succeeded", "message": "mock rollout pause completed"},
     "scale_deployment": {"status": "succeeded", "message": "mock scaling completed"},
     "rollback_release": {"status": "succeeded", "message": "mock rollback completed"},
     "enable_rate_limit": {"status": "succeeded", "message": "mock rate limit enabled"},

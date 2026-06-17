@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1040" viewBox="0 0 1800 1040" role="img" aria-labelledby="title desc">
+  <title id="title">Celery 诊断任务生命周期</title>
+  <desc id="desc">从告警或手动诊断入队到 worker 幂等锁、依赖构造、AgentRunner 执行、审批暂停、恢复和完成通知的流程图。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b45309"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}
+      .subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}
+      .lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}
+      .api{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:9}
+      .queue{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}
+      .worker{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}
+      .db{fill:#f8fafc;stroke:#64748b;stroke-width:3;rx:9}
+      .pause{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}
+      .done{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}
+      .fail{fill:#fef2f2;stroke:#dc2626;stroke-width:3;rx:9}
+      .label{font:700 24px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .branch{font:700 19px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155;text-anchor:middle}
+      .arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}
+      .arrow-green{stroke:#15803d;stroke-width:3.5;fill:none;marker-end:url(#arrow-green)}
+      .arrow-amber{stroke:#b45309;stroke-width:3.5;fill:none;marker-end:url(#arrow-amber)}
+      .arrow-red{stroke:#b91c1c;stroke-width:3.5;fill:none;marker-end:url(#arrow-red)}
+      .dash{stroke-dasharray:10 8}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1040"/>
+  <text class="title" x="900" y="66">Celery 诊断任务生命周期</text>
+  <text class="subtitle" x="900" y="105">至少一次投递通过数据库行锁和状态判断变成可恢复、可幂等的 Agent run</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="180"/>
+  <text class="lane-title" x="110" y="195">入队</text>
+  <rect class="api" x="135" y="225" width="235" height="70"/>
+  <text class="small" x="253" y="250">Alert / Manual</text>
+  <text class="small" x="253" y="274">创建 AgentRun</text>
+  <rect class="queue" x="455" y="225" width="255" height="70"/>
+  <text class="small" x="583" y="250">commit 后入队</text>
+  <text class="small" x="583" y="274">run_incident_diagnosis</text>
+  <rect class="queue" x="795" y="225" width="230" height="70"/>
+  <text class="small" x="910" y="250">Redis broker</text>
+  <text class="small" x="910" y="274">acks_late</text>
+  <rect class="worker" x="1110" y="225" width="235" height="70"/>
+  <text class="small" x="1228" y="250">Worker</text>
+  <text class="small" x="1228" y="274">SessionLocal</text>
+  <rect class="db" x="1430" y="225" width="235" height="70"/>
+  <text class="small" x="1548" y="250">AgentRun</text>
+  <text class="small" x="1548" y="274">SELECT FOR UPDATE</text>
+  <path class="arrow" d="M370 260H455"/>
+  <path class="arrow" d="M710 260H795"/>
+  <path class="arrow" d="M1025 260H1110"/>
+  <path class="arrow" d="M1345 260H1430"/>
+
+  <rect class="lane" x="70" y="365" width="1660" height="240"/>
+  <text class="lane-title" x="110" y="415">幂等门</text>
+  <rect class="db" x="135" y="465" width="250" height="78"/>
+  <text class="small" x="260" y="490">检查 run 状态</text>
+  <text class="small" x="260" y="516">终态 / active / orphan</text>
+  <rect class="done" x="470" y="430" width="250" height="78"/>
+  <text class="small" x="595" y="455">终态</text>
+  <text class="small" x="595" y="481">idempotent return</text>
+  <rect class="pause" x="470" y="525" width="250" height="78"/>
+  <text class="small" x="595" y="550">active / waiting</text>
+  <text class="small" x="595" y="576">idempotent return</text>
+  <rect class="worker" x="815" y="480" width="255" height="78"/>
+  <text class="small" x="943" y="505">orphan timeout</text>
+  <text class="small" x="943" y="531">允许重新执行</text>
+  <rect class="worker" x="1165" y="480" width="255" height="78"/>
+  <text class="small" x="1293" y="505">mark_running</text>
+  <text class="small" x="1293" y="531">incident diagnosing</text>
+  <rect class="db" x="1505" y="480" width="165" height="78"/>
+  <text class="small" x="1588" y="505">commit</text>
+  <text class="small" x="1588" y="531">释放锁</text>
+  <path class="arrow-green" d="M385 504H430V469H470"/>
+  <path class="arrow-amber" d="M385 504H430V564H470"/>
+  <path class="arrow" d="M385 504H430V519H815"/>
+  <path class="arrow-green" d="M1070 519H1165"/>
+  <path class="arrow-green" d="M1420 519H1505"/>
+
+  <rect class="lane" x="70" y="645" width="1660" height="270"/>
+  <text class="lane-title" x="110" y="695">执行与结果</text>
+  <rect class="worker" x="135" y="745" width="235" height="78"/>
+  <text class="small" x="253" y="770">_build_deps</text>
+  <text class="small" x="253" y="796">tools / RAG / memory</text>
+  <rect class="worker" x="455" y="745" width="235" height="78"/>
+  <text class="small" x="573" y="770">PostgresSaver</text>
+  <text class="small" x="573" y="796">checkpoint</text>
+  <rect class="worker" x="775" y="745" width="235" height="78"/>
+  <text class="small" x="893" y="770">AgentRunner.run</text>
+  <text class="small" x="893" y="796">LangGraph</text>
+  <rect class="pause" x="1095" y="700" width="250" height="78"/>
+  <text class="small" x="1220" y="725">waiting_approval</text>
+  <text class="small" x="1220" y="751">保存 state + 通知</text>
+  <rect class="done" x="1095" y="800" width="250" height="78"/>
+  <text class="small" x="1220" y="825">succeeded</text>
+  <text class="small" x="1220" y="851">同步根因 + 报告</text>
+  <rect class="fail" x="1430" y="745" width="235" height="78"/>
+  <text class="small" x="1548" y="770">failed / transient</text>
+  <text class="small" x="1548" y="796">retry 或 mark_failed</text>
+  <path class="arrow-green" d="M370 784H455"/>
+  <path class="arrow-green" d="M690 784H775"/>
+  <path class="arrow-amber" d="M1010 784H1040V739H1095"/>
+  <path class="arrow-green" d="M1010 784H1040V839H1095"/>
+  <path class="arrow-red" d="M1010 784H1430"/>
+  <path class="arrow-amber dash" d="M1220 700V640C1220 625 1588 625 1588 558"/>
+  <text class="note" x="900" y="968">agent_runs.state 只用于展示；恢复必须使用同一个 LangGraph checkpoint config</text>
+  <path class="arrow-green" d="M1588 558V650C1588 706 253 706 253 745"/>
+</svg>

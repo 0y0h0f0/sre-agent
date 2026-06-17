@@ -108,8 +108,8 @@ def test_live_reversible_capabilities_have_rollback_snapshot_and_verify_contract
         assert capability.verify_gates
 
 
-@pytest.mark.parametrize("action_type", ["restart_pod", "restart_service"])
-def test_restart_actions_are_bounded_irreversible_not_reversible(action_type: str) -> None:
+@pytest.mark.parametrize("action_type", ["restart_pod", "restart_service", "pause_rollout"])
+def test_bounded_irreversible_k8s_actions_are_not_reversible(action_type: str) -> None:
     capability = get_action_capability(action_type)
     assert capability is not None
     assert capability.category == "live_mutating_bounded_irreversible"
@@ -123,6 +123,14 @@ def test_restart_actions_are_bounded_irreversible_not_reversible(action_type: st
     assert "k8s_rollout" in capability.verify_gates
     assert "metrics_logs" in capability.verify_gates
     assert capability.risk_level_expectation == "L2"
+
+
+def test_pause_rollout_does_not_require_ready_replica_snapshot() -> None:
+    capability = get_action_capability("pause_rollout")
+    assert capability is not None
+    assert "k8s.ready_replicas" not in capability.required_snapshot_paths
+    assert "k8s.available_replicas" not in capability.required_snapshot_paths
+    assert "k8s_rollout_pause_patch_only" in capability.preflight_checks
 
 
 @pytest.mark.parametrize(

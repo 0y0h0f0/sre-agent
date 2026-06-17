@@ -19,6 +19,12 @@
 
 `main.tsx` 负责创建 `QueryClient`、挂载 `BrowserRouter`，并且只在生产构建中自动注册 `/sw.js`。审批通知按钮也会在用户授权后注册同一个 service worker。
 
+下图概括控制台页面、API client、TanStack Query、REST API 和 WebSocket 事件之间的数据流。
+
+<p>
+  <img src="assets/frontend-console-data-flow.png" alt="React 控制台数据流" width="900" />
+</p>
+
 ## 文件职责
 
 | 文件 | 职责 |

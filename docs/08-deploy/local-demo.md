@@ -4,6 +4,12 @@
 
 本页描述 `docker-compose.yml` 当前本地 demo 拓扑。默认路径是安全演示环境：FakeLLM、fixture executor、fixture 诊断后端，API 入队到 Celery，worker 执行 LangGraph，前端通过 API 和 WebSocket 展示事件进度。
 
+下图概括 Compose 本地 demo 中用户入口、API、Worker、基础设施和观测组件之间的运行路径。
+
+<p>
+  <img src="assets/local-demo-runtime-flow.png" alt="本地 Demo 运行路径" width="900" />
+</p>
+
 ## Compose 服务
 
 默认 `docker compose up -d` 启动 13 个服务；`mailpit` 只在 `dev` profile 启动。
@@ -152,7 +158,7 @@ docker compose up -d --scale worker=3
 ## 安全边界
 
 - 默认 executor 是 `fixture`，不会真实修改 Kubernetes 或云资源。
-- live Kubernetes executor 只能通过 `EXECUTOR_BACKEND=live` 显式选择加入，并且只允许 restart/scale/rollback 三类受控 Deployment mutation。
+- live Kubernetes executor 只能通过 `EXECUTOR_BACKEND=live` 显式选择加入，并且只允许 restart/pause/scale/rollback 受控 Deployment mutation。
 - live K8s diagnostics 只读；live DB diagnostics 只允许预定义 SELECT。
 - L2/L3 必须审批；L3 必须二次确认；L4 直接拒绝。
 - 真实 LLM 只用于手动 demo/full eval，不应作为 CI 稳定门禁。

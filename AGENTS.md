@@ -63,6 +63,7 @@ Do not replace these with OpenAI Agents SDK, Dramatiq, Elasticsearch, Next.js, S
 - The default executor is `fixture`; tests, local demo, and CI must keep using fixture/mock execution.
 - `EXECUTOR_BACKEND=live` is an explicit operator opt-in. In that mode, the current live executor may perform only these Kubernetes mutations after guardrails and approval:
   - rolling restart via Deployment patch for `restart_pod` / `restart_service`
+  - rollout pause via Deployment patch for `pause_rollout`
   - Deployment scale patch for `scale_deployment` / `scale_back`
   - Deployment rollback subresource call for `rollback_release`
 - Do not perform real cloud resource write operations.
@@ -356,7 +357,7 @@ Tools:
 - `RunbookSearchTool`: RAG wrapper.
 - Executor backends:
   - `FixtureExecutorBackend`: default for tests, local demo, and CI.
-  - `LiveK8sExecutorBackend`: opt-in via `EXECUTOR_BACKEND=live`; limited to restart/scale/rollback Kubernetes mutations after guardrails and approval.
+  - `LiveK8sExecutorBackend`: opt-in via `EXECUTOR_BACKEND=live`; limited to restart/pause/scale/rollback Kubernetes mutations after guardrails and approval.
 
 Tool cache rules:
 

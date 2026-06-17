@@ -4,6 +4,12 @@
 
 This document describes the runtime data movement introduced by M9. It focuses on where data enters, how it is redacted or gated, what is persisted, and how failures degrade. It complements [M9 Rollout](m9-rollout.md) and [M9 Threat Model](m9-threat-model.md).
 
+The diagram below summarizes the global M9 gate, sub-feature gates, external egress controls, persistence boundaries, and rollback switches. The later flow sections then describe each capability in detail.
+
+<p>
+  <img src="assets/m9-gates-data-egress-flow.png" alt="M9 总门禁与数据出口" width="900" />
+</p>
+
 ## Shared Gate Resolution
 
 ```text

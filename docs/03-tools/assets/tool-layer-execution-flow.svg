@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1020" viewBox="0 0 1800 1020" role="img" aria-labelledby="title desc">
+  <title id="title">工具层调用边界</title>
+  <desc id="desc">Agent 节点通过注入依赖调用工具，经过 schema、缓存、后端适配、超时降级、证据持久化，并把写操作隔离到 executor backend。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}
+      .subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}
+      .lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}
+      .agent{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:9}
+      .tool{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}
+      .cache{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}
+      .backend{fill:#f8fafc;stroke:#64748b;stroke-width:3;rx:9}
+      .result{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}
+      .warn{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}
+      .danger{fill:#fef2f2;stroke:#dc2626;stroke-width:3;rx:9}
+      .label{font:700 24px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .branch{font:700 19px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155;text-anchor:middle}
+      .arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}
+      .arrow-green{stroke:#15803d;stroke-width:3.5;fill:none;marker-end:url(#arrow-green)}
+      .arrow-red{stroke:#b91c1c;stroke-width:3.5;fill:none;marker-end:url(#arrow-red)}
+      .dash{stroke-dasharray:10 8}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1020"/>
+  <text class="title" x="900" y="66">工具层调用边界</text>
+  <text class="subtitle" x="900" y="105">诊断工具只产生结构化证据；真实写操作只能经 guardrail、approval 和 executor backend</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="260"/>
+  <text class="lane-title" x="110" y="195">只读诊断工具路径</text>
+  <rect class="agent" x="130" y="260" width="220" height="76"/>
+  <text class="small" x="240" y="285">Agent 节点</text>
+  <text class="small" x="240" y="311">collect / verify</text>
+  <rect class="tool" x="430" y="260" width="230" height="76"/>
+  <text class="small" x="545" y="285">注入依赖</text>
+  <text class="small" x="545" y="311">_build_deps()</text>
+  <rect class="tool" x="740" y="260" width="230" height="76"/>
+  <text class="small" x="855" y="285">Pydantic Query</text>
+  <text class="small" x="855" y="311">标准化输入</text>
+  <rect class="cache" x="1050" y="260" width="230" height="76"/>
+  <text class="small" x="1165" y="285">稳定 cache key</text>
+  <text class="small" x="1165" y="311">UTC 时间桶</text>
+  <rect class="cache" x="1360" y="260" width="230" height="76"/>
+  <text class="small" x="1475" y="285">RequestLocal</text>
+  <text class="small" x="1475" y="311">hit / miss</text>
+  <path class="arrow" d="M350 298H430"/>
+  <path class="arrow" d="M660 298H740"/>
+  <path class="arrow" d="M970 298H1050"/>
+  <path class="arrow" d="M1280 298H1360"/>
+
+  <rect class="lane" x="70" y="445" width="1660" height="245"/>
+  <text class="lane-title" x="110" y="495">后端适配与降级</text>
+  <rect class="backend" x="135" y="555" width="250" height="78"/>
+  <text class="small" x="260" y="580">fixture / live read</text>
+  <text class="small" x="260" y="606">Prom/Loki/K8s/DB</text>
+  <rect class="warn" x="470" y="555" width="250" height="78"/>
+  <text class="small" x="595" y="580">timeout / retry</text>
+  <text class="small" x="595" y="606">受控失败</text>
+  <rect class="warn" x="805" y="555" width="250" height="78"/>
+  <text class="small" x="930" y="580">UnavailableTool</text>
+  <text class="small" x="930" y="606">配置缺失时 degraded</text>
+  <rect class="result" x="1140" y="555" width="250" height="78"/>
+  <text class="small" x="1265" y="580">ToolResult</text>
+  <text class="small" x="1265" y="606">status + summary</text>
+  <rect class="result" x="1475" y="555" width="190" height="78"/>
+  <text class="small" x="1570" y="580">Evidence</text>
+  <text class="small" x="1570" y="606">可追溯 ID</text>
+  <path class="arrow" d="M1475 336V430C1475 500 260 500 260 555"/>
+  <path class="arrow" d="M385 594H470"/>
+  <path class="arrow" d="M720 594H805"/>
+  <path class="arrow-green" d="M1055 594H1140"/>
+  <path class="arrow-green" d="M1390 594H1475"/>
+
+  <rect class="lane" x="70" y="730" width="1660" height="205"/>
+  <text class="lane-title" x="110" y="780">写入边界</text>
+  <rect class="agent" x="140" y="835" width="230" height="70"/>
+  <text class="small" x="255" y="860">recommended_actions</text>
+  <text class="small" x="255" y="884">模型建议</text>
+  <rect class="danger" x="455" y="835" width="230" height="70"/>
+  <text class="small" x="570" y="860">普通工具</text>
+  <text class="small" x="570" y="884">不得执行写操作</text>
+  <rect class="warn" x="770" y="835" width="230" height="70"/>
+  <text class="small" x="885" y="860">Guardrail</text>
+  <text class="small" x="885" y="884">L2/L3 审批</text>
+  <rect class="warn" x="1085" y="835" width="230" height="70"/>
+  <text class="small" x="1200" y="860">take_snapshot</text>
+  <text class="small" x="1200" y="884">执行前快照</text>
+  <rect class="result" x="1400" y="835" width="230" height="70"/>
+  <text class="small" x="1515" y="860">ExecutorBackend</text>
+  <text class="small" x="1515" y="884">fixture / live opt-in</text>
+  <path class="arrow-red" d="M370 870H455"/>
+  <path class="arrow" d="M685 870H770"/>
+  <path class="arrow" d="M1000 870H1085"/>
+  <path class="arrow-green" d="M1315 870H1400"/>
+  <text class="branch" x="570" y="824">只读工具和 executor 必须分离</text>
+  <text class="note" x="900" y="970">cache hit、tool call、degraded reason 和 evidence summary 都会进入审计友好的运行记录</text>
+  <path class="arrow-green dash" d="M1570 633V700C1570 725 255 725 255 835"/>
+</svg>

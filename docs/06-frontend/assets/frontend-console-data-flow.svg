@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1000" viewBox="0 0 1800 1000" role="img" aria-labelledby="title desc">
+  <title id="title">React 控制台数据流</title>
+  <desc id="desc">React 控制台通过路由、API client、TanStack Query、REST API、WebSocket ticket 和实时事件刷新事件、运行、审批和报告页面。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b45309"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}
+      .subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}
+      .lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}
+      .page{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:9}
+      .query{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}
+      .api{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}
+      .ws{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}
+      .state{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}
+      .label{font:700 24px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .small{font:700 20px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .branch{font:700 19px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155;text-anchor:middle}
+      .arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}
+      .arrow-green{stroke:#15803d;stroke-width:3.5;fill:none;marker-end:url(#arrow-green)}
+      .arrow-amber{stroke:#b45309;stroke-width:3.5;fill:none;marker-end:url(#arrow-amber)}
+      .dash{stroke-dasharray:10 8}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1000"/>
+  <text class="title" x="900" y="66">React 控制台数据流</text>
+  <text class="subtitle" x="900" y="105">页面不决定诊断或风险；它只通过 typed API、Query 缓存和 WebSocket 事件展示后端状态</text>
+
+  <rect class="lane" x="70" y="145" width="1660" height="210"/>
+  <text class="lane-title" x="110" y="195">页面与请求封装</text>
+  <rect class="page" x="125" y="245" width="225" height="76"/>
+  <text class="small" x="238" y="270">BrowserRouter</text>
+  <text class="small" x="238" y="296">事件 / 审批 / 报告</text>
+  <rect class="query" x="430" y="245" width="225" height="76"/>
+  <text class="small" x="543" y="270">TanStack Query</text>
+  <text class="small" x="543" y="296">key + staleTime</text>
+  <rect class="api" x="735" y="245" width="225" height="76"/>
+  <text class="small" x="848" y="270">api.ts</text>
+  <text class="small" x="848" y="296">typed helper</text>
+  <rect class="api" x="1040" y="245" width="225" height="76"/>
+  <text class="small" x="1153" y="270">请求头</text>
+  <text class="small" x="1153" y="296">Bearer + X-Request-Id</text>
+  <rect class="state" x="1345" y="245" width="225" height="76"/>
+  <text class="small" x="1458" y="270">标准错误信封</text>
+  <text class="small" x="1458" y="296">ApiError 展示</text>
+  <path class="arrow" d="M350 283H430"/>
+  <path class="arrow" d="M655 283H735"/>
+  <path class="arrow" d="M960 283H1040"/>
+  <path class="arrow-green" d="M1265 283H1345"/>
+
+  <rect class="lane" x="70" y="395" width="1660" height="240"/>
+  <text class="lane-title" x="110" y="445">REST 查询与 Mutation</text>
+  <rect class="page" x="135" y="500" width="250" height="78"/>
+  <text class="small" x="260" y="525">IncidentsPage</text>
+  <text class="small" x="260" y="551">列表 5 秒轮询</text>
+  <rect class="page" x="465" y="500" width="250" height="78"/>
+  <text class="small" x="590" y="525">IncidentDetail</text>
+  <text class="small" x="590" y="551">runs / approvals / audit</text>
+  <rect class="page" x="795" y="500" width="250" height="78"/>
+  <text class="small" x="920" y="525">AgentRunPage</text>
+  <text class="small" x="920" y="551">节点 / 工具 / context</text>
+  <rect class="page" x="1125" y="500" width="250" height="78"/>
+  <text class="small" x="1250" y="525">ApprovalsPage</text>
+  <text class="small" x="1250" y="551">L2 / L3 字段采集</text>
+  <rect class="page" x="1455" y="500" width="210" height="78"/>
+  <text class="small" x="1560" y="525">ReportPage</text>
+  <text class="small" x="1560" y="551">版本化报告</text>
+  <path class="arrow-green" d="M260 500V455C260 425 848 425 848 321"/>
+  <path class="arrow-green" d="M590 500V455C590 435 900 435 848 321"/>
+  <path class="arrow-green" d="M920 500V455C920 430 848 430 848 321"/>
+  <path class="arrow-green" d="M1250 500V455C1250 430 848 430 848 321"/>
+  <path class="arrow-green" d="M1560 500V455C1560 420 848 420 848 321"/>
+  <rect x="96" y="413" width="440" height="50" fill="#fff"/>
+  <text class="lane-title" x="110" y="445">REST 查询与 Mutation</text>
+
+  <rect class="lane" x="70" y="675" width="1660" height="205"/>
+  <text class="lane-title" x="110" y="725">实时更新</text>
+  <rect class="api" x="135" y="775" width="250" height="70"/>
+  <text class="small" x="260" y="800">申请 WS ticket</text>
+  <text class="small" x="260" y="824">POST /api/ws/...</text>
+  <rect class="ws" x="480" y="775" width="250" height="70"/>
+  <text class="small" x="605" y="800">WebSocket</text>
+  <text class="small" x="605" y="824">node / approval update</text>
+  <rect class="query" x="825" y="775" width="250" height="70"/>
+  <text class="small" x="950" y="800">invalidate queries</text>
+  <text class="small" x="950" y="824">agent-run / incident</text>
+  <rect class="state" x="1170" y="775" width="250" height="70"/>
+  <text class="small" x="1295" y="800">页面重新渲染</text>
+  <text class="small" x="1295" y="824">展示最新后端状态</text>
+  <rect class="ws" x="1515" y="775" width="150" height="70"/>
+  <text class="small" x="1590" y="800">断线</text>
+  <text class="small" x="1590" y="824">5 秒重连</text>
+  <path class="arrow-amber" d="M385 810H480"/>
+  <path class="arrow-amber" d="M730 810H825"/>
+  <path class="arrow-green" d="M1075 810H1170"/>
+  <path class="arrow-amber dash" d="M1420 810H1515"/>
+  <path class="arrow-amber dash" d="M1590 775C1590 705 605 705 605 775"/>
+  <text class="note" x="900" y="935">L3 二次确认、审批冲突和风险等级仍由后端校验；前端只采集字段并展示结果</text>
+</svg>

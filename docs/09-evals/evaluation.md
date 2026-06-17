@@ -4,6 +4,12 @@
 
 评测用于回答一个问题：在确定性输入和安全约束下，Agent 是否仍能给出可追踪根因、保留必要证据、拦住高风险动作并生成报告。CI 只使用 FakeLLM smoke eval；真实 LLM 或外部 provider 只能用于手动 full eval 或演示，不能作为稳定 CI 门禁。
 
+下图概括 Eval harness 如何从 suite case 构建独立内存环境、运行 Agent，并输出 suite metrics 和报告。
+
+<p>
+  <img src="assets/eval-harness-flow.png" alt="Eval Harness 执行链路" width="900" />
+</p>
+
 ## 模块地图
 
 | 模块 | 职责 |

@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1050" viewBox="0 0 1800 1050" role="img" aria-labelledby="title desc">
+  <title id="title">告警到报告主链路</title>
+  <desc id="desc">从告警摄取到 Celery 入队、Worker 诊断、Guardrail 分流、审批恢复、执行验证、报告和记忆持久化的流程图。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b45309"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}
+      .subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}
+      .lane-title{font:700 27px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}
+      .box{fill:#fff;stroke:#0f766e;stroke-width:3;rx:9}
+      .queue{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}
+      .agent{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}
+      .guard{fill:#fff7ed;stroke:#d97706;stroke-width:3;rx:9}
+      .approval{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}
+      .reject{fill:#fef2f2;stroke:#dc2626;stroke-width:3;rx:9}
+      .final{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}
+      .label{font:700 24px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .small{font:700 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .note{font:400 22px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}
+      .arrow-amber{stroke:#b45309;stroke-width:3.5;fill:none;marker-end:url(#arrow-amber)}
+      .arrow-red{stroke:#b91c1c;stroke-width:3.5;fill:none;marker-end:url(#arrow-red)}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1050"/>
+  <text class="title" x="900" y="66">告警到报告主链路</text>
+  <text class="subtitle" x="900" y="105">API 只持久化并入队；真实执行必须经过 Guardrail、审批和 executor 边界</text>
+
+  <rect class="lane" x="60" y="145" width="1680" height="165"/>
+  <text class="lane-title" x="95" y="190">摄取与入队</text>
+  <rect class="box" x="135" y="220" width="230" height="68"/>
+  <text class="label" x="250" y="254">Alert API</text>
+  <rect class="box" x="445" y="220" width="230" height="68"/>
+  <text class="label" x="560" y="254">fingerprint 去重</text>
+  <rect class="box" x="755" y="220" width="230" height="68"/>
+  <text class="small" x="870" y="244">创建 Incident</text>
+  <text class="small" x="870" y="269">+ AgentRun</text>
+  <rect class="queue" x="1065" y="220" width="230" height="68"/>
+  <text class="small" x="1180" y="244">Commit 后</text>
+  <text class="small" x="1180" y="269">入队 Celery</text>
+  <rect class="queue" x="1375" y="220" width="230" height="68"/>
+  <text class="label" x="1490" y="254">Worker 幂等</text>
+  <path class="arrow" d="M365 254H445"/>
+  <path class="arrow" d="M675 254H755"/>
+  <path class="arrow" d="M985 254H1065"/>
+  <path class="arrow" d="M1295 254H1375"/>
+
+  <rect class="lane" x="60" y="350" width="1680" height="165"/>
+  <text class="lane-title" x="95" y="395">诊断主路径</text>
+  <rect class="agent" x="235" y="425" width="230" height="68"/>
+  <text class="label" x="350" y="459">收集证据</text>
+  <rect class="agent" x="565" y="425" width="250" height="68"/>
+  <text class="small" x="690" y="449">构建上下文</text>
+  <text class="small" x="690" y="474">+ 压缩</text>
+  <rect class="agent" x="915" y="425" width="230" height="68"/>
+  <text class="label" x="1030" y="459">诊断</text>
+  <rect class="agent" x="1245" y="425" width="230" height="68"/>
+  <text class="label" x="1360" y="459">规划动作</text>
+  <path class="arrow" d="M1490 288V332H350V425"/>
+  <path class="arrow" d="M465 459H565"/>
+  <path class="arrow" d="M815 459H915"/>
+  <path class="arrow" d="M1145 459H1245"/>
+
+  <rect class="lane" x="60" y="555" width="1680" height="250"/>
+  <text class="lane-title" x="95" y="600">风险分流</text>
+  <rect class="guard" x="760" y="610" width="280" height="78"/>
+  <text class="label" x="900" y="640">Guardrail</text>
+  <text class="small" x="900" y="666">L0 / L1 / L2 / L3 / L4</text>
+  <path class="arrow" d="M1475 459H1600V560H900V610"/>
+
+  <rect class="agent" x="205" y="710" width="245" height="64"/>
+  <text class="label" x="328" y="742">L0/L1 自动</text>
+  <rect class="approval" x="778" y="710" width="245" height="64"/>
+  <text class="label" x="900" y="742">L2/L3 审批</text>
+  <rect class="approval" x="1085" y="710" width="245" height="64"/>
+  <text class="label" x="1208" y="742">Resume checkpoint</text>
+  <rect class="reject" x="1350" y="710" width="245" height="64"/>
+  <text class="label" x="1472" y="742">L4 直接拒绝</text>
+  <path class="arrow" d="M760 649H328V710"/>
+  <path class="arrow-amber" d="M900 688V710"/>
+  <path class="arrow-amber" d="M1023 742H1085"/>
+  <path class="arrow-red" d="M1040 649H1472V710"/>
+
+  <rect class="lane" x="60" y="845" width="1680" height="135"/>
+  <text class="lane-title" x="95" y="890">执行、验证与收尾</text>
+  <rect class="agent" x="210" y="915" width="220" height="58"/>
+  <text class="label" x="320" y="944">Snapshot</text>
+  <rect class="agent" x="520" y="915" width="220" height="58"/>
+  <text class="label" x="630" y="944">Executor</text>
+  <rect class="agent" x="830" y="915" width="220" height="58"/>
+  <text class="label" x="940" y="944">Verify / Replan</text>
+  <rect class="final" x="1140" y="915" width="220" height="58"/>
+  <text class="label" x="1250" y="944">Report vN</text>
+  <rect class="final" x="1450" y="915" width="220" height="58"/>
+  <text class="label" x="1560" y="944">Persist Memory</text>
+  <path class="arrow" d="M328 774V860H320V915"/>
+  <path class="arrow-amber" d="M1208 774V830H320V915"/>
+  <path class="arrow-red" d="M1472 774V860H1250V915"/>
+  <path class="arrow" d="M430 944H520"/>
+  <path class="arrow" d="M740 944H830"/>
+  <path class="arrow" d="M1050 944H1140"/>
+  <path class="arrow" d="M1360 944H1450"/>
+
+  <text class="note" x="900" y="1022">保留 checkpoint、approval/action 状态和 evidence_id，避免重复执行或无证据报告</text>
+</svg>

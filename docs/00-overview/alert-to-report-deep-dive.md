@@ -28,6 +28,12 @@
 | 报告生成 | `packages/agent/nodes/generate_report.py`、`apps/api/services/report_service.py` | `IncidentReport` |
 | 前端读取 | `apps/api/services/agent_run_service.py`、`apps/web/src/api.ts`、`apps/web/src/App.tsx` | 只读 API 响应 |
 
+下图先给出主链路，后续小节再展开每一步的事务、幂等和恢复细节。
+
+<p>
+  <img src="assets/alert-to-report-flow.png" alt="告警到报告主链路" width="900" />
+</p>
+
 ## 1. 告警进入 API
 
 `apps/api/routers/alerts.py` 的 `create_alert()` 做两件事：
@@ -181,7 +187,7 @@ resume 不会盲信传入的单个 `decision`。`human_approval._apply_db_decisi
 take_snapshot -> execute_action -> verify
 ```
 
-`take_snapshot` 保存执行前证据/K8s 状态。`execute_action` 使用注入的 executor backend，默认 fixture；live backend 只能在显式启用后执行已允许的 Kubernetes restart/scale/rollback。`verify` 按 action capability metadata 执行只读 gates，最多 `MAX_VERIFY_CYCLES=2` 次验证/重规划。
+`take_snapshot` 保存执行前证据/K8s 状态。`execute_action` 使用注入的 executor backend，默认 fixture；live backend 只能在显式启用后执行已允许的 Kubernetes restart/pause/scale/rollback。`verify` 按 action capability metadata 执行只读 gates，最多 `MAX_VERIFY_CYCLES=2` 次验证/重规划。
 
 报告由 `generate_report` 节点创建：
 

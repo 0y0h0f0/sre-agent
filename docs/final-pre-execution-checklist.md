@@ -5,6 +5,10 @@
 
 这是执行前最后一道阻塞门禁。所有 P0 必须通过；P1 如未通过必须有明确缓解措施和回滚开关。真实 LLM、live executor、M9 外部调用不能作为 CI 稳定门禁。
 
+<p>
+  <img src="assets/production-release-gate-flow.png" alt="生产发布门禁与回滚" width="900" />
+</p>
+
 ## 0. Baseline
 
 | # | 检查 | 通过标准 |
@@ -56,7 +60,7 @@ Python `tests/e2e/`、contract、manual full eval 按变更风险追加；不是
 | F6 | Report regeneration | 生成新版本，不覆盖旧报告 |
 | F7 | Email token | L3 不能通过 email token 审批 |
 | F8 | Live diagnostics | K8s/DB live diagnostics 仍只读 |
-| F9 | Live executor | 仅显式 opt-in，且只允许 restart/scale/rollback 三类 K8s mutation |
+| F9 | Live executor | 仅显式 opt-in，且只允许 restart/pause/scale/rollback 受控 K8s mutation |
 
 ## 4. M9 门禁
 

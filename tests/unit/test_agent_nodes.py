@@ -1052,6 +1052,60 @@ class TestExecuteActionNode:
         assert capability["bounded_irreversible"] is True
         assert "k8s_rollout" in capability["verify_gates"]
 
+    def test_live_pause_rollout_allows_unready_snapshot_after_approval(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                return ExecutionResult(status="succeeded", message="live pause")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "replicas": 2,
+                        "image": "checkout:v2",
+                        "conditions": [{"type": "Progressing", "status": "False"}],
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "pause_rollout",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert backend.execute_calls
+        assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
+        capability = result["execution_results"][0]["capability"]
+        assert capability["bounded_irreversible"] is True
+        assert "k8s_rollout" in capability["verify_gates"]
+
     def test_live_restart_blocks_when_snapshot_target_mismatches(
         self, db_session: Session
     ) -> None:
@@ -1765,6 +1819,49 @@ class TestSnapshotVerifyRollbackFlow:
         assert tool.query.namespace == "payments"
         assert result["pre_action_snapshot"]["k8s"]["revision"] == "7"
         assert result["pre_action_snapshot"]["k8s_targets"]["checkout"]["revision"] == "7"
+
+    def test_take_snapshot_captures_pause_rollout_target(self, db_session: Session) -> None:
+        from packages.agent.nodes.take_snapshot import take_snapshot
+        from packages.tools.base import ToolResult
+
+        class K8sTool:
+            name = "k8s"
+            timeout_seconds = 1.0
+
+            def __init__(self) -> None:
+                self.query = None
+
+            def run(self, query):
+                self.query = query
+                return ToolResult(
+                    status="succeeded",
+                    data={
+                        "payload": {
+                            "name": query.service,
+                            "replicas": 2,
+                            "namespace": query.namespace,
+                            "image": "checkout:v2",
+                        }
+                    },
+                    summary="deployment snapshot",
+                    duration_ms=1,
+                )
+
+        deps = _make_deps(db_session)
+        tool = K8sTool()
+        deps.k8s_tool = tool
+
+        result = take_snapshot(
+            _base_state(
+                service_name="checkout",
+                recommended_actions=[{"type": "pause_rollout", "target": "checkout"}],
+            ),
+            deps,
+        )
+
+        assert tool.query is not None
+        assert tool.query.operation == "get_deployment"
+        assert result["pre_action_snapshot"]["k8s"]["image"] == "checkout:v2"
 
     def test_take_snapshot_preserves_original_snapshot_for_degraded_rollback(
         self, db_session: Session

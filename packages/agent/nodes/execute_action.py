@@ -310,6 +310,9 @@ def _failed_preflight_checks(
         elif check == "k8s_rolling_restart_patch_only":
             if canonical_action_type(action.get("type")) not in {"restart_pod", "restart_service"}:
                 failed.append(check)
+        elif check == "k8s_rollout_pause_patch_only":
+            if canonical_action_type(action.get("type")) != "pause_rollout":
+                failed.append(check)
         else:
             failed.append(check)
     return failed

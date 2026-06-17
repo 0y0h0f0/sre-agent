@@ -8,6 +8,12 @@
 
 当前实现的压缩是规则型、确定性的，目的是避免大日志和超预算证据直接进入 prompt，同时保留 retained/omitted evidence ID 供审计。
 
+下图先概括 memory、context builder、压缩事件和 cache 指标的边界。后续小节给出触发条件和字段契约。
+
+<p>
+  <img src="assets/memory-context-compression-flow.png" alt="记忆与上下文压缩链路" width="900" />
+</p>
+
 ## 模块地图（7 个模块）
 
 | 模块 | 用途 |

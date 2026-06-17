@@ -125,6 +125,12 @@ Scope dependency 当前通过 FastAPI `HTTPException` 返回 401/403，而不是
 
 ## 核心请求流程
 
+下图把告警摄取的后端分层和审批恢复路径放在一起。细节仍以各小节的文字契约为准。
+
+<p>
+  <img src="assets/backend-request-approval-flow.png" alt="后端请求与审批恢复" width="900" />
+</p>
+
 ### 告警摄取
 
 ```text

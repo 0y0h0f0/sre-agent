@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+import types
+
 from packages.tools.executor_backends import (
     _LIVE_HANDLERS,
     _LIVE_ROLLBACK_HANDLERS,
@@ -9,6 +12,7 @@ from packages.tools.executor_backends import (
     ExecutionContext,
     ExecutionResult,
     LiveK8sExecutorBackend,
+    _live_pause_rollout,
 )
 
 
@@ -68,6 +72,33 @@ def test_live_scale_rejects_missing_or_unsafe_replica_counts() -> None:
         assert result.status == "failed", f"should reject replicas={replicas!r}"
         assert "replicas" in result.message
         assert result.details == {"min_replicas": 0, "max_replicas": 50}
+
+
+def test_live_pause_rollout_patches_only_paused_true(monkeypatch) -> None:
+    captured = {}
+
+    class AppsV1Api:
+        def patch_namespaced_deployment(self, *, name, namespace, body, _request_timeout):
+            captured["name"] = name
+            captured["namespace"] = namespace
+            captured["body"] = body
+            captured["timeout"] = _request_timeout
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(AppsV1Api=lambda: AppsV1Api())  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+    monkeypatch.setattr("packages.tools.executor_backends._ensure_k8s_client", lambda: None)
+
+    result = _live_pause_rollout("pause_rollout", "checkout", {}, "payments", 12.5)
+
+    assert result.status == "succeeded"
+    assert result.details == {"paused": True}
+    assert captured == {
+        "name": "checkout",
+        "namespace": "payments",
+        "body": {"spec": {"paused": True}},
+        "timeout": 12.5,
+    }
 
 
 def test_rollback_deployment_is_a_rollback_alias_for_execute(monkeypatch) -> None:

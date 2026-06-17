@@ -6,7 +6,9 @@
 
 下图展示系统主链路和关键依赖。图中的 `LangGraph (packages/agent)` 为简化版节点链路，详细工作流见 [Agent 工作流流程图（Image #1）](../02-agent/assets/agent-workflow.png)。
 
-![系统架构图](assets/system-architecture.png)
+<p>
+  <img src="assets/system-architecture.png" alt="系统架构图" width="900" />
+</p>
 
 ```text
 Alert Sources

@@ -8,6 +8,12 @@ Agent 的 LLM 调用通过同步 `LLMProvider` 协议抽象，入口在 `package
 
 LLM 不是安全决策者。它可以输出诊断、排序、动作建议和报告草稿，但动作权限由确定性 guardrail、approval 和 executor backend 决定。
 
+下图概括 provider 工厂、真实 provider 脱敏边界、JSON 解析修复和 deterministic fallback 的关系。
+
+<p>
+  <img src="assets/llm-provider-boundary-flow.png" alt="LLM Provider 与提示词安全边界" width="900" />
+</p>
+
 ## Provider 工厂
 
 `packages/agent/llm/factory.py` 根据 `Settings.llm_provider` 构造 provider：

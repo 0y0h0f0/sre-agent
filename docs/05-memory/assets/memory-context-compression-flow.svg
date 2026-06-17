@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1000" viewBox="0 0 1800 1000" role="img" aria-labelledby="title desc">
+  <title id="title">记忆与上下文压缩链路</title>
+  <desc id="desc">L0 到 L3 记忆、ContextBuilder、压缩触发、诊断、写入 L2 memory、报告后持久化和缓存指标边界的流程图。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M0,1 L11,6 L0,11 Z" fill="#b45309"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 44px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle}
+      .subtitle{font:400 23px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .lane{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:18}
+      .section{font:700 28px Arial,"Noto Sans CJK SC",sans-serif;fill:#334155}
+      .memory{fill:#f0fdf4;stroke:#16a34a;stroke-width:3;rx:9}
+      .flow{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:9}
+      .compress{fill:#fffbeb;stroke:#d97706;stroke-width:3;rx:9}
+      .final{fill:#f0fdfa;stroke:#0f766e;stroke-width:3;rx:9}
+      .cache{fill:#eff6ff;stroke:#2563eb;stroke-width:3;stroke-dasharray:9 9;rx:10}
+      .label{font:700 22px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .small{font:700 19px Arial,"Noto Sans CJK SC",sans-serif;fill:#0f172a;text-anchor:middle;dominant-baseline:central}
+      .note{font:400 21px Arial,"Noto Sans CJK SC",sans-serif;fill:#475569;text-anchor:middle}
+      .arrow{stroke:#334155;stroke-width:3.5;fill:none;marker-end:url(#arrow)}
+      .arrow-amber{stroke:#b45309;stroke-width:3.5;fill:none;marker-end:url(#arrow-amber)}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1000"/>
+  <text class="title" x="900" y="66">记忆与上下文压缩链路</text>
+  <text class="subtitle" x="900" y="105">memory 包不直接调用 LLM；压缩必须保留 retained 或 omitted evidence ID</text>
+
+  <rect class="lane" x="60" y="155" width="305" height="620"/>
+  <text class="section" x="105" y="215">Memory Levels</text>
+  <rect class="memory" x="105" y="250" width="215" height="62"/>
+  <text class="label" x="212" y="281">L0 run</text>
+  <rect class="memory" x="105" y="335" width="215" height="62"/>
+  <text class="label" x="212" y="366">L1 incident</text>
+  <rect class="memory" x="105" y="420" width="215" height="62"/>
+  <text class="label" x="212" y="451">L2 service</text>
+  <rect class="memory" x="105" y="505" width="215" height="62"/>
+  <text class="label" x="212" y="536">L3 procedural</text>
+  <rect class="memory" x="105" y="630" width="215" height="76"/>
+  <text class="small" x="212" y="654">retrieve_memory</text>
+  <text class="small" x="212" y="681">合并上下文</text>
+  <path class="arrow" d="M212 312V335"/>
+  <path class="arrow" d="M212 397V420"/>
+  <path class="arrow" d="M212 482V505"/>
+  <path class="arrow" d="M212 567V630"/>
+
+  <rect class="lane" x="415" y="155" width="1325" height="455"/>
+  <text class="section" x="460" y="215">Context Pipeline</text>
+  <rect class="flow" x="465" y="285" width="205" height="72"/>
+  <text class="small" x="568" y="309">BuildContext</text>
+  <text class="small" x="568" y="335">Input</text>
+  <rect class="flow" x="735" y="285" width="205" height="72"/>
+  <text class="label" x="838" y="321">ContextBuilder</text>
+  <rect class="flow" x="1005" y="285" width="205" height="72"/>
+  <text class="small" x="1108" y="309">TokenBudget</text>
+  <text class="small" x="1108" y="335">32k</text>
+  <rect class="compress" x="1275" y="285" width="205" height="72"/>
+  <text class="small" x="1378" y="309">Compressed</text>
+  <text class="small" x="1378" y="335">Context</text>
+  <rect class="final" x="1545" y="285" width="155" height="72"/>
+  <text class="label" x="1622" y="321">diagnose</text>
+  <path class="arrow" d="M670 321H735"/>
+  <path class="arrow" d="M940 321H1005"/>
+  <path class="arrow" d="M1210 321H1275"/>
+  <path class="arrow" d="M1480 321H1545"/>
+  <path class="arrow" d="M320 668H390V321H465"/>
+
+  <rect class="final" x="590" y="485" width="210" height="72"/>
+  <text class="label" x="695" y="521">compress_context</text>
+  <rect class="memory" x="865" y="485" width="210" height="72"/>
+  <text class="small" x="970" y="509">write</text>
+  <text class="small" x="970" y="535">L2 memory</text>
+  <rect class="final" x="1140" y="485" width="210" height="72"/>
+  <text class="label" x="1245" y="521">generate_report</text>
+  <rect class="memory" x="1415" y="485" width="210" height="72"/>
+  <text class="label" x="1520" y="521">persist_memory</text>
+  <path class="arrow" d="M1622 357V435H695V485"/>
+  <path class="arrow" d="M800 521H865"/>
+  <path class="arrow" d="M1075 521H1140"/>
+  <path class="arrow" d="M1350 521H1415"/>
+
+  <rect class="lane" x="415" y="665" width="710" height="210"/>
+  <text class="section" x="460" y="725">Compression Triggers</text>
+  <rect class="compress" x="475" y="765" width="170" height="62"/>
+  <text class="label" x="560" y="796">logs &gt; 20</text>
+  <rect class="compress" x="705" y="765" width="190" height="62"/>
+  <text class="small" x="800" y="785">证据 &gt; 80%</text>
+  <text class="small" x="800" y="809">budget</text>
+  <rect class="compress" x="955" y="765" width="130" height="62"/>
+  <text class="small" x="1020" y="785">大块日志</text>
+  <text class="small" x="1020" y="809">压缩</text>
+  <path class="arrow-amber" d="M800 765V635H1378V357"/>
+
+  <rect class="cache" x="1215" y="640" width="430" height="260"/>
+  <text class="section" x="1260" y="695">Cache Metrics</text>
+  <text class="small" x="1430" y="745">Tool request-local cache</text>
+  <text class="small" x="1430" y="787">Prompt segment keys</text>
+  <text class="small" x="1430" y="829">Provider prompt cache</text>
+  <text class="small" x="1430" y="870">Do not mix metrics</text>
+
+  <text class="note" x="900" y="958">大日志不直接进入 prompt；provider cache 与工具/app cache 指标分开统计</text>
+</svg>

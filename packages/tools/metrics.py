@@ -12,9 +12,12 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from packages.common.redaction import redact_text
 from packages.common.time import ensure_utc
 from packages.tools.base import ToolResult, compact_summary, elapsed_ms, start_timer
 from packages.tools.cache import RequestLocalToolCache, build_cache_key
+
+_PROMETHEUS_LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 MetricType = Literal[
     "latency",
@@ -75,17 +78,18 @@ class MetricsTool:
         self.client = client
         self.timeout_seconds = timeout_seconds
         self.cache = cache
-        self.service_label = service_label
+        self.service_label = _validate_label_name(service_label)
         self.step_seconds = step_seconds
         self.max_window_seconds = max_window_seconds
         self.max_shards = max_shards
 
     def run(self, query: BaseModel) -> ToolResult:
         metrics_query = MetricsQuery.model_validate(query)
+        public_service = _redact_public_text(metrics_query.service)
         started_at = start_timer()
         cache_key = build_cache_key(
             tool_name=self.name,
-            service=metrics_query.service,
+            service=public_service,
             query=metrics_query,
             start=metrics_query.start,
             end=metrics_query.end,
@@ -97,7 +101,7 @@ class MetricsTool:
 
         promql_candidates = _promql_candidates(
             metrics_query.metric_type,
-            metrics_query.service,
+            public_service,
             self.service_label,
         )
         promql = promql_candidates[0]
@@ -122,7 +126,7 @@ class MetricsTool:
                     },
                     summary=(
                         "no Prometheus samples for "
-                        f"{metrics_query.service} {metrics_query.metric_type}"
+                        f"{public_service} {metrics_query.metric_type}"
                     ),
                     evidence=[],
                     cache_key=cache_key,
@@ -141,7 +145,7 @@ class MetricsTool:
                     },
                     summary=compact_summary(
                         {
-                            "service": metrics_query.service,
+                            "service": public_service,
                             "metric": metrics_query.metric_type,
                             "avg": round(stats["avg"], 4),
                             "p95": round(stats["p95"], 4),
@@ -152,7 +156,7 @@ class MetricsTool:
                         {
                             "type": "metric",
                             "source": "prometheus",
-                            "title": f"{metrics_query.metric_type} for {metrics_query.service}",
+                            "title": f"{metrics_query.metric_type} for {public_service}",
                             "payload": {"query": promql, "stats": stats},
                         }
                     ],
@@ -163,22 +167,22 @@ class MetricsTool:
             result = ToolResult(
                 status="timeout",
                 data={"query": promql, "queries": attempted_queries},
-                summary=f"Prometheus query timed out for {metrics_query.service}",
+                summary=f"Prometheus query timed out for {public_service}",
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
-                error_message=str(exc),
+                error_message=_redact_exception(exc),
             )
         except (httpx.HTTPError, KeyError, TypeError, ValueError, IndexError) as exc:
             result = ToolResult(
                 status="degraded",
                 data={"query": promql, "queries": attempted_queries},
                 summary=(
-                    f"Prometheus unavailable for {metrics_query.service}; "
+                    f"Prometheus unavailable for {public_service}; "
                     "continuing with degraded metrics"
                 ),
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
-                error_message=str(exc),
+                error_message=_redact_exception(exc),
             )
 
         if self.cache and result.status in {"succeeded", "degraded"}:
@@ -252,8 +256,8 @@ class MetricsTool:
 
 
 def _promql(metric_type: MetricType, service: str, service_label: str = "service") -> str:
+    label = _validate_label_name(service_label)
     escaped = service.replace("\\", "\\\\").replace('"', '\\"')
-    label = service_label
     sel = f'{label}="{escaped}"'
     templates: dict[str, str] = {
         "latency": (
@@ -381,6 +385,7 @@ def _promql_templates_for_selector(metric_type: MetricType, selector: str) -> li
 
 
 def _service_selector_candidates(service: str, service_label: str) -> list[str]:
+    service_label = _validate_label_name(service_label)
     labels = [
         service_label,
         "service",
@@ -443,3 +448,19 @@ def _series_stats(values: Iterable[float]) -> dict[str, float]:
         "last": last,
         "change_ratio": change_ratio,
     }
+
+
+def _validate_label_name(value: str) -> str:
+    label = value.strip()
+    if not _PROMETHEUS_LABEL_RE.fullmatch(label):
+        msg = "service_label must be a valid Prometheus label name"
+        raise ValueError(msg)
+    return label
+
+
+def _redact_exception(exc: BaseException) -> str:
+    return redact_text(str(exc)).redacted_text
+
+
+def _redact_public_text(value: str) -> str:
+    return redact_text(value).redacted_text

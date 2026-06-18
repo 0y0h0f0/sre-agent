@@ -14,7 +14,7 @@
 Alert Sources
   - POST /api/alerts webhook
   - Alertmanager poller
-  - Grafana webhook (M9, gated)
+  - Grafana-shaped payload via /api/alerts
         |
         v
 FastAPI (apps/api)
@@ -67,7 +67,7 @@ React Console (apps/web)
 | Agent | `packages/agent/` | 18 节点 LangGraph、节点函数、FakeLLM/LLM adapter、guardrail、runner |
 | Common | `packages/common/` | Settings、错误结构、ID、时间、redaction、metrics、feature flags、URL 安全 |
 | DB | `packages/db/` | 32 个 SQLAlchemy 模型、repository、session 工厂 |
-| Discovery | `packages/discovery/` | Prometheus/Loki/Jaeger/K8s/Grafana/Tempo 发现、配置合并和发布 |
+| Discovery | `packages/discovery/` | Prometheus/Loki/Jaeger/K8s/Tempo 发现、backend endpoint detection、能力矩阵、拓扑推导、配置 proposal helper |
 | Tools | `packages/tools/` | Metrics/logs/traces/deployment/K8s/DB/runbook/executor 工具接口与后端 |
 | RAG | `packages/rag/` | Runbook split、metadata、embedding、BM25/vector/hybrid retrieval、rerank、draft/diff |
 | Memory | `packages/memory/` | Context budget、token count、compression plan、memory store |
@@ -77,7 +77,7 @@ API 层遵循 `router -> service -> repository -> model`。Router 只处理 HTTP
 
 ## 运行时数据流
 
-1. 告警通过 webhook、Alertmanager poller 或 gated Grafana webhook 到达。
+1. 告警通过通用 webhook、Alertmanager poller 或 Grafana-shaped `/api/alerts` payload 到达；当前没有独立注册的 Grafana webhook router。
 2. API 标准化 payload，计算 fingerprint；若已有未关闭 incident，则复用/去重。
 3. API 创建 `Incident` 和 `AgentRun`，写入 PostgreSQL，并把诊断任务放入 Celery。
 4. Worker 取任务，读取 settings 和已发布有效配置，构建工具、memory、RAG、LLM 和 executor 依赖。
@@ -147,7 +147,7 @@ M9 是增强层，不替代 M0-M8 确定性路径：
 | Incident diff | `packages/rag/incident_diff.py` | 仅生成 `pending_review` amendment draft |
 | Web search | `packages/rag/web_search_provider.py`、`runbook_web_context.py` | gated、HTTPS/domain 控制、脱敏、缓存、降级 |
 | Tempo trace | `packages/tools/trace_backends.py` | `TRACE_BACKEND=tempo` 需要 M9 gate；否则 degraded |
-| Grafana webhook | API/router + discovery/config | HMAC/size limit/gate 后摄取 |
+| Grafana-shaped alerts | API schema + service helper | `/api/alerts` 已支持 Grafana 形状；独立 helper 当前未暴露为 router，HMAC/size 配置未接线 |
 | Semantic search | `packages/rag/retriever.py`、embedding provider | gated；embedding 失败不阻塞 runbook 入库 |
 
 ## 设计约束

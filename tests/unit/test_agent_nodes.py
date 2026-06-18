@@ -14,6 +14,7 @@ from packages.agent.state import IncidentState
 from packages.common.settings import Settings
 from packages.memory.context_builder import ContextBuilder
 from packages.memory.memory_store import MemoryStore
+from packages.tools.base import ToolResult
 from packages.tools.cache import RequestLocalToolCache
 
 
@@ -89,6 +90,47 @@ def _seed_incident_run(db: Session, incident_id: str, agent_run_id: str) -> None
     db.flush()
 
 
+class _RunbookTool:
+    name = "runbook_search"
+    timeout_seconds = 1.0
+
+    def run(self, query) -> ToolResult:
+        return ToolResult(
+            status="succeeded",
+            data={
+                "results": [
+                    {
+                        "chunk_id": "chk_traceable",
+                        "source_path": "runbooks/high-5xx.md",
+                        "title": "High 5xx rollback",
+                        "excerpt": "Rollback checks for high 5xx after deploy.",
+                        "score": 0.94,
+                        "metadata": {"service": "checkout"},
+                    }
+                ],
+                "count": 1,
+            },
+            summary="matches=1",
+            evidence=[
+                {
+                    "type": "runbook",
+                    "source": "runbook",
+                    "source_id": "chk_traceable",
+                    "title": "High 5xx rollback",
+                    "excerpt": "Rollback checks for high 5xx after deploy.",
+                    "payload": {
+                        "chunk_id": "chk_traceable",
+                        "source_path": "runbooks/high-5xx.md",
+                        "metadata": {"service": "checkout"},
+                        "score": 0.94,
+                    },
+                    "confidence": 0.94,
+                }
+            ],
+            duration_ms=1,
+        )
+
+
 class TestPersistEvidence:
     def test_persist_evidence_writes_ids_back_to_state(self, db_session: Session) -> None:
         from packages.agent.nodes._persist import persist_evidence
@@ -133,6 +175,65 @@ class TestPersistEvidence:
         row = EvidenceItemRepository(db_session).list_for_run("run_evidence")[0]
         assert row.evidence_id == evidence[0]["evidence_id"]
         assert row.payload["evidence_id"] == evidence[0]["evidence_id"]
+
+    def test_persist_evidence_uses_excerpt_when_summary_missing(self, db_session: Session) -> None:
+        from packages.agent.nodes._persist import persist_evidence
+        from packages.db.repositories.evidence_items import EvidenceItemRepository
+
+        _seed_incident_run(db_session, "inc_runbook_evidence", "run_runbook_evidence")
+        evidence = [
+            {
+                "type": "runbook",
+                "source": "runbook",
+                "source_id": "chk_runbook_1",
+                "title": "Rollback checks",
+                "excerpt": "Verify rollback preconditions before executing.",
+                "payload": {
+                    "chunk_id": "chk_runbook_1",
+                    "source_path": "runbooks/high-5xx.md",
+                },
+                "confidence": 0.91,
+            }
+        ]
+
+        persist_evidence(db_session, "inc_runbook_evidence", "run_runbook_evidence", evidence)
+
+        row = EvidenceItemRepository(db_session).list_for_run("run_runbook_evidence")[0]
+        assert row.excerpt == "Verify rollback preconditions before executing."
+        assert row.source_id == "chk_runbook_1"
+        assert row.payload["payload"]["source_path"] == "runbooks/high-5xx.md"
+
+
+class TestRetrieveRunbook:
+    def test_retrieve_runbook_persists_chunk_as_traceable_evidence(
+        self, db_session: Session
+    ) -> None:
+        from packages.agent.nodes.retrieve_runbook import retrieve_runbook
+        from packages.db.repositories.evidence_items import EvidenceItemRepository
+
+        _seed_incident_run(db_session, "inc_runbook", "run_runbook")
+        deps = _make_deps(db_session)
+        deps.runbook_search_tool = _RunbookTool()
+
+        state = _base_state(
+            incident_id="inc_runbook",
+            agent_run_id="run_runbook",
+            service_name="checkout",
+            alert_name="High5xxAfterDeploy",
+        )
+
+        result = retrieve_runbook(state, deps)
+
+        chunk = result["runbook_context"][0]
+        assert chunk["chunk_id"] == "chk_traceable"
+        assert chunk["source_path"] == "runbooks/high-5xx.md"
+        assert chunk["source_id"] == "chk_traceable"
+        assert chunk["evidence_id"].startswith("evi_")
+        rows = EvidenceItemRepository(db_session).list_for_run("run_runbook")
+        assert len(rows) == 1
+        assert rows[0].evidence_id == chunk["evidence_id"]
+        assert rows[0].source_id == "chk_traceable"
+        assert rows[0].payload["payload"]["source_path"] == "runbooks/high-5xx.md"
 
 
 class TestCollectK8sAndDbNodes:
@@ -996,7 +1097,59 @@ class TestExecuteActionNode:
         rows = ActionRepository(db_session).list_for_run(agent_run_id)
         assert rows[0].status == "blocked"
 
-    def test_live_restart_executes_when_capability_preflight_passes(
+    def test_live_backend_routes_record_only_actions_to_fixture(
+        self, db_session: Session
+    ) -> None:
+        from packages.db.repositories.actions import ActionRepository
+
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("record-only action should not hit live backend")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        incident_id = "inc_live_record_only"
+        agent_run_id = "run_live_record_only"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+
+        result = execute_action(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                recommended_actions=[
+                    {
+                        "type": "create_ticket",
+                        "target": "oncall",
+                        "params": {"priority": "P1"},
+                        "risk_level": "L1",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "succeeded"
+        assert execution["message"] == "mock ticket created"
+        assert backend.execute_calls == []
+        rows = ActionRepository(db_session).list_for_run(agent_run_id)
+        assert rows[0].executor == "fixture"
+        assert rows[0].status == "succeeded"
+
+    def test_live_restart_deployment_executes_when_capability_preflight_passes(
         self, db_session: Session
     ) -> None:
         from packages.tools.executor_backends import ExecutionResult
@@ -1034,7 +1187,7 @@ class TestExecuteActionNode:
                 },
                 recommended_actions=[
                     {
-                        "type": "restart_service",
+                        "type": "restart_deployment",
                         "target": "checkout",
                         "params": {},
                         "risk_level": "L2",
@@ -1051,6 +1204,372 @@ class TestExecuteActionNode:
         capability = result["execution_results"][0]["capability"]
         assert capability["bounded_irreversible"] is True
         assert "k8s_rollout" in capability["verify_gates"]
+
+    def test_live_scale_deployment_blocks_invalid_replicas_before_backend(
+        self, db_session: Session
+    ) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("invalid live scale must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "replicas": 2,
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "scale_deployment",
+                        "target": "checkout",
+                        "params": {"replicas": 51},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "k8s_scale_replicas_valid" in execution["details"]["failed_preflight_checks"]
+        assert backend.execute_calls == []
+
+    def test_live_scale_deployment_blocks_non_replica_params_before_backend(
+        self, db_session: Session
+    ) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("non-replica live scale params must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "replicas": 2,
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "scale_deployment",
+                        "target": "checkout",
+                        "params": {"replicas": 4, "memory_limit": "1Gi"},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "k8s_scale_params_only" in execution["details"]["failed_preflight_checks"]
+        assert backend.execute_calls == []
+
+    def test_live_scale_back_uses_snapshot_replicas_for_degraded_rollback_preflight(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+                self.rollback_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("scale_back after degradation must use rollback")
+
+            def rollback(self, action, snapshot, context):
+                self.rollback_calls.append((action, snapshot, context))
+                return ExecutionResult(status="succeeded", message="live scale back")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+        snapshot = {
+            "k8s": {
+                "name": "checkout",
+                "namespace": "default",
+                "replicas": 2,
+            }
+        }
+
+        result = execute_action(
+            _base_state(
+                verify_result="degraded",
+                pre_action_snapshot=snapshot,
+                recommended_actions=[
+                    {
+                        "type": "scale_back",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert backend.execute_calls == []
+        assert backend.rollback_calls[0][1] == snapshot
+        assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
+
+    def test_live_scale_back_without_degraded_rollback_requires_replicas_param(
+        self, db_session: Session
+    ) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+                self.rollback_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("scale_back without replicas must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                self.rollback_calls.append((action, snapshot, context))
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "replicas": 2,
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "scale_back",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L2",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "k8s_scale_replicas_valid" in execution["details"]["failed_preflight_checks"]
+        assert backend.execute_calls == []
+        assert backend.rollback_calls == []
+
+    def test_live_rollback_blocks_invalid_revision_before_backend(
+        self, db_session: Session
+    ) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+                self.rollback_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("invalid rollback revision must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                self.rollback_calls.append((action, snapshot, context))
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "revision": "8",
+                        "image": "checkout:v8",
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "rollback_release",
+                        "target": "checkout",
+                        "params": {"to_revision": "bad"},
+                        "risk_level": "L3",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "k8s_rollback_revision_valid" in execution["details"]["failed_preflight_checks"]
+        assert backend.execute_calls == []
+        assert backend.rollback_calls == []
+
+    def test_live_rollback_blocks_non_revision_params_before_backend(
+        self, db_session: Session
+    ) -> None:
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+                self.rollback_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("non-revision rollback params must be blocked")
+
+            def rollback(self, action, snapshot, context):
+                self.rollback_calls.append((action, snapshot, context))
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+
+        result = execute_action(
+            _base_state(
+                pre_action_snapshot={
+                    "k8s": {
+                        "name": "checkout",
+                        "namespace": "default",
+                        "revision": "8",
+                        "image": "checkout:v8",
+                    }
+                },
+                recommended_actions=[
+                    {
+                        "type": "rollback_release",
+                        "target": "checkout",
+                        "params": {"to_revision": "7", "replicas": 2},
+                        "risk_level": "L3",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "blocked"
+        assert "k8s_rollback_params_only" in execution["details"]["failed_preflight_checks"]
+        assert backend.execute_calls == []
+        assert backend.rollback_calls == []
+
+    def test_live_rollback_uses_snapshot_revision_for_degraded_rollback_preflight(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class LiveBackend:
+            name = "live"
+
+            def __init__(self) -> None:
+                self.execute_calls = []
+                self.rollback_calls = []
+
+            def execute(self, action, context):
+                self.execute_calls.append((action, context))
+                raise AssertionError("degraded rollback must use rollback path")
+
+            def rollback(self, action, snapshot, context):
+                self.rollback_calls.append((action, snapshot, context))
+                return ExecutionResult(status="succeeded", message="live rollback")
+
+        deps = _make_deps(db_session)
+        backend = LiveBackend()
+        deps.executor_backend = backend
+        deps.settings.executor_k8s_namespace = "default"
+        snapshot = {
+            "k8s": {
+                "name": "checkout",
+                "namespace": "default",
+                "revision": "7",
+                "image": "checkout:v7",
+            }
+        }
+
+        result = execute_action(
+            _base_state(
+                verify_result="degraded",
+                pre_action_snapshot=snapshot,
+                recommended_actions=[
+                    {
+                        "type": "rollback_deployment",
+                        "target": "checkout",
+                        "params": {},
+                        "risk_level": "L3",
+                        "allowed": True,
+                        "requires_approval": False,
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert backend.execute_calls == []
+        assert backend.rollback_calls[0][0]["type"] == "rollback_deployment"
+        assert backend.rollback_calls[0][1] == snapshot
+        assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
 
     def test_live_pause_rollout_allows_unready_snapshot_after_approval(
         self, db_session: Session
@@ -1452,11 +1971,9 @@ class TestExecuteActionNode:
         assert execution["status"] == "blocked"
         assert "unknown live action capability" in execution["message"]
 
-    def test_live_read_only_action_not_forced_through_capability_preflight(
+    def test_live_read_only_action_routes_to_fixture_without_preflight(
         self, db_session: Session
     ) -> None:
-        from packages.tools.executor_backends import ExecutionResult
-
         class LiveBackend:
             name = "live"
 
@@ -1465,7 +1982,7 @@ class TestExecuteActionNode:
 
             def execute(self, action, context):
                 self.execute_calls.append((action, context))
-                return ExecutionResult(status="succeeded", message="read-only passthrough")
+                raise AssertionError("read-only action should not hit live backend")
 
             def rollback(self, action, snapshot, context):
                 raise AssertionError("rollback not expected")
@@ -1490,8 +2007,10 @@ class TestExecuteActionNode:
             deps,
         )
 
-        assert backend.execute_calls
-        assert result["execution_results"][0]["execution_result"]["status"] == "succeeded"
+        assert backend.execute_calls == []
+        execution = result["execution_results"][0]["execution_result"]
+        assert execution["status"] == "succeeded"
+        assert execution["message"] == "mock execution completed"
 
 
 class TestSnapshotVerifyRollbackFlow:
@@ -1678,6 +2197,446 @@ class TestSnapshotVerifyRollbackFlow:
         assert gates["k8s_rollout"]["verdict"] == "resolved"
         assert gates["k8s_rollout"]["evidence_ids"][0].startswith("evi_")
 
+    def test_verify_scale_deployment_requires_expected_replicas(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_scale_expected_replicas"
+        agent_run_id = "run_verify_scale_expected_replicas"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 3,
+                        "updated_replicas": 3,
+                        "ready_replicas": 3,
+                        "status": "complete",
+                    },
+                },
+                summary="rollout complete at old replica count",
+                evidence=[
+                    {
+                        "type": "k8s",
+                        "source": "fixture",
+                        "summary": "rollout complete at old replica count",
+                    }
+                ],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {
+                        "risk_level": "L2",
+                        "type": "scale_deployment",
+                        "target": "checkout",
+                        "params": {"replicas": 5},
+                    }
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert result["verify_result"] == "unchanged"
+        assert gates["k8s_rollout"]["expected_replicas"] == 5.0
+        assert gates["k8s_rollout"]["verdict"] == "unchanged"
+
+    def test_verify_scale_back_uses_execution_result_replicas(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_scale_back_expected_replicas"
+        agent_run_id = "run_verify_scale_back_expected_replicas"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 2,
+                        "updated_replicas": 2,
+                        "ready_replicas": 2,
+                        "status": "complete",
+                    },
+                },
+                summary="rollout complete at rollback replica count",
+                evidence=[
+                    {
+                        "type": "k8s",
+                        "source": "fixture",
+                        "summary": "rollout complete at rollback replica count",
+                    }
+                ],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {
+                        "risk_level": "L2",
+                        "type": "scale_back",
+                        "target": "checkout",
+                        "params": {},
+                        "execution_result": {
+                            "status": "succeeded",
+                            "details": {"replicas": 2},
+                        },
+                    }
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert result["verify_result"] == "resolved"
+        assert gates["k8s_rollout"]["expected_replicas"] == 2.0
+        assert gates["k8s_rollout"]["verdict"] == "resolved"
+
+    def test_verify_pause_rollout_treats_paused_status_as_resolved(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_pause_rollout"
+        agent_run_id = "run_verify_pause_rollout"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 3,
+                        "updated_replicas": 2,
+                        "ready_replicas": 2,
+                        "paused": True,
+                        "status": "paused",
+                    },
+                },
+                summary="rollout paused",
+                evidence=[{"type": "k8s", "source": "fixture", "summary": "rollout paused"}],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {"risk_level": "L2", "type": "pause_rollout", "target": "checkout"}
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert result["verify_result"] == "resolved"
+        assert gates["k8s_rollout"]["verdict"] == "resolved"
+
+    def test_verify_resume_rollout_treats_still_paused_status_as_unchanged(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_resume_rollout"
+        agent_run_id = "run_verify_resume_rollout"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 3,
+                        "updated_replicas": 2,
+                        "ready_replicas": 2,
+                        "paused": True,
+                        "status": "paused",
+                    },
+                },
+                summary="rollout still paused",
+                evidence=[
+                    {"type": "k8s", "source": "fixture", "summary": "rollout still paused"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {"risk_level": "L2", "type": "resume_rollout", "target": "checkout"}
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert result["verify_result"] == "unchanged"
+        assert gates["k8s_rollout"]["verdict"] == "unchanged"
+
+    def test_verify_keeps_action_specific_k8s_rollout_gates_for_same_target(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_action_specific_rollout"
+        agent_run_id = "run_verify_action_specific_rollout"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 3,
+                        "updated_replicas": 2,
+                        "ready_replicas": 2,
+                        "paused": True,
+                        "status": "paused",
+                    },
+                },
+                summary="rollout paused",
+                evidence=[{"type": "k8s", "source": "fixture", "summary": "rollout paused"}],
+                duration_ms=1,
+            ),
+        )
+        deps.k8s_tool = k8s_tool
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {"risk_level": "L2", "type": "pause_rollout", "target": "checkout"},
+                    {"risk_level": "L2", "type": "resume_rollout", "target": "checkout"},
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        rollout_gates = [
+            gate for gate in result["verify_gates"] if gate["gate"] == "k8s_rollout"
+        ]
+        verdict_by_action = {gate["action_type"]: gate["verdict"] for gate in rollout_gates}
+        assert len(rollout_gates) == 2
+        assert verdict_by_action == {
+            "pause_rollout": "resolved",
+            "resume_rollout": "unchanged",
+        }
+        assert len(k8s_tool.queries) == 2
+        assert result["verify_result"] == "unchanged"
+
+    def test_verify_k8s_rollout_falls_back_to_k8s_namespace_when_executor_empty(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_k8s_namespace"
+        agent_run_id = "run_verify_k8s_namespace"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.settings.executor_k8s_namespace = ""
+        deps.settings.k8s_namespace = "payments"
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "rollout_status",
+                    "payload": {
+                        "deployment": "checkout",
+                        "desired_replicas": 2,
+                        "updated_replicas": 2,
+                        "ready_replicas": 2,
+                        "status": "complete",
+                    },
+                },
+                summary="rollout complete",
+                evidence=[{"type": "k8s", "source": "fixture", "summary": "rollout complete"}],
+                duration_ms=1,
+            ),
+        )
+        deps.k8s_tool = k8s_tool
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {"risk_level": "L2", "type": "restart_pod", "target": "checkout"}
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        assert k8s_tool.queries[0].namespace == "payments"
+
     def test_verify_restart_statefulset_uses_statefulset_status(
         self, db_session: Session, monkeypatch
     ) -> None:
@@ -1742,6 +2701,80 @@ class TestSnapshotVerifyRollbackFlow:
 
         assert result["verify_result"] == "resolved"
         assert k8s_tool.queries[0].operation == "get_statefulset"
+
+    def test_verify_statefulset_progressing_status_prevents_resolved(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_statefulset_progressing"
+        agent_run_id = "run_verify_statefulset_progressing"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+        deps.k8s_tool = self._static_tool(
+            "k8s",
+            ToolResult(
+                status="succeeded",
+                data={
+                    "operation": "get_statefulset",
+                    "payload": {
+                        "kind": "StatefulSet",
+                        "replicas": 3,
+                        "updated_replicas": 3,
+                        "ready_replicas": 3,
+                        "current_revision": "postgres-7",
+                        "update_revision": "postgres-8",
+                        "status": "progressing",
+                    },
+                },
+                summary="statefulset rollout progressing",
+                evidence=[
+                    {
+                        "type": "k8s",
+                        "source": "fixture",
+                        "summary": "statefulset rollout progressing",
+                    }
+                ],
+                duration_ms=1,
+            ),
+        )
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="postgres",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {"risk_level": "L2", "type": "restart_statefulset", "target": "postgres"}
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        gates = {gate["gate"]: gate for gate in result["verify_gates"]}
+        assert result["verify_result"] == "improving"
+        assert gates["k8s_rollout"]["verdict"] == "improving"
 
     def test_verify_k8s_rollout_failure_prevents_resolved(
         self, db_session: Session, monkeypatch
@@ -2135,7 +3168,7 @@ class TestSnapshotVerifyRollbackFlow:
         result = take_snapshot(
             _base_state(
                 service_name="checkout",
-                recommended_actions=[{"type": "scale_deployment", "target": "checkout"}],
+                recommended_actions=[{"type": "restart_deployment", "target": "checkout"}],
             ),
             deps,
         )
@@ -2145,6 +3178,52 @@ class TestSnapshotVerifyRollbackFlow:
         assert tool.query.namespace == "payments"
         assert result["pre_action_snapshot"]["k8s"]["revision"] == "7"
         assert result["pre_action_snapshot"]["k8s_targets"]["checkout"]["revision"] == "7"
+
+    def test_take_snapshot_falls_back_to_k8s_namespace_when_executor_namespace_empty(
+        self, db_session: Session
+    ) -> None:
+        from packages.agent.nodes.take_snapshot import take_snapshot
+        from packages.tools.base import ToolResult
+
+        class K8sTool:
+            name = "k8s"
+            timeout_seconds = 1.0
+
+            def __init__(self) -> None:
+                self.query = None
+
+            def run(self, query):
+                self.query = query
+                return ToolResult(
+                    status="succeeded",
+                    data={
+                        "payload": {
+                            "name": query.service,
+                            "namespace": query.namespace,
+                            "revision": "9",
+                            "replicas": 2,
+                        }
+                    },
+                    summary="deployment snapshot",
+                    duration_ms=1,
+                )
+
+        deps = _make_deps(db_session)
+        deps.settings.executor_k8s_namespace = ""
+        deps.settings.k8s_namespace = "payments"
+        tool = K8sTool()
+        deps.k8s_tool = tool
+
+        take_snapshot(
+            _base_state(
+                service_name="checkout",
+                recommended_actions=[{"type": "restart_deployment", "target": "checkout"}],
+            ),
+            deps,
+        )
+
+        assert tool.query is not None
+        assert tool.query.namespace == "payments"
 
     def test_take_snapshot_captures_pause_rollout_target(self, db_session: Session) -> None:
         from packages.agent.nodes.take_snapshot import take_snapshot
@@ -2324,6 +3403,42 @@ class TestSnapshotVerifyRollbackFlow:
 
         deps = _make_deps(db_session)
         deps.settings.executor_k8s_namespace = "payments"
+        backend = RecordingBackend()
+        deps.executor_backend = backend
+
+        execute_action(
+            _base_state(
+                service_name="checkout",
+                recommended_actions=[
+                    {"type": "create_ticket", "allowed": True, "requires_approval": False}
+                ],
+            ),
+            deps,
+        )
+
+        assert backend.contexts[0].namespace == "payments"
+
+    def test_execute_action_falls_back_to_k8s_namespace_when_executor_namespace_empty(
+        self, db_session: Session
+    ) -> None:
+        from packages.tools.executor_backends import ExecutionResult
+
+        class RecordingBackend:
+            name = "recording"
+
+            def __init__(self) -> None:
+                self.contexts = []
+
+            def execute(self, action, context):
+                self.contexts.append(context)
+                return ExecutionResult(status="succeeded", message="ok")
+
+            def rollback(self, action, snapshot, context):
+                raise AssertionError("rollback not expected")
+
+        deps = _make_deps(db_session)
+        deps.settings.executor_k8s_namespace = ""
+        deps.settings.k8s_namespace = "payments"
         backend = RecordingBackend()
         deps.executor_backend = backend
 
@@ -2545,3 +3660,34 @@ class TestGenerateReportReviewFlag:
 
         assert report["verify_result"] == "degraded"
         assert report["verify_gates"][0]["gate"] == "k8s_rollout"
+
+    def test_report_includes_runbook_context_evidence_ids(self, db_session: Session) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+
+        deps = _make_deps(db_session)
+        state = _base_state(
+            incident_id="inc_runbook_report",
+            agent_run_id="run_runbook_report",
+            root_cause={
+                "summary": "bad release matched known high 5xx runbook",
+                "confidence": 0.8,
+                "evidence_ids": ["evi_runbook"],
+                "runbook_chunk_ids": ["chk_report"],
+            },
+            runbook_context=[
+                {
+                    "chunk_id": "chk_report",
+                    "source_id": "chk_report",
+                    "source_path": "runbooks/high-5xx.md",
+                    "title": "High 5xx rollback",
+                    "excerpt": "Rollback checks for high 5xx after deploy.",
+                    "score": 0.92,
+                    "metadata": {"service": "checkout"},
+                    "evidence_id": "evi_runbook",
+                }
+            ],
+        )
+
+        result = generate_report(state, deps)
+
+        assert "evi_runbook" in result["incident_report"]["evidence_ids"]

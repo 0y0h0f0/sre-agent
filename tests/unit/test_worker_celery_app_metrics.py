@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from apps.worker.celery_app import _is_celery_worker_process
+from apps.worker.celery_app import _is_celery_worker_process, celery_app
+
+
+def test_eval_tasks_are_imported_by_worker() -> None:
+    assert "apps.worker.eval_tasks" in set(celery_app.conf.imports or ())
 
 
 def test_metrics_server_starts_only_for_worker_command() -> None:

@@ -1,8 +1,10 @@
 # 后端对接范围
 
-**最后更新：** 2026-06-15
+**最后更新：** 2026-06-18
 
 本文说明当前实现中的“后端对接”边界，避免把多服务诊断能力误解为多套后端并联能力。
+
+各 backend adapter 的 worker 构造、`EffectiveConfig` 分界、cache bucket、URL safety 和 read-only diagnostics 细节见 [Observability 与后端适配器技术深挖](../00-overview/observability-backend-adapters-deep-dive.md)。服务发现、capability matrix、workload binding 和 topology 推导细节见 [Discovery、Capability Matrix 与服务拓扑技术深挖](../00-overview/discovery-capability-topology-deep-dive.md)。
 
 ## 当前模型
 

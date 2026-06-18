@@ -11,9 +11,12 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from packages.common.redaction import redact_dict_values, redact_text
 from packages.common.time import ensure_utc
 from packages.tools.base import ToolResult, ToolStatus, compact_summary, elapsed_ms, start_timer
 from packages.tools.cache import RequestLocalToolCache, build_cache_key
+
+_LOKI_LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class LogsQuery(BaseModel):
@@ -59,15 +62,20 @@ class LogsTool:
         self.client = client
         self.timeout_seconds = timeout_seconds
         self.cache = cache
-        self.service_label = service_label
+        self.service_label = _validate_label_name(service_label)
 
     def run(self, query: BaseModel) -> ToolResult:
         logs_query = LogsQuery.model_validate(query)
+        public_service = _redact_public_text(logs_query.service)
+        public_keywords = [_redact_public_text(keyword) for keyword in logs_query.keywords]
+        public_query = logs_query.model_copy(
+            update={"service": public_service, "keywords": public_keywords}
+        )
         started_at = start_timer()
         cache_key = build_cache_key(
             tool_name=self.name,
-            service=logs_query.service,
-            query=logs_query,
+            service=public_service,
+            query=public_query,
             start=logs_query.start,
             end=logs_query.end,
             bucket_seconds=60,
@@ -77,7 +85,7 @@ class LogsTool:
             return cached.model_copy(update={"duration_ms": elapsed_ms(started_at)})
 
         try:
-            lines = self._query_loki(logs_query)
+            lines = self._query_loki(public_query)
             aggregate = _aggregate_logs(lines)
             status: ToolStatus = "succeeded" if lines else "degraded"
             result = ToolResult(
@@ -86,19 +94,19 @@ class LogsTool:
                 summary=(
                     compact_summary(
                         {
-                            "service": logs_query.service,
+                            "service": public_service,
                             "lines": len(lines),
                             "top_error": aggregate["top_error_type"],
                         }
                     )
                     if lines
-                    else f"no Loki log lines for {logs_query.service}"
+                    else f"no Loki log lines for {public_service}"
                 ),
                 evidence=[
                     {
                         "type": "log",
                         "source": "loki",
-                        "title": f"log samples for {logs_query.service}",
+                        "title": f"log samples for {public_service}",
                         "payload": aggregate,
                     }
                 ]
@@ -112,19 +120,19 @@ class LogsTool:
             result = ToolResult(
                 status="timeout",
                 data={},
-                summary=f"Loki query timed out for {logs_query.service}",
+                summary=f"Loki query timed out for {public_service}",
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
-                error_message=str(exc),
+                error_message=redact_text(str(exc)).redacted_text,
             )
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
             result = ToolResult(
                 status="degraded",
                 data={},
-                summary=f"Loki unavailable for {logs_query.service}; continuing with degraded logs",
+                summary=f"Loki unavailable for {public_service}; continuing with degraded logs",
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
-                error_message=str(exc),
+                error_message=redact_text(str(exc)).redacted_text,
             )
 
         if self.cache and result.status in {"succeeded", "degraded"}:
@@ -163,13 +171,14 @@ class LogsTool:
                     msg = f"loki status={payload.get('status')}"
                     raise ValueError(msg)
                 for stream in payload["data"].get("result", []):
-                    labels = stream.get("stream", {})
+                    raw_labels = stream.get("stream", {})
+                    labels = _public_labels(raw_labels)
                     for timestamp, line in stream.get("values", []):
                         candidate_had_rows = True
                         labels_key = tuple(sorted(labels.items()))
                         collected[(str(timestamp), str(line), labels_key)] = {
                             "timestamp": str(timestamp),
-                            "line": str(line),
+                            "line": redact_text(str(line)).redacted_text,
                             "labels": labels,
                         }
                 if candidate_had_rows or len(collected) > before_count:
@@ -187,6 +196,7 @@ def _logql_candidates(
 
 
 def _logql(service: str, keyword: str | None, service_label: str = "service") -> str:
+    service_label = _validate_label_name(service_label)
     escaped_service = service.replace("\\", "\\\\").replace('"', '\\"')
     return _logql_from_selector(f'{service_label}="{escaped_service}"', keyword)
 
@@ -200,6 +210,7 @@ def _logql_from_selector(selector: str, keyword: str | None) -> str:
 
 
 def _selector_candidates(service: str, service_label: str) -> list[str]:
+    service_label = _validate_label_name(service_label)
     labels = [
         service_label,
         "service",
@@ -234,6 +245,26 @@ def _dedupe(items: list[str]) -> list[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _validate_label_name(value: str) -> str:
+    label = value.strip()
+    if not _LOKI_LABEL_RE.fullmatch(label):
+        msg = "service_label must be a valid Loki label name"
+        raise ValueError(msg)
+    return label
+
+
+def _redact_public_text(value: str) -> str:
+    return redact_text(value).redacted_text
+
+
+def _public_labels(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    labels = {str(key): str(item) for key, item in value.items()}
+    redacted, _redaction_count = redact_dict_values(labels)
+    return redacted
 
 
 def _aggregate_logs(lines: list[dict[str, Any]]) -> dict[str, Any]:

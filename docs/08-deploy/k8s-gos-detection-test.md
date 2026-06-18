@@ -2,8 +2,8 @@
 
 **最后更新：** 2026-06-15
 
-本文说明如何在 Kubernetes 中验证 SRE Agent 是否能对接并检测 `~/gos` 的
-`task-platform` 后端项目。脚本入口：
+本文说明如何在 Kubernetes 中验证 SRE Agent 是否能对接并检测 `~/target-backend` 的
+`target-namespace` 后端项目。脚本入口：
 
 ```bash
 scripts/k8s_gos_detection_smoke.sh
@@ -15,15 +15,15 @@ scripts/k8s_gos_detection_smoke.sh
 ## 前置条件
 
 - `kubectl` 已指向测试集群。
-- `~/gos` 已部署到 `task-platform` namespace。
+- `~/target-backend` 已部署到 `target-namespace` namespace。
 - Agent 已部署到 `sre-agent` namespace。
 - 本机有 `kubectl`、`curl`、`jq`、`python3`、`base64`。
 - Agent API 可通过 API key 访问，或可以提供初始 bootstrap seed。
 
-推荐先部署 `~/gos`：
+推荐先部署 `~/target-backend`：
 
 ```bash
-cd ~/gos
+cd ~/target-backend
 ./deploy/k8s/deploy-all.sh dev --build
 ```
 
@@ -36,7 +36,7 @@ kubectl apply -k deploy/k8s/base/
 
 ## 首次准备
 
-首次对接 `~/gos` 时执行：
+首次对接 `~/target-backend` 时执行：
 
 ```bash
 cd /home/yhf/agentp
@@ -49,8 +49,8 @@ scripts/k8s_gos_detection_smoke.sh --setup-only
 
 `--setup-only` 会：
 
-- 在 `task-platform` 中创建只读 Role/RoleBinding，允许 `sre-agent:sre-agent` 读取 Pod、日志、事件、Deployment、Service 等。
-- 将 Agent ConfigMap patch 为读取 `task-platform` 的 Prometheus、Loki、Jaeger、Alertmanager 和 K8s API。
+- 在 `target-namespace` 中创建只读 Role/RoleBinding，允许 `sre-agent:sre-agent` 读取 Pod、日志、事件、Deployment、Service 等。
+- 将 Agent ConfigMap patch 为读取 `target-namespace` 的 Prometheus、Loki、Jaeger、Alertmanager 和 K8s API。
 - 保持 `EXECUTOR_BACKEND=fixture`，不启用真实 remediation 写入。
 - 设置 `K8S_BACKEND=live`、`TRACE_BACKEND=jaeger`。
 - 默认保持 `DB_DIAGNOSTICS_BACKEND=fixture`。
@@ -59,7 +59,7 @@ scripts/k8s_gos_detection_smoke.sh --setup-only
 如果要覆盖 live DB read-only diagnostics，使用只读账号 DSN：
 
 ```bash
-export SRE_AGENT_DB_DIAGNOSTICS_URL='postgresql://readonly:***@postgres.task-platform.svc.cluster.local:5432/task_platform?sslmode=disable'
+export SRE_AGENT_DB_DIAGNOSTICS_URL='postgresql://readonly:***@postgres.target-namespace.svc.cluster.local:5432/target_namespace?sslmode=disable'
 scripts/k8s_gos_detection_smoke.sh --setup-only
 ```
 
@@ -138,7 +138,7 @@ jq . reports/k8s-gos-detection/<timestamp>/summary.jsonl
 
 通过标准：
 
-- discovery 至少能发现 `task-platform` 服务，或清楚标记 degraded 原因。
+- discovery 至少能发现 `target-namespace` 服务，或清楚标记 degraded 原因。
 - 关键 Agent run 状态为 `succeeded` 或 `waiting_approval`。
 - `missing_tools` 为空。
 - `failed_tools` 为空。
@@ -160,8 +160,8 @@ Pod 内缺少 `KUBERNETES_SERVICE_HOST` 或 service account token 时，live K8s
 
 - patch Agent ConfigMap/Secret。
 - 创建只读 RBAC。
-- `rollout restart` Agent API/worker 和部分 `~/gos` Deployment。
-- 给 `~/gos` Deployment 设置/清理故障环境变量。
+- `rollout restart` Agent API/worker 和部分 `~/target-backend` Deployment。
+- 给 `~/target-backend` Deployment 设置/清理故障环境变量。
 - 临时 scale `postgres`、`redis`、`user-service`、`task-service`、`prometheus`。
 
 脚本不会：

@@ -128,6 +128,22 @@ _K8S_RESUME_PREFLIGHT = (
     "k8s_rollout_paused",
     "k8s_rollout_resume_patch_only",
 )
+_K8S_SCALE_PREFLIGHT = (
+    "k8s_target_name_valid",
+    "k8s_namespace_valid",
+    "k8s_deployment_exists",
+    "k8s_scale_params_only",
+    "k8s_scale_replicas_valid",
+    "k8s_deployment_scale_patch_only",
+)
+_K8S_ROLLBACK_PREFLIGHT = (
+    "k8s_target_name_valid",
+    "k8s_namespace_valid",
+    "k8s_deployment_exists",
+    "k8s_rollback_params_only",
+    "k8s_rollback_revision_valid",
+    "k8s_deployment_rollback_subresource_only",
+)
 _K8S_VERIFY = ("k8s_rollout", "metrics_logs")
 
 _CAPABILITIES: dict[str, ActionCapability] = {
@@ -192,6 +208,17 @@ _CAPABILITIES: dict[str, ActionCapability] = {
         verify_gates=_K8S_VERIFY,
         risk_level_expectation="L2",
     ),
+    "restart_deployment": _cap(
+        "restart_deployment",
+        "live_mutating_bounded_irreversible",
+        live_backend="k8s",
+        bounded_irreversible=True,
+        required_snapshot_paths=_K8S_RESTART_SNAPSHOT,
+        optional_snapshot_paths=("k8s.revision",),
+        preflight_checks=_K8S_RESTART_PREFLIGHT,
+        verify_gates=_K8S_VERIFY,
+        risk_level_expectation="L2",
+    ),
     "restart_service": _cap(
         "restart_service",
         "live_mutating_bounded_irreversible",
@@ -243,6 +270,7 @@ _CAPABILITIES: dict[str, ActionCapability] = {
         reversible=True,
         rollback_action_type="scale_back",
         required_snapshot_paths=_K8S_REPLICA_SNAPSHOT,
+        preflight_checks=_K8S_SCALE_PREFLIGHT,
         verify_gates=_K8S_VERIFY,
         risk_level_expectation="L2",
     ),
@@ -253,6 +281,7 @@ _CAPABILITIES: dict[str, ActionCapability] = {
         reversible=True,
         rollback_action_type="scale_deployment",
         required_snapshot_paths=_K8S_REPLICA_SNAPSHOT,
+        preflight_checks=_K8S_SCALE_PREFLIGHT,
         verify_gates=_K8S_VERIFY,
         risk_level_expectation="L2",
     ),
@@ -267,6 +296,7 @@ _CAPABILITIES: dict[str, ActionCapability] = {
             "k8s.revision",
             "k8s.image",
         ),
+        preflight_checks=_K8S_ROLLBACK_PREFLIGHT,
         verify_gates=("k8s_rollout", "metrics_logs", "db_readonly"),
         risk_level_expectation="L3",
     ),
@@ -281,6 +311,7 @@ _CAPABILITIES: dict[str, ActionCapability] = {
             "k8s.revision",
             "k8s.image",
         ),
+        preflight_checks=_K8S_ROLLBACK_PREFLIGHT,
         verify_gates=("k8s_rollout", "metrics_logs", "db_readonly"),
         risk_level_expectation="L3",
     ),

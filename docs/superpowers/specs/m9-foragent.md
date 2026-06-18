@@ -308,7 +308,8 @@ packages/db/models.py
 ```text
 tests/unit/test_llm_runbook_generation.py
 tests/unit/test_runbook_action_classifier.py
-tests/integration/test_llm_runbook_draft_lifecycle.py
+tests/unit/test_runbook_draft_ingest.py
+tests/integration/test_runbook_review_api.py
 ```
 
 ## 7.4 启用条件
@@ -603,9 +604,7 @@ apps/api/routers/runbooks.py
 ## 9.3 建议测试文件
 
 ```text
-tests/unit/test_web_search_redaction.py
 tests/unit/test_web_search_safety.py
-tests/unit/test_web_search_source_traceability.py
 tests/integration/test_runbook_web_context_draft.py
 ```
 
@@ -755,7 +754,8 @@ packages/tools/traces.py
 
 ```text
 tests/unit/test_tempo_trace_backend.py
-tests/integration/test_trace_tool_tempo_backend.py
+tests/unit/test_trace_backend_settings.py
+tests/e2e/test_m9_tempo_grafana.py
 ```
 
 ## 10.4 启用条件
@@ -851,7 +851,7 @@ packages/discovery/backend_endpoints.py
 
 ```text
 tests/unit/test_tempo_endpoint_detection.py
-tests/integration/test_tempo_discovery_proposal.py
+tests/e2e/test_m9_tempo_grafana.py
 ```
 
 ## 11.4 启用条件
@@ -928,7 +928,7 @@ apps/api/services/alert_service.py
 
 ```text
 tests/unit/test_grafana_alert_parser.py
-tests/integration/test_grafana_webhook_ingest.py
+tests/e2e/test_m9_tempo_grafana.py
 ```
 
 ## 12.4 disabled 行为
@@ -1057,7 +1057,8 @@ migrations/versions/XXXX_runbook_chunk_embeddings.py
 
 ```text
 tests/unit/test_semantic_runbook_search.py
-tests/integration/test_embedding_fallback.py
+tests/unit/test_external_embedding_provider.py
+tests/e2e/test_m9_semantic_search.py
 ```
 
 ## 13.4 启用条件
@@ -1191,7 +1192,8 @@ apps/api/routers/config.py
 
 ```text
 tests/unit/test_external_embedding_provider.py
-tests/integration/test_external_embedding_degraded.py
+tests/unit/test_semantic_runbook_search.py
+tests/e2e/test_m9_semantic_search.py
 ```
 
 ## 14.4 启用条件

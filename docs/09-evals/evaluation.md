@@ -1,8 +1,12 @@
 # 评测体系
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-18
 
 评测用于回答一个问题：在确定性输入和安全约束下，Agent 是否仍能给出可追踪根因、保留必要证据、拦住高风险动作并生成报告。CI 只使用 FakeLLM smoke eval；真实 LLM 或外部 provider 只能用于手动 full eval 或演示，不能作为稳定 CI 门禁。
+
+需要沿代码路径理解 Eval CLI、harness 内存环境、FakeEmbedding/FakeReranker 强制注入、Eval API/Celery task、shadow/replay 和工程指标读取方式时，见 [测试、Eval 与工程指标技术深挖](../00-overview/testing-eval-engineering-metrics-deep-dive.md)。
+需要理解 FakeLLM deterministic 覆盖、真实 provider 手动 eval、provider usage metadata 和 CI 不使用真实 LLM 的边界时，见 [LLM、Prompt、FakeLLM 与 Provider 边界技术深挖](../00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md)。
+需要理解 operator feedback 当前不会自动生成 eval case、`FeedbackItemRepository.list_for_eval()` 的边界以及 NFA/noise 样本处理注意事项时，见 [反馈、NFA、关联事件与持续学习技术深挖](../00-overview/feedback-nfa-correlation-continuous-learning-deep-dive.md)。
 
 下图概括 Eval harness 如何从 suite case 构建独立内存环境、运行 Agent，并输出 suite metrics 和报告。
 
@@ -18,10 +22,11 @@
 | `packages/evals/datasets/datasets.py` | 加载 `smoke` / `full` 数据集，返回 `EvalCase` |
 | `packages/evals/datasets/harness.py` | 核心 harness：创建内存 DB、seed runbooks、运行 Agent、统计指标 |
 | `packages/evals/harness.py` | 兼容导出，转发到 `datasets.harness` |
-| `packages/evals/replay.py` | 离线重放历史 incident，与原始根因摘要对比 |
+| `packages/evals/replay.py` | 安全重放历史 incident；源库只读，临时 DB 跑 Agent，与原始根因摘要对比 |
 | `packages/evals/shadow.py` | shadow mode stub，只写 `EvalRun`，不触碰真实 incident/action |
-| `apps/api/routers/evals.py` | Eval API：创建/list/get eval run，触发 shadow |
+| `apps/api/routers/evals.py` | Eval API：工程指标、创建/list/get eval run、触发 replay/shadow |
 | `apps/worker/eval_tasks.py` | Celery task：异步运行 eval suite 并回写 `EvalRun.metrics` |
+| `GET /api/evals/engineering-metrics` | 只读工程指标摘要，复用最新成功 smoke eval 和运行时业务表 |
 
 ## Suite
 
@@ -81,10 +86,16 @@ Runner 会同时写：
 | Redis/Celery | `memory://...` |
 | LLM | `LLM_PROVIDER` env，默认 `fake` |
 | LLM model | `LLM_MODEL` env，默认 `fake-diagnosis-model` |
+| Embedding | 固定 `fake`，不读取环境中的 `EMBEDDING_PROVIDER` |
+| Reranker | 固定 `fake`，不读取环境中的 `RERANKER_PROVIDER` |
 | Trace fixture | `demo/faults/traces.json` |
 | Git changes fixture | `demo/faults/git_changes.json` |
 
 真实 provider 是显式 opt-in：设置 `LLM_PROVIDER` 为非 `fake` 时，必须显式提供 `LLM_MODEL`，并按 provider 需要提供 `LLM_API_KEY`、`LLM_BASE_URL`、reasoning 和 timeout 配置。真实 provider eval 只适合手动运行。
+
+Smoke eval 的 runbook ingest/search 显式注入 `FakeEmbeddingProvider` 和 `FakeRerankerBackend`。即使本机 shell 设置了 `EMBEDDING_PROVIDER=bge_zh`、`RERANKER_PROVIDER=bge` 或 `ALL_PROXY=socks://...`，标准 smoke eval 也不会调用本地/外部 embedding 或 reranker 服务。
+
+Smoke eval 使用 in-memory SQLite。Runbook hybrid search 在 SQLite 下会走确定性词法 fallback，不执行 PostgreSQL 专用的 `@@ to_tsquery` 语法；PostgreSQL 环境仍使用 tsvector/BM25 recall。
 
 ## 指标
 
@@ -151,20 +162,26 @@ Eval API：
 | `POST` | `/api/evals/runs` | 创建 `EvalRun(status=queued)`，通过 Celery `run_eval_suite_task` 异步执行 suite |
 | `GET` | `/api/evals/runs` | 返回最近 50 条 eval run |
 | `GET` | `/api/evals/runs/{eval_run_id}` | 查询单个 eval run |
+| `POST` | `/api/evals/replay` | 创建 `EvalRun(suite='replay')`，通过 Celery `run_replay_eval_task` 异步重放历史 incident |
 | `POST` | `/api/evals/shadow` | 触发 shadow mode stub |
+| `GET` | `/api/evals/engineering-metrics` | 聚合工程评估指标；`window_days` 默认 30，范围 1-365 |
 
 `run_eval_suite_task` 会把状态改为 `running`，运行 `run_suite(suite)`，成功后写入 `status=succeeded` 和 metrics；失败时写入 `status=failed` 和错误字符串。
 
 注意：API 触发的 eval 不会直接把 report JSON 路径作为 API 响应返回；持久化在 `EvalRun.metrics` 中。CLI 运行才写 `reports/eval-*.json` 和 `.md`。
 
+工程指标 endpoint 不启动 eval，也不调用外部系统。它读取最新成功 smoke eval 的 metrics，并结合 `agent_runs`、`tool_calls`、`actions`、`approvals`、`evidence_items` 和 `incident_reports` 计算质量、安全、可靠性、性能和缓存效率指标。覆盖率、CI、API 延迟和 DORA 指标以 `unknown` 返回，等待 CI、Prometheus 或 VCS/CD 系统补齐。
+
 ## Replay 与 Shadow
 
-`replay_incident()` 是离线工具：
+`replay_incident()` 和 `/api/evals/replay` 用于历史 incident replay：
 
 - 从 DB 中读取历史 incident 和最新 agent run。
-- 使用当前 settings 和真实 tools 重新跑 Agent。
-- 将新根因摘要与原始 run state 中的根因摘要做简单相等比较。
-- 返回 `EvalCaseResult`，不作为 CI 门禁。
+- 只读取源库历史数据；每个 replay case 在独立 SQLite 临时 DB 中克隆 incident、agent run 和可用 runbook chunks。
+- 强制 `executor_backend=fixture`、Fake embedding 和 Fake reranker；L2/L3 通过内存 checkpointer 停在审批处，不会自动执行真实动作。
+- 使用当前 settings 的只读诊断工具重新跑 Agent，因此真实 metrics/logs/traces/K8s/DB read adapter 可能被调用；不作为 CI 门禁。
+- 将新根因摘要与原始 run state 中的根因摘要做相似度比较，并写入 `root_cause_consistency_rate`、`replay_drift_count`、`drifted_case_ids` 等 metrics。
+- API 路径只向真实库写 `eval_runs.metrics`，不会写真实 `incidents`、`actions`、`approvals` 或 `incident_reports`。
 
 `run_shadow_diagnosis()` 当前是安全 stub：
 
@@ -182,7 +199,7 @@ Eval API：
 | Smoke eval | FakeLLM | 否 | 是 |
 | Full eval 默认 | FakeLLM | 否 | 手动/PR 附加，不是默认 CI |
 | Full eval real provider | real LLM | 是，显式 opt-in | 否 |
-| Replay | 当前 settings | 可能 | 否 |
+| Replay | 当前 settings，执行器强制 fixture | 可能，只读诊断调用 | 否 |
 | Shadow | stub | 否 | 否 |
 
 真实 LLM eval 结果可以用于人工比较 prompt/model 质量，但不能用于阻塞 CI。任何涉及真实 provider 的结果都必须记录 provider、model、prompt version、timeout、token 设置和运行时间。

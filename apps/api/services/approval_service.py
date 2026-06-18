@@ -306,6 +306,7 @@ class ApprovalService:
 
         pairs: list[tuple[Approval, Action]] = []
         errors: list[dict[str, Any]] = []
+        l3_approval_ids: list[str] = []
         for approval_id in request.approval_ids:
             approval = (
                 self.approvals.get_for_update(approval_id)
@@ -334,6 +335,7 @@ class ApprovalService:
                 )
                 continue
             if request.decision == "approve" and action.risk_level == "L3":
+                l3_approval_ids.append(approval.approval_id)
                 missing_or_mismatch = self._l3_confirmation_errors(action, request)
                 if missing_or_mismatch:
                     errors.append(
@@ -346,6 +348,15 @@ class ApprovalService:
                     )
                     continue
             pairs.append((approval, action))
+
+        if request.decision == "approve" and len(l3_approval_ids) > 1:
+            errors.append(
+                {
+                    "approval_ids": l3_approval_ids,
+                    "risk_level": "L3",
+                    "error": "batch approve supports at most one L3 approval",
+                }
+            )
 
         if errors:
             raise ValidationAppError(

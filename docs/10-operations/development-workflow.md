@@ -1,6 +1,6 @@
 # 开发工作流
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-17
 
 本文描述当前仓库的日常开发路径：从读文档、选测试层级、实现变更，到运行 CI 等价检查和更新文档。实现细节冲突时，优先级是当前代码和 `docs/` 专题文档高于历史 `plans/`。
 
@@ -117,6 +117,7 @@ npm run test:e2e
 | RAG | `pytest tests/unit/test_rag.py tests/integration/test_runbook_api.py -v` |
 | Memory/compression | `pytest tests/unit/test_memory.py -v` |
 | Eval runner | `pytest tests/integration/test_eval_runner.py -v` |
+| Engineering metrics API | `pytest tests/integration/test_engineering_metrics_api.py -v` |
 | Frontend API/client | `cd apps/web && npm run test:coverage` |
 | Browser smoke | `cd apps/web && npm run test:e2e` |
 | Production safety | `pytest tests/unit/test_production_safety.py tests/unit/test_backend_url_safety.py -v` |

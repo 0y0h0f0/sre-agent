@@ -1,6 +1,6 @@
 # 文档更新批次计划
 
-**最后更新：** 2026-06-15
+**最后更新：** 2026-06-18
 
 目标：让开发者只通过文档就能系统了解项目的目标、架构、数据模型、运行路径、安全边界、开发方式、测试方式、部署方式和运维方式。
 
@@ -27,7 +27,7 @@
 | B5 | 测试、评估、运维、生产 | `testing-strategy.md`、`evaluation.md`、`development-workflow.md`、`runbook.md`、`production-checklist.md`、`final-pre-execution-checklist.md` | 能判断一个变更需要哪些测试、如何发布和回滚 | 已完成 |
 | B6 | M9 与参考资料深化 | `m9-rollout.md`、`m9-data-flow.md`、`m9-threat-model.md`、`configuration.md`、`status-and-ids.md`、`glossary.md` | 能理解 M9 默认关闭、独立回滚、外部调用安全和配置含义 | 已完成 |
 | B7 | K8s 部署和后端对接校准 | `k8s-backend-verification.md`、`backend-connectivity.md`、`configuration.md` | 能确认 K8s 中是否读到目标后端，并理解单实例单后端环境、多服务诊断的边界 | 已完成 |
-| B8 | 技术深挖系列 | `alert-to-report-deep-dive.md`、`full-project-technical-map.md`，后续按主题增补 | 能沿代码路径解释核心链路、模块契约、状态持久化、幂等、审批恢复和调试入口 | 进行中 |
+| B8 | 技术深挖系列 | `alert-to-report-deep-dive.md`、`full-project-technical-map.md`、`guardrail-approval-deep-dive.md`、`tool-evidence-deep-dive.md`、`rag-memory-context-deep-dive.md`、`config-discovery-effective-config-deep-dive.md`、`frontend-realtime-console-deep-dive.md`、`api-control-plane-service-deep-dive.md`、`worker-celery-langgraph-checkpoint-deep-dive.md`、`testing-eval-engineering-metrics-deep-dive.md`、`production-operations-rollback-deep-dive.md`、`data-model-migrations-persistence-deep-dive.md`、`auth-api-key-audit-security-deep-dive.md`、`notifications-collaboration-operator-interaction-deep-dive.md`、`feedback-nfa-correlation-continuous-learning-deep-dive.md`、`executor-action-verification-loop-deep-dive.md`、`report-generation-incident-lifecycle-deep-dive.md`、`runbook-draft-version-amendment-lifecycle-deep-dive.md`、`discovery-capability-topology-deep-dive.md`，后续按主题增补 | 能沿代码路径解释核心链路、模块契约、状态持久化、幂等、审批恢复、RAG/memory/context、配置/discovery、前端实时控制台、API 控制面、Worker 执行面、测试/Eval/工程指标、生产发布/运维/回滚、数据模型/迁移/持久化、认证/API key/审计安全、通知/协作/操作员交互、反馈/NFA/持续学习、执行器/动作能力/验证闭环、报告版本/事件生命周期、Runbook 草稿/版本/amendment 生命周期、Discovery/能力矩阵/服务拓扑和调试入口 | 进行中 |
 
 ## 每批工作流
 
@@ -91,7 +91,7 @@ B1 已完成内容：
 B2 已完成内容：
 
 - `backend-architecture.md` 补齐 router/service/repository/schema/依赖注入、核心请求流程、事务和新增后端能力落点。
-- `api-reference.md` 校准 76 条业务 HTTP route + 1 条 WebSocket，并按分组列出 endpoint、认证、scope、关键请求/响应和实现差异。
+- `api-reference.md` 校准 78 条业务 HTTP route + 1 条 WebSocket，并按分组列出 endpoint、认证、scope、关键请求/响应和实现差异。
 - `data-model.md` 按当前 32 个 ORM 模型重分组，补齐 `EmailLog`、embedding side table、poll cursor、约束和迁移清单。
 - `errors-and-request-ids.md` 补齐 request ID middleware、标准错误信封、HTTPException 例外、rate limit 和审计日志说明。
 - `auth-and-api-keys.md` 补齐 middleware 流程、开放路径、WebSocket token、scope enforcement 现状和 bootstrap key 注意事项。
@@ -163,7 +163,7 @@ B4 已完成内容：
 
 B5 已完成内容：
 
-- `testing-strategy.md` 校准 100 个 Python test 文件、前端 31 个 unit/API tests + 1 个 Playwright smoke、CI job、coverage 硬门禁、测试 fixture 默认值、测试层级选择和关键行为测试映射。
+- `testing-strategy.md` 校准 111 个 Python `test_*.py` 文件、前端 31 个 unit/API tests + 1 个 Playwright smoke、CI job、coverage 硬门禁、测试 fixture 默认值、测试层级选择和关键行为测试映射。
 - `evaluation.md` 校准 eval 模块、smoke 4 cases、full 20 cases、`run_suite` 输出、CI smoke 指标、API/Celery eval path、replay/shadow 非门禁边界和真实 provider 手动使用规则。
 - `development-workflow.md` 重写读文档入口、本地环境、CI 等价命令、测试选择、迁移、依赖、前端开发和 PR checklist。
 - `runbook.md` 重写本地/预生产运维流程，补齐 `/readyz` 实际响应、Compose 13 默认服务、worker/approval/runbook 排障、`agentp_*` 指标和回滚命令。
@@ -189,7 +189,7 @@ B5 已完成内容：
 B6 已完成内容：
 
 - `m9-rollout.md` 按当前 feature flag resolver、LLM/Web/Tempo/Grafana/semantic/external embedding 行为重写，补齐每个子能力的启用顺序、scope、降级、指标和回滚。
-- `m9-data-flow.md` 按 8 条 M9 数据流重写，区分通用 `/api/alerts` 的 Grafana 规范化与 M9 Grafana webhook helper，补齐 redaction、持久化和失败路径。
+- `m9-data-flow.md` 按 8 条 M9 数据流重写，区分通用 `/api/alerts` 的 Grafana 规范化与 M9 Grafana service helper，补齐 redaction、持久化和失败路径。
 - `m9-threat-model.md` 重写资产、信任边界、secret leakage、prompt injection、SSRF、外部调用、runbook 发布、Tempo/Grafana/external embedding 风险与生产安全 checklist。
 - `configuration.md` 按当前 `Settings` 默认值重写，覆盖 Compose 差异、配置优先级、工具后端、executor、RAG/LLM/M9、认证、告警轮询、通知、HA 和生产 minimums。
 - `status-and-ids.md` 校准当前 public ID 前缀、公共状态 enum、runbook/discovery/config/email/eval 状态和 legacy/test-only 前缀说明。
@@ -226,11 +226,120 @@ B8.2 已完成内容：
 - 新增 `docs/00-overview/full-project-technical-map.md`，从全项目视角说明运行面、共享库依赖方向、项目级数据对象、API/worker/agent/tool/RAG/memory/frontend/discovery 契约、安全边界、配置影响范围、变更落点和横向调试入口。
 - 在 `docs/README.md` 和 `docs/00-overview/repository-map.md` 中增加全项目技术地图入口。
 
+B8.3 已完成内容：
+
+- 新增 `docs/00-overview/engineering-metrics.md`，定义 `/api/evals/engineering-metrics` 只读聚合端点、核心质量/安全/可靠性/性能/效率指标、外部指标占位和使用建议。
+- 在 `docs/README.md`、根 `README.md`、API/评测/测试相关文档中补齐工程指标入口和当前 route/test 统计。
+
+B8.4 已完成内容：
+
+- 新增 `docs/00-overview/guardrail-approval-deep-dive.md`，按当前代码路径串起确定性风险分类、Guardrail 路由、Approval interrupt/resume、单个/批量/email token 审批、stale auto-approve、执行过滤、snapshot、live executor preflight 和排障 checklist。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md` 和 `docs/02-agent/guardrails-and-approval.md` 中补齐入口，并校准相关测试清单。
+
+B8.5 已完成内容：
+
+- 新增 `docs/00-overview/tool-evidence-deep-dive.md`，按当前代码路径串起 `ToolResult`、request-local cache、`tool_calls`、并行 evidence collection、`evidence_items`、`evidence_id` 回填、gap collection、RunbookSearchTool、verify gates 和调试 checklist。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md` 和 `docs/03-tools/tool-layer.md` 中补齐入口，并校准工具层相关测试清单。
+
+B8.6 已完成内容：
+
+- 新增 `docs/00-overview/rag-memory-context-deep-dive.md`，按当前代码路径串起 runbook ingest/draft publish、embedding provider、hybrid search、RunbookSearchTool、L0-L3 memory、ContextBuilder、deterministic compression、memory 写回和 cache 指标边界。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/04-rag/runbook-rag.md` 和 `docs/05-memory/memory-cache-compression.md` 中补齐入口，并说明 `ContextBudget()` 原始默认值与 `ContextBudget.with_defaults()` 分配值的差异。
+
+B8.7 已完成内容：
+
+- 新增 `docs/00-overview/config-discovery-effective-config-deep-dive.md`，按当前代码路径串起 `Settings`、M9 feature gate、DiscoveryRunner、DiscoveryProposal、ConfigPublisher、Override TTL、EffectiveConfig 合并、worker `_build_deps()` 和 Alertmanager poll 的配置读取边界。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md` 和 `docs/11-reference/configuration.md` 中补齐入口，并明确当前 worker 未接入 `profile_overrides`、Discovery rerun 不自动 publish、Config publish 当前不递归校验任意 `config_snapshot` URL。
+
+B8.8 已完成内容：
+
+- 新增 `docs/00-overview/frontend-realtime-console-deep-dive.md`，按当前代码路径串起 React bootstrap、`api.ts` request wrapper、TanStack Query key、页面 mutation、Agent Run WebSocket ticket、Redis Pub/Sub、审批弹窗、批量 L3 禁用、报告/评论/审计和通知 service worker。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md` 和 `docs/06-frontend/react-console.md` 中补齐入口，并校准前端 request id 前缀、相关事件 staleTime、App 测试数量和 L3 批量审批 UI 行为。
+
+B8.9 已完成内容：
+
+- 新增 `docs/00-overview/api-control-plane-service-deep-dive.md`，按当前代码路径串起 FastAPI bootstrap、request id、API key middleware、scope dependency、rate limit、service 事务、告警/诊断/审批/report/API key/config/discovery 写路径、审计和错误信封。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/01-backend/backend-architecture.md`、`docs/01-backend/api-reference.md` 和 `docs/01-backend/errors-and-request-ids.md` 中补齐入口，并校准当前 `HTTPException` 已统一包装为标准错误信封的实现。
+
+B8.10 已完成内容：
+
+- 新增 `docs/00-overview/worker-celery-langgraph-checkpoint-deep-dive.md`，按当前代码路径串起 Celery app、Beat、诊断 task 幂等、orphan recovery、`PostgresSaver` 初始化、`AgentRunner.run/resume`、`GraphInterrupt`、node/tool audit、状态同步、通知、stale approval、discovery、Alertmanager poll 和 eval task。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/01-backend/celery-and-jobs.md` 和 `docs/02-agent/workflow.md` 中补齐入口。
+
+B8.11 已完成内容：
+
+- 新增 `docs/00-overview/testing-eval-engineering-metrics-deep-dive.md`，按当前代码路径串起 GitHub Actions CI、pytest/coverage/ruff/mypy、测试 fixture 隔离、Vitest/Playwright、FakeLLM smoke/full eval、Eval API/Celery task、shadow/replay 和工程指标聚合。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/07-testing/testing-strategy.md`、`docs/09-evals/evaluation.md` 和 `docs/00-overview/engineering-metrics.md` 中补齐入口，并明确 Codex 不直接运行测试、工程指标外部来源保持 `unknown`、Eval harness 的 provider/app cache 指标为占位。
+
+B8.12 已完成内容：
+
+- 新增 `docs/00-overview/production-operations-rollback-deep-dive.md`，按当前代码路径串起 `Settings` 生产默认值、Compose/K8s base/production overlay、健康检查、migration 启动方式、发布门禁、auth/scope、backend URL safety、config override 禁止字段、discovery/poll、live diagnostics/executor、M9 rollout、observability/audit 和回滚验证。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/production-checklist.md`、`docs/final-pre-execution-checklist.md`、`docs/operator-runbook.md`、`docs/10-operations/runbook.md` 和 `docs/m9-rollout.md` 中补齐入口。
+
+B8.13 已完成内容：
+
+- 新增 `docs/00-overview/data-model-migrations-persistence-deep-dive.md`，按当前代码路径串起 32 个 ORM 模型的分组、Alembic 17 个迁移版本、repository 事务边界、`agent_runs` checkpoint pointer、pgvector/SQLite fallback、runbook/memory embedding、Discovery/EffectiveConfig、API key hash 和 audit append-only 边界。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/01-backend/data-model.md`、`docs/01-backend/backend-architecture.md` 和 `docs/11-reference/status-and-ids.md` 中补齐入口。
+
+B8.14 已完成内容：
+
+- 新增 `docs/00-overview/auth-api-key-audit-security-deep-dive.md`，按当前代码路径串起 API key middleware、开放路径、scope 语义、bootstrap seed、API key hash 持久化、WebSocket ticket、alert rate limit、audit log、backend auth runtime-only secret 和 redaction 边界。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/01-backend/auth-and-api-keys.md` 和 `docs/11-reference/configuration.md` 中补齐入口。
+
+B8.15 已完成内容：
+
+- 新增 `docs/00-overview/notifications-collaboration-operator-interaction-deep-dive.md`，按当前代码路径串起 `EmailLog`、Celery 邮件任务、SMTP/template、approval email token、L3 email approve 禁止、incident comments、evidence annotations、WebSocket Pub/Sub、service worker 浏览器通知和操作员 audit。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/01-backend/celery-and-jobs.md`、`docs/06-frontend/react-console.md`、`docs/00-overview/frontend-realtime-console-deep-dive.md`、`docs/02-agent/guardrails-and-approval.md` 和 `docs/11-reference/status-and-ids.md` 中补齐入口或校准相关状态。
+
+B8.16 已完成内容：
+
+- 新增 `docs/00-overview/feedback-nfa-correlation-continuous-learning-deep-dive.md`，按当前代码路径串起 NFA mark、alert ingestion severity 降级、root cause/action feedback、correlated incidents、runbook feedback analyzer、`RunbookFeedbackSummary`、`AmendmentDraft` review lifecycle、memory/eval 回流边界和未自动接线项。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/01-backend/api-reference.md`、`docs/01-backend/data-model.md`、`docs/04-rag/runbook-rag.md`、`docs/05-memory/memory-cache-compression.md`、`docs/06-frontend/react-console.md`、`docs/00-overview/frontend-realtime-console-deep-dive.md`、`docs/09-evals/evaluation.md`、`docs/11-reference/configuration.md` 和 `docs/11-reference/status-and-ids.md` 中补齐入口或校准反馈类型。
+
+B8.17 已完成内容：
+
+- 新增 `docs/00-overview/observability-backend-adapters-deep-dive.md`，按当前代码路径串起 worker `_build_deps()`、`EffectiveConfig` 与 settings 分界、Prometheus/Loki/Trace/Git/K8s/DB backend、`UnavailableTool`、URL safety、runtime secret 边界、request-local cache bucket、discovery review/publish 边界和 live read-only diagnostics。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/03-tools/tool-layer.md`、`docs/11-reference/backend-connectivity.md`、`docs/11-reference/configuration.md`、`docs/08-deploy/k8s-backend-verification.md` 和 `docs/00-overview/tool-evidence-deep-dive.md` 中补齐入口或校准后端适配器口径。
+
+B8.18 已完成内容：
+
+- 新增 `docs/00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md`，按当前代码路径串起 `build_llm()` provider 工厂、`FakeLLMAdapter` / `DisabledLLMAdapter`、OpenAI-compatible / Anthropic provider、`RedactingLLMAdapter`、prompt / JSON repair / fallback、`llm_calls` usage metadata、provider/app cache 指标分界、reasoning metadata 剥离、eval harness FakeLLM 默认和 M9 runbook draft / incident diff 的 pending-review 边界。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/02-agent/llm-and-prompts.md`、`docs/11-reference/configuration.md`、`docs/09-evals/evaluation.md`、`docs/04-rag/runbook-rag.md`、`docs/05-memory/memory-cache-compression.md` 和 `docs/m9-rollout.md` 中补齐入口或校准真实 provider / FakeLLM / M9 draft-only 口径。
+
+B8.19 已完成内容：
+
+- 新增 `docs/00-overview/executor-action-verification-loop-deep-dive.md`，按当前代码路径串起 guardrail 风险分类、action capability metadata、fixture/live executor、pre-action snapshot、live preflight、审批恢复、verify gates、degraded rollback/replan 和手动 action execute API fixture-only 边界。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/02-agent/workflow.md`、`docs/02-agent/guardrails-and-approval.md`、`docs/03-tools/tool-layer.md`、`docs/11-reference/configuration.md`、`docs/08-deploy/k8s-backend-verification.md`、`docs/00-overview/guardrail-approval-deep-dive.md`、`docs/00-overview/tool-evidence-deep-dive.md` 和 `docs/00-overview/production-operations-rollback-deep-dive.md` 中补齐入口或校准 live executor / verify 闭环口径。
+
+B8.20 已完成内容：
+
+- 新增 `docs/00-overview/report-generation-incident-lifecycle-deep-dive.md`，按当前代码路径串起 `generate_report`、report regeneration、`IncidentReportRepository` 版本序列、worker run/incident 状态同步、root cause summary 展示字段、报告通知、前端报告页和调试 checklist。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/01-backend/api-reference.md`、`docs/01-backend/data-model.md`、`docs/02-agent/workflow.md`、`docs/06-frontend/react-console.md`、`docs/00-overview/alert-to-report-deep-dive.md`、`docs/00-overview/frontend-realtime-console-deep-dive.md` 和 `docs/00-overview/worker-celery-langgraph-checkpoint-deep-dive.md` 中补齐入口或校准报告版本 / incident lifecycle 口径。
+
+B8.21 已完成内容：
+
+- 新增 `docs/00-overview/runbook-draft-version-amendment-lifecycle-deep-dive.md`，按当前代码路径串起 Markdown ingest/search、incident-cluster draft、template draft、M9 LLM draft、draft review/publish、`RunbookVersion` 创建、draft chunk ingest 降级、M9 web search context、incident diff、`AmendmentDraft` review/apply 状态机和不自动发布/合并/执行的边界。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/01-backend/api-reference.md`、`docs/01-backend/data-model.md`、`docs/04-rag/runbook-rag.md`、`docs/00-overview/rag-memory-context-deep-dive.md`、`docs/00-overview/feedback-nfa-correlation-continuous-learning-deep-dive.md`、`docs/00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md` 和 `docs/m9-rollout.md` 中补齐入口或校准 Runbook 生命周期口径。
+
+B8.22 已完成内容：
+
+- 新增 `docs/00-overview/discovery-capability-topology-deep-dive.md`，按当前代码路径串起 Discovery read API、manual rerun、auto discovery、`DiscoveryRunner` 阶段、K8s discovery、backend endpoint detection、Prometheus/Loki/Jaeger discovery、workload binding、service edge、capability matrix、`CapabilityAssessor` 当前未接入 API/runner 的边界、pending proposal 和不自动 publish 的安全边界。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/01-backend/api-reference.md`、`docs/01-backend/data-model.md`、`docs/11-reference/configuration.md`、`docs/11-reference/status-and-ids.md`、`docs/08-deploy/k8s-backend-verification.md`、`docs/11-reference/backend-connectivity.md`、`docs/00-overview/config-discovery-effective-config-deep-dive.md` 和 `docs/00-overview/observability-backend-adapters-deep-dive.md` 中补齐入口或校准 discovery/capability/topology 口径。
+
+B8.23 已完成内容：
+
+- 新增 `docs/00-overview/alert-source-normalization-poll-grafana-deep-dive.md`，按当前代码路径串起 `/api/alerts` provider payload 归一化、`AlertService.create_alert()` 事务边界、NFA suppression、Grafana-shaped payload parser、Grafana helper 当前未暴露独立 router 的边界、Alertmanager poll scope/filter hash/server-side matcher、poll cursor、resolved inference、audit/metrics 和排查 checklist。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md`、`docs/00-overview/architecture.md`、`docs/00-overview/scope-and-boundaries.md`、`docs/00-overview/project-overview.md`、`docs/01-backend/api-reference.md`、`docs/01-backend/celery-and-jobs.md`、`docs/11-reference/configuration.md`、`docs/m9-data-flow.md`、`docs/m9-rollout.md`、`docs/m9-threat-model.md`、`docs/final-pre-execution-checklist.md`、`docs/operator-runbook.md` 和 `docs/10-operations/runbook.md` 中补齐入口或校准 Alertmanager poll / Grafana 当前接线口径。
+
+B8.24 已完成内容：
+
+- 新增 `docs/00-overview/deployment-change-github-argocd-deep-dive.md`，按当前代码路径串起 `collect_deployment`、`GitChangeTool`、fixture/GitHub/Argo CD read backend、GitHub deployments/commits fallback、Argo CD sync history、request-local cache、deployment evidence、cross-validation、hypothesis ranking、report 引用和 rollback action 安全边界。
+- 在 `docs/README.md`、根 `README.md`、`docs/00-overview/repository-map.md`、`docs/00-overview/full-project-technical-map.md` 和 `docs/03-tools/tool-layer.md` 中补齐入口，并明确 GitHub/Argo CD deployment backend 只读，不是发布、sync、cancel 或 rollback 执行入口。
+
 后续建议分批：
 
-- B8.3：Guardrail/approval 深挖，重点解释 L2/L3/L4、批量审批、email token、stale approval 和 live executor 的边界。
-- B8.4：工具层与 evidence 深挖，重点解释 cache key、降级结果、tool_calls、evidence ID 和 verify gates。
-- B8.5：RAG/memory/context 深挖，重点解释 runbook chunk、embedding 维度、hybrid search、context budget、压缩和 provider/app cache 指标拆分。
+- B8.25：文档结构治理与索引自动核对，重点检查 `docs/README.md`、根 `README.md`、`repository-map.md`、`full-project-technical-map.md` 与实际 Markdown 文件列表是否一致。
+- B8.26：按后续代码变化继续补专题深挖；若没有新增运行能力，优先做链接、配置表、测试入口和生成物/资产归档的维护批次。
 
 ## 完成定义
 

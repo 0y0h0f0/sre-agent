@@ -1,8 +1,10 @@
 # 运维 Runbook
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-18
 
 本文面向本地 demo、预生产和生产演练的日常操作。生产环境真实接入前必须同时阅读 [生产环境检查清单](../production-checklist.md) 和 [最终执行前发布门禁](../final-pre-execution-checklist.md)。
+
+需要沿代码路径理解生产发布、运行时 profile、健康检查、M9 rollout 和回滚验证时，见 [生产发布、运维与回滚技术深挖](../00-overview/production-operations-rollback-deep-dive.md)。
 
 ## 快速健康检查
 
@@ -201,9 +203,11 @@ curl "http://localhost:8000/api/runbooks/search?q=High5xxAfterDeploy&service=che
 3. 多审批 run 需要所有 sibling approvals 都结束后才 resume。
 4. 查看 `fake_resume_enqueue` 只适用于测试；真实运行应看 Celery resume task。
 
-### Grafana / M9 Webhook
+### Grafana / M9 Alert Ingest
 
-M9 Grafana ingest 默认关闭。禁用时 webhook 不能创建事件。启用前确认：
+当前公开 HTTP 路径是通用 `/api/alerts`，它可以归一化 Grafana-shaped payload，并受通用 API key、rate limit、schema validation 和 fingerprint dedup 保护。`AlertService.ingest_grafana_alert()` 是 gated helper，但当前没有独立注册的 Grafana webhook router。
+
+M9 Grafana helper 默认关闭。启用 helper 前确认：
 
 ```bash
 export M9_EXTENSIONS_ENABLED=true
@@ -211,9 +215,11 @@ export GRAFANA_ALERT_INGEST_ENABLED=true
 export GRAFANA_WEBHOOK_SECRET_REF=env:GRAFANA_WEBHOOK_SECRET
 ```
 
-启用后必须验证 HMAC、payload size limit 和 fingerprint dedup。
+`GRAFANA_WEBHOOK_SECRET_REF` 和 `GRAFANA_WEBHOOK_MAX_BYTES` 当前是配置字段，未被公开 route 用于 HMAC 或 payload size 校验。若未来暴露独立 Grafana webhook route，必须先验证 HMAC、payload size limit 和 fingerprint dedup。
 
 ## 安全回滚
+
+Kubernetes live executor 的受控 smoke 和回滚步骤见 [K8s 后端对接验证](../08-deploy/k8s-backend-verification.md#5-live-executor-smoke)。
 
 基础安全回滚：
 

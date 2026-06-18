@@ -62,7 +62,7 @@ Do not replace these with OpenAI Agents SDK, Dramatiq, Elasticsearch, Next.js, S
 - Do not add new real Kubernetes write paths beyond the existing opt-in `LiveK8sExecutorBackend`.
 - The default executor is `fixture`; tests, local demo, and CI must keep using fixture/mock execution.
 - `EXECUTOR_BACKEND=live` is an explicit operator opt-in. In that mode, the current live executor may perform only these Kubernetes mutations after guardrails and approval:
-  - rolling restart via Deployment patch for `restart_pod` / `restart_service`
+  - rolling restart via Deployment patch for `restart_pod` / `restart_deployment` / `restart_service`
   - rolling restart via StatefulSet patch for `restart_statefulset`
   - rollout pause via Deployment patch for `pause_rollout`
   - rollout resume via Deployment patch for `resume_rollout`
@@ -431,7 +431,7 @@ Risk levels:
 
 - L0: read-only query, automatic (`query_metrics`, `query_logs`, `query_traces`, `query_git`).
 - L1: low-risk local/system action, automatic (`create_ticket`, `generate_report`, `warmup_cache`, `adjust_connection_pool`).
-- L2: service/Kubernetes operational action, approval required (`restart_pod`, `scale_deployment`, `restart_service`, `scale_back`, `revert_config`).
+- L2: service/Kubernetes operational action, approval required (`restart_pod`, `restart_deployment`, `scale_deployment`, `restart_service`, `restart_statefulset`, `pause_rollout`, `resume_rollout`, `scale_back`, `revert_config`).
 - L3: rollback/rate-limit/deployment cancellation, approval plus second confirmation required (`enable_rate_limit`, `rollback_release`, `cancel_deployment`).
 - L4: destructive data/cache/database action, direct reject (`delete_data`, `truncate_table`, `flush_cache`, `modify_database`).
 
@@ -565,10 +565,3 @@ For every implementation task, finish with:
 4. Coverage gate still expected to pass.
 5. No MVP boundary violations.
 6. Relevant docs updated if behavior differs from the current docs.
-
-## Test Execution Policy
-
-  - Codex must not run `pytest`, frontend tests, Playwright tests, or full test suites directly.
-  - When verification is needed, Codex should provide the exact test commands for the user to run.
-  - The user will run tests locally and paste the results back.
-  - Codex may still run non-test inspection commands such as `rg`, `sed`, `git diff`, `ruff` on targeted files, unless the user says otherwise.

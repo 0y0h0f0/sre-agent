@@ -8,7 +8,7 @@
 
 | 范围 | 当前能力 |
 |------|----------|
-| 告警摄取 | Webhook `POST /api/alerts`、Alertmanager 轮询、M9 gated Grafana webhook |
+| 告警摄取 | Webhook `POST /api/alerts`、Alertmanager 轮询、`/api/alerts` 的 Grafana-shaped payload 归一化；M9 Grafana helper 当前存在于 service 层但未暴露独立 router |
 | 诊断 | Celery 异步触发 LangGraph；FakeLLM/真实 adapter；确定性 fallback |
 | 证据 | Prometheus、Loki、fixture/Jaeger/Tempo traces、deployment、read-only K8s、read-only DB |
 | Runbook | 摄取、chunk、512 维 embedding、BM25/vector/hybrid search、rerank、draft/review/version |
@@ -19,7 +19,7 @@
 | 配置发现 | 后端发现、proposal、review、publish、rollback；worker 仅读取已发布配置 |
 | 前端 | React 控制台展示 incidents、runs、approvals、actions、reports、配置/发现和状态 |
 | Eval/测试 | CI smoke eval 使用 FakeLLM；manual full eval 才允许真实 LLM |
-| M9 | AI/Web/Tempo/Grafana/semantic search 在全局和子 feature flag 后面 |
+| M9 | AI/Web/Tempo/Grafana parser/helper/semantic search 在全局和子 feature flag 后面；当前没有独立 Grafana webhook router |
 
 ## 默认安全姿态
 
@@ -48,7 +48,7 @@
 
 只有 `EXECUTOR_BACKEND=live` 且动作通过 guardrail、审批和二次确认要求后，才允许 live executor 执行以下 Kubernetes mutation：
 
-- `restart_pod` / `restart_service`：bounded irreversible rolling restart，通过 patch Deployment pod template 触发；不提供 restore/undo 保证。
+- `restart_pod` / `restart_deployment` / `restart_service`：bounded irreversible rolling restart，通过 patch Deployment pod template 触发；不提供 restore/undo 保证。
 - `restart_statefulset`：bounded irreversible rolling restart，通过 patch StatefulSet pod template 触发；要求执行前 snapshot 显示目标是 StatefulSet。
 - `pause_rollout`：bounded irreversible rollout pause，通过 patch Deployment `spec.paused=true` 暂停 rollout；要求执行前 snapshot 显示 Deployment 尚未 paused。
 - `resume_rollout`：bounded irreversible rollout resume，通过 patch Deployment `spec.paused=false` 恢复 rollout；要求执行前 snapshot 显示 Deployment 已 paused。
@@ -76,7 +76,7 @@
 |------|------|------|
 | L0 | `query_metrics`、`query_logs`、`query_traces`、`query_git` | 只读，自动执行 |
 | L1 | `create_ticket`、`generate_report`、`warmup_cache`、`adjust_connection_pool` | 低风险，自动执行 |
-| L2 | `restart_pod`、`scale_deployment`、`restart_service`、`restart_statefulset`、`pause_rollout`、`resume_rollout`、`increase_memory_limit`、`scale_back`、`revert_config` | 需要人工审批 |
+| L2 | `restart_pod`、`restart_deployment`、`scale_deployment`、`restart_service`、`restart_statefulset`、`pause_rollout`、`resume_rollout`、`increase_memory_limit`、`scale_back`、`revert_config` | 需要人工审批 |
 | L3 | `enable_rate_limit`、`raise_rate_limit`、`rollback_release`、`rollback_deployment`、`enable_circuit_breaker`、`switch_dns_resolver`、`failover`、`cancel_deployment` | 需要审批和二次确认 |
 | L4 | `delete_data`、`truncate_table`、`flush_cache`、`modify_database` | 直接拒绝，永不执行 |
 

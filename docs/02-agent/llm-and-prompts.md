@@ -1,12 +1,14 @@
 # LLM 与提示词
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-18
 
 ## 概述
 
 Agent 的 LLM 调用通过同步 `LLMProvider` 协议抽象，入口在 `packages/agent/llm/`。CI、单元测试和默认本地 demo 使用 deterministic `FakeLLMAdapter`；真实 provider 只在显式配置时使用。
 
 LLM 不是安全决策者。它可以输出诊断、排序、动作建议和报告草稿，但动作权限由确定性 guardrail、approval 和 executor backend 决定。
+
+如果需要沿代码路径理解 provider factory、FakeLLM / disabled provider、prompt fallback、usage metadata、reasoning redaction、真实 provider eval 边界和 M9 draft-only 能力，见 [LLM、Prompt、FakeLLM 与 Provider 边界技术深挖](../00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md)。
 
 下图概括 provider 工厂、真实 provider 脱敏边界、JSON 解析修复和 deterministic fallback 的关系。
 
@@ -169,10 +171,10 @@ LLM 不会自动批准、发布、应用 amendment，也不会触发 remediation
 
 ## 相关测试
 
-- `tests/unit/test_llm_provider_factory.py`
-- `tests/unit/test_fake_llm.py`
+- `tests/unit/test_llm_providers.py`
+- `tests/unit/test_disabled_llm.py`
 - `tests/unit/test_agent_nodes.py`
-- `tests/unit/test_reasoning.py`
-- `tests/unit/test_m9_llm_runbook_generator.py`
-- `tests/unit/test_incident_diff_analyzer.py`
+- `tests/unit/test_reasoning_layering.py`
+- `tests/unit/test_llm_runbook_generation.py`
+- `tests/unit/test_incident_diff_analysis.py`
 - `tests/evals/` 和 `packages/evals/` 中的 FakeLLM smoke eval

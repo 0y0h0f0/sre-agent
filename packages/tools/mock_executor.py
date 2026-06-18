@@ -8,6 +8,10 @@ from __future__ import annotations
 
 MOCK_EXECUTOR_RESULTS: dict[str, dict[str, str]] = {
     "restart_pod": {"status": "succeeded", "message": "mock pod restart completed"},
+    "restart_deployment": {
+        "status": "succeeded",
+        "message": "mock deployment restart completed",
+    },
     "restart_service": {"status": "succeeded", "message": "mock service restart completed"},
     "restart_statefulset": {
         "status": "succeeded",

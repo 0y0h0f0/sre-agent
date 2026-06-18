@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from packages.agent.nodes._k8s_targeting import effective_executor_k8s_namespace
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
@@ -68,6 +69,7 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
         # rollback can use concrete revision/replica values from snapshot.
         k8s_action_types = {
             "restart_pod",
+            "restart_deployment",
             "restart_service",
             "restart_statefulset",
             "pause_rollout",
@@ -81,7 +83,7 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
         if k8s_actions and deps.k8s_tool:
             k8s_targets: dict[str, Any] = {}
             ordered_targets = _k8s_snapshot_targets(k8s_actions, state)
-            namespace = deps.settings.executor_k8s_namespace or "default"
+            namespace = effective_executor_k8s_namespace(deps.settings)
             try:
                 for target in ordered_targets:
                     operation = _k8s_snapshot_operation(k8s_actions, target)

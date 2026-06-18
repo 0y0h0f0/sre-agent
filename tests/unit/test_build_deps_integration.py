@@ -166,6 +166,66 @@ def test_build_deps_demo_path_uses_effective_config():
     assert result.effective_config.source == "demo"
 
 
+def test_build_deps_tool_recorder_recovers_inactive_session():
+    """Tool recording recovers after a degraded DB-backed tool aborts the session."""
+    from packages.tools.base import ToolResult
+
+    mock_db = MagicMock()
+    mock_db.is_active = False
+    mock_settings = _make_mock_settings()
+
+    with patch(
+        "packages.discovery.config_merge.EffectiveConfig.from_demo_sources",
+        return_value=_make_mock_effective_config(),
+    ):
+        with _multi_patch(_BUILD_DEPS_PATCHES):
+            from apps.worker.tasks import _build_deps
+
+            result = _build_deps(mock_db, mock_settings, "run-1", "inc-1")
+
+    result.tool_call_recorder(
+        agent_run_id="run-1",
+        node_name="retrieve_runbook",
+        tool_name="runbook_search",
+        query={},
+        result=ToolResult(status="degraded", data={}, summary="degraded", duration_ms=1),
+    )
+
+    mock_db.rollback.assert_called_once()
+    mock_db.flush.assert_called()
+
+
+def test_build_deps_tool_recorder_probes_degraded_result_for_aborted_transaction():
+    """A degraded tool can leave PostgreSQL aborted even when Session.is_active is true."""
+    from packages.tools.base import ToolResult
+
+    mock_db = MagicMock()
+    mock_db.is_active = True
+    mock_db.execute.side_effect = RuntimeError("current transaction is aborted")
+    mock_settings = _make_mock_settings()
+
+    with patch(
+        "packages.discovery.config_merge.EffectiveConfig.from_demo_sources",
+        return_value=_make_mock_effective_config(),
+    ):
+        with _multi_patch(_BUILD_DEPS_PATCHES):
+            from apps.worker.tasks import _build_deps
+
+            result = _build_deps(mock_db, mock_settings, "run-1", "inc-1")
+
+    result.tool_call_recorder(
+        agent_run_id="run-1",
+        node_name="retrieve_runbook",
+        tool_name="runbook_search",
+        query={},
+        result=ToolResult(status="degraded", data={}, summary="degraded", duration_ms=1),
+    )
+
+    mock_db.execute.assert_called_once()
+    mock_db.rollback.assert_called_once()
+    mock_db.flush.assert_called()
+
+
 def test_build_deps_missing_prometheus_produces_unavailable_tool():
     """When prometheus URL is None, metrics_tool is UnavailableTool."""
     from packages.tools.unavailable import UnavailableTool

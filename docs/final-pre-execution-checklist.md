@@ -1,9 +1,11 @@
 # 最终执行前发布门禁
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-17
 **适用范围：** 生产环境启用、计划发现、Alertmanager 轮询、live backend、M9 受控增强
 
 这是执行前最后一道阻塞门禁。所有 P0 必须通过；P1 如未通过必须有明确缓解措施和回滚开关。真实 LLM、live executor、M9 外部调用不能作为 CI 稳定门禁。
+
+需要理解这些门禁对应的代码入口、部署 profile、健康检查、审计/指标和回滚验证时，见 [生产发布、运维与回滚技术深挖](00-overview/production-operations-rollback-deep-dive.md)。
 
 <p>
   <img src="assets/production-release-gate-flow.png" alt="生产发布门禁与回滚" width="900" />
@@ -82,7 +84,7 @@ Python `tests/e2e/`、contract、manual full eval 按变更风险追加；不是
 | Web search | HTTPS/allowlist/blocked domains、redaction、timeout、audit、metric、degraded result |
 | Tempo backend | 显式 `TRACE_BACKEND=tempo`，不可达时 degraded；不影响 Jaeger rollback |
 | Tempo discovery | 生产最多 `requires_review`，绝不 auto-publish |
-| Grafana ingest | 默认 disabled；启用时 HMAC、payload size、fingerprint dedup 通过 |
+| Grafana ingest | 默认 disabled；当前公开路径为 `/api/alerts` 的 Grafana-shaped payload 归一化；若未来暴露独立 Grafana webhook route，必须先接入 HMAC、payload size 和 fingerprint dedup 验证 |
 | Semantic search | embedding 失败回退关键词/混合检索 |
 | External embedding | 需要 semantic search + external embedding gate + safe URL + scope |
 | External LLM | 需要 M9 gate + 子功能 gate + `LLM_EXTERNAL_PROVIDER_ALLOWED=true`，只可手动演示 |

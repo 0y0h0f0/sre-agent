@@ -1,8 +1,10 @@
 # 测试策略
 
-**最后更新：** 2026-06-15
+**最后更新：** 2026-06-17
 
 测试的目标不是只追求覆盖率数字，而是持续证明三件事：事件响应主链路正确、风险边界不会被绕过、默认 local/CI 路径保持确定性。CI、单元测试、集成测试和 smoke eval 必须使用 FakeLLM、fixture/mock 后端和可复现数据。
+
+需要沿代码路径理解 CI job、pytest fixture 隔离、coverage 配置、Vitest/Playwright、Eval harness 和工程指标聚合时，见 [测试、Eval 与工程指标技术深挖](../00-overview/testing-eval-engineering-metrics-deep-dive.md)。
 
 ## 当前测试资产
 
@@ -10,18 +12,18 @@ Python 测试文件按目录分布：
 
 | 层级 | 文件数 | 位置 | CI 默认运行 | 主要用途 |
 |------|--------|------|-------------|----------|
-| Unit | 71 | `tests/unit/` | 是 | 纯函数、节点、工具、RAG、memory、配置、安全规则 |
-| Integration | 22 | `tests/integration/` | 是 | FastAPI、repository、Celery task、API auth、report、eval runner |
+| Unit | 77 | `tests/unit/` | 是 | 纯函数、节点、工具、RAG、memory、配置、安全规则 |
+| Integration | 27 | `tests/integration/` | 是 | FastAPI、repository、Celery task、API auth、report、eval runner、工程指标 |
 | Python E2E | 4 | `tests/e2e/` | 否 | TestClient 级端到端 smoke、M9 专项端到端结构测试 |
 | Contract | 1 | `tests/contract/` | 否 | API response shape 契约，如 runbook search result 字段 |
 | Manual | 2 | `tests/manual/` | 否 | 真实 SMTP 手动测试，受环境变量保护 |
-| Total | 100 | `tests/**/test*.py` | 部分 | 不含 `tests/conftest.py` |
+| Total | 111 | `tests/**/test_*.py` | 部分 | 不含 `tests/conftest.py` 和包初始化文件 |
 
 前端测试：
 
 | 层级 | 文件 | 当前测试数 | CI 默认运行 |
 |------|------|------------|-------------|
-| Page/API unit | `apps/web/src/App.test.tsx` | 19 | 是，`npm run test:coverage` |
+| Page/API unit | `apps/web/src/App.test.tsx` | 20 | 是，`npm run test:coverage` |
 | API client unit | `apps/web/src/api.test.ts` | 11 | 是，`npm run test:coverage` |
 | Browser smoke | `apps/web/src/e2e/smoke.spec.ts` | 1 | 是，`npm run test:e2e` |
 
@@ -129,6 +131,7 @@ CI 不默认运行 `tests/e2e/`、`tests/contract/`、`tests/manual/` 或 manual
 | Runbook search shape | `tests/integration/test_runbook_api.py`、`tests/contract/test_runbook_api_contract.py` |
 | Evidence IDs after persistence/compression | `tests/unit/test_collect_all_evidence.py`、`tests/unit/test_memory.py`、`tests/unit/test_reasoning_layering.py` |
 | Provider/app cache metrics separation | `tests/integration/test_eval_runner.py` |
+| Project engineering metrics aggregation | `tests/integration/test_engineering_metrics_api.py` |
 | Production safety defaults | `tests/unit/test_production_safety.py`、`tests/unit/test_settings_production_defaults.py` |
 | Backend URL SSRF safety | `tests/unit/test_backend_url_safety.py` |
 | Live executor scope and K8s name validation | `tests/unit/test_executor_backends.py` |
@@ -153,6 +156,7 @@ python -m packages.evals.runner --suite smoke --output reports/eval-smoke.json
 pytest tests/unit/test_guardrails.py -v
 pytest tests/integration/test_approval_api.py -v
 pytest tests/integration/test_worker_task.py -v
+pytest tests/integration/test_engineering_metrics_api.py -v
 pytest tests/contract/test_runbook_api_contract.py -v
 pytest tests/e2e/test_e2e_flows.py -v
 ```

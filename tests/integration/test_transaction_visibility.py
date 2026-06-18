@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.api.schemas.actions import ExecuteRequest
-from apps.api.schemas.evals import EvalRunRequest, ShadowRunRequest
+from apps.api.schemas.evals import EvalRunRequest, ReplayRunRequest, ShadowRunRequest
 from apps.api.services.action_service import ActionService
 from apps.api.services.eval_service import EvalService
 from packages.common.errors import ApprovalRequiredError
@@ -122,6 +122,43 @@ def test_eval_run_is_committed_before_enqueue(
     with session_factory() as db:
         response = EvalService(db).trigger_smoke_eval(
             EvalRunRequest(suite="smoke", model="fake-diagnosis-model")
+        )
+
+    assert observed == [response.eval_run_id]
+
+
+def test_replay_eval_run_is_committed_before_enqueue(
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str] = []
+
+    def fake_delay(
+        eval_run_id: str,
+        limit: int,
+        service: str | None,
+        incident_ids: list[str],
+        model: str | None,
+        prompt_version: str,
+    ) -> None:
+        with session_factory() as verify_db:
+            persisted = verify_db.scalars(
+                select(EvalRun).where(EvalRun.eval_run_id == eval_run_id)
+            ).one_or_none()
+            assert persisted is not None
+            assert persisted.status == "queued"
+            assert persisted.suite == "replay"
+            assert persisted.metrics["limit"] == limit
+            assert persisted.metrics["incident_ids"] == incident_ids
+        observed.append(eval_run_id)
+
+    from apps.worker.eval_tasks import run_replay_eval_task
+
+    monkeypatch.setattr(run_replay_eval_task, "delay", fake_delay)
+
+    with session_factory() as db:
+        response = EvalService(db).trigger_replay(
+            ReplayRunRequest(limit=2, incident_ids=["inc_a"], model="fake-diagnosis-model")
         )
 
     assert observed == [response.eval_run_id]

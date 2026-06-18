@@ -31,7 +31,7 @@ Most M9 domain code calls `is_m9_subfeature_enabled(settings, "<feature>")` befo
 Important implementation nuance:
 
 - Native trace backend construction still follows `TRACE_ENABLED` and `TRACE_BACKEND`; the feature flag resolver reports `TRACE_BACKEND=tempo` as a conflict when M9 is disabled.
-- The generic `/api/alerts` endpoint can normalize Grafana-shaped payloads. The separate Grafana webhook helper is the gated M9 path.
+- The generic `/api/alerts` endpoint can normalize Grafana-shaped payloads. The Grafana helper is a gated service path and is not currently exposed as a dedicated FastAPI router.
 
 ## Flow 1: LLM Runbook Draft Generation
 
@@ -286,7 +286,14 @@ AlertService.create_alert()
 
 This path is part of the general alert normalization layer. It does not by itself represent the M9 webhook helper.
 
-### Grafana Webhook Helper
+### Grafana Helper
+
+Current wiring note:
+
+- The generic `/api/alerts` endpoint is the public HTTP path that accepts Grafana-shaped payloads.
+- `AlertService.ingest_grafana_alert()` exists as a gated helper, but the current FastAPI app does not register a dedicated Grafana webhook router.
+- The helper currently checks `settings.grafana_alert_ingest_enabled` directly rather than `is_m9_subfeature_enabled()`. A future public route must use the resolved M9 flag state.
+- `GRAFANA_WEBHOOK_SECRET_REF` and `GRAFANA_WEBHOOK_MAX_BYTES` are configuration fields for webhook integrations, but no registered route currently enforces HMAC or payload size with them.
 
 ```text
 raw Grafana unified alerting payload
@@ -308,10 +315,12 @@ Metrics:
 - `agentp_grafana_webhook_ingest_total`
 - `agentp_grafana_webhook_ignored_total`
 
+For the current code-level boundary, see [Alertmanager Poll、Grafana 与告警来源归一化技术深挖](00-overview/alert-source-normalization-poll-grafana-deep-dive.md).
+
 ## Flow 7: Semantic Search and Embedding Jobs
 
 ```text
-Runbook ingest / approved draft ingest
+Runbook ingest / published draft ingest
         |
         v
 split_markdown_document()

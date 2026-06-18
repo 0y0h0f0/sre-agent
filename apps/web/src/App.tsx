@@ -1502,6 +1502,8 @@ function EvidenceList({ items }: { items: EvidenceItem[] }) {
           <div className="inlineMeta">
             <span>{item.type}</span>
             <span>{item.source}</span>
+            {item.source_id ? <span>{item.source_id}</span> : null}
+            {item.source_path ? <span>{item.source_path}</span> : null}
             <span>{formatPercent(item.confidence)}</span>
             <span>{formatDate(item.timestamp)}</span>
           </div>
@@ -1996,7 +1998,9 @@ function buildEvidenceNetwork(run: AgentRunDetail): EvidenceNetworkModel {
   }
 
   const evidenceIds = readStringArray(run.state.evidence_ids)
+    .concat(readStringArray(run.state.runbook_chunk_ids))
     .concat(readStringArray(diagnosis?.evidence_ids))
+    .concat(readStringArray(diagnosis?.runbook_chunk_ids))
     .concat(run.tool_calls.map((call) => call.tool_call_id));
   const uniqueEvidence = Array.from(new Set(evidenceIds)).slice(0, 8);
   const evidence = uniqueEvidence.length > 0

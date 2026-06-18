@@ -87,7 +87,7 @@ deploy/k8s/
 ```yaml
 stringData:
   # Postgres — 指向你的 pgvector 数据库
-  DATABASE_URL: "postgresql+psycopg://user:password@your-pg-host:5432/sre"
+  DATABASE_URL: "postgresql+psycopg://<db-user>:<db-password>@<pg-host>:5432/sre"
 
   # Redis — 指向你的 Redis 实例
   REDIS_URL: "redis://your-redis-host:6379/0"
@@ -95,14 +95,14 @@ stringData:
   CELERY_RESULT_BACKEND: "redis://your-redis-host:6379/2"
 
   # 如果启用 LLM
-  LLM_API_KEY: "sk-your-key"
+  LLM_API_KEY: "<replace-with-llm-api-key>"
 
   # 如果启用 SMTP 通知
   SMTP_USER: "sre-agent"
-  SMTP_PASSWORD: "your-smtp-password"
+  SMTP_PASSWORD: "<replace-with-smtp-password>"
 
   # 初始运维 API 密钥种子（用于生成第一个 operator key）
-  API_KEY_INITIAL_SEED: "your-random-seed"
+  API_KEY_INITIAL_SEED: "<replace-with-random-seed>"
 ```
 
 > **安全提示：** 生产环境请使用 Sealed Secrets、External Secrets Operator 或 Vault 管理 Secret，不要将明文 Secret 提交到 Git。
@@ -113,10 +113,10 @@ stringData:
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PROMETHEUS_URL` | `prometheus.task-platform.svc.cluster.local:9090` | 改为集群内实际 Prometheus 地址 |
-| `LOKI_URL` | `loki.task-platform.svc.cluster.local:3100` | 改为集群内实际 Loki 地址 |
+| `PROMETHEUS_URL` | `prometheus.target-namespace.svc.cluster.local:9090` | 改为集群内实际 Prometheus 地址 |
+| `LOKI_URL` | `loki.target-namespace.svc.cluster.local:3100` | 改为集群内实际 Loki 地址 |
 | `BACKEND_URL_ALLOWLIST` | `*.svc.cluster.local,*.svc` | 后端 URL 安全白名单 |
-| `K8S_NAMESPACE` | `task-platform` | Agent 诊断的目标 namespace |
+| `K8S_NAMESPACE` | `target-namespace` | Agent 诊断的目标 namespace |
 | `DEPLOYMENT_BACKEND` | `fixture` | 发布变更源；切到 `github` 时仍只读查询 deployments/commits |
 | `GITHUB_REPO` | 空 | GitHub 仓库，格式为 `owner/repo`，仅 `DEPLOYMENT_BACKEND=github` 需要 |
 | `GITHUB_API_URL` | `https://api.github.com` | GitHub API 地址；企业版可改为内部 API |
@@ -260,14 +260,14 @@ subjects:
 
 ```yaml
 # base/configmap.yaml — 指向已有组件
-PROMETHEUS_URL: "http://prometheus.task-platform.svc.cluster.local:9090"
-LOKI_URL: "http://loki.task-platform.svc.cluster.local:3100"
+PROMETHEUS_URL: "http://prometheus.target-namespace.svc.cluster.local:9090"
+LOKI_URL: "http://loki.target-namespace.svc.cluster.local:3100"
 METRICS_SERVICE_LABEL: "job"
 LOGS_SERVICE_LABEL: "service"
-JAEGER_URL: "http://jaeger.task-platform.svc.cluster.local:16686"
-TEMPO_URL: "http://tempo.task-platform.svc.cluster.local:3200"
-ALERTMANAGER_URL: "http://alertmanager.task-platform.svc.cluster.local:9093"
-ALERT_POLL_FILTER_MATCHERS: 'job=~\"api-gateway|task-service-admin|user-service-admin\"'
+JAEGER_URL: "http://jaeger.target-namespace.svc.cluster.local:16686"
+TEMPO_URL: "http://tempo.target-namespace.svc.cluster.local:3200"
+ALERTMANAGER_URL: "http://alertmanager.target-namespace.svc.cluster.local:9093"
+ALERT_POLL_FILTER_MATCHERS: 'job=~\"checkout|payments|orders\"'
 ```
 
 然后**不需要**部署 `prometheus.yaml`、`loki.yaml`、`grafana.yaml`。

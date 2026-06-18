@@ -1,10 +1,13 @@
 # Configuration Reference
 
-**Last updated:** 2026-06-15
+**Last updated:** 2026-06-18
 
 The runtime source of truth is `packages/common/settings.py`. This document explains the stable settings surface for developers and operators.
 
 Settings are loaded by `pydantic-settings` from environment variables and `.env`. Environment variable names are the uppercase form of the field name, for example `database_url` maps to `DATABASE_URL`.
+
+For the code-level runtime path across `Settings`, Discovery, config publish, overrides, `EffectiveConfig`, and worker dependency construction, see [配置、Discovery 与 EffectiveConfig 技术深挖](../00-overview/config-discovery-effective-config-deep-dive.md).
+For NFA, cross-incident, runbook amendment, and feedback-to-memory/eval boundaries behind these settings, see [反馈、NFA、关联事件与持续学习技术深挖](../00-overview/feedback-nfa-correlation-continuous-learning-deep-dive.md).
 
 ## Precedence and Runtime Sources
 
@@ -30,6 +33,8 @@ Important rules:
 - Production effective config does not fall back to localhost backend URLs when using operator-source merging.
 - `APP_ENV=production` applies two safety defaults only when those fields are not explicitly set: `LLM_PROVIDER=disabled` and `DISCOVERY_ENABLED=false`.
 - `EXECUTOR_BACKEND` is not auto-rewritten by the production validator; production rollout must explicitly confirm it remains `fixture` unless a live K8s executor rollout is separately approved.
+- `EffectiveConfig.from_operator_sources()` supports `profile_overrides`, but the current worker `_build_deps()` does not pass profile overrides. The active production worker chain is settings/env differences, active overrides, published config, then safe defaults.
+- Discovery rerun currently records `DiscoveryProposal(status=pending_review)` and does not automatically publish runtime config.
 
 ## Compose and `.env.example` Differences
 
@@ -60,7 +65,7 @@ The Python defaults are library/runtime defaults. Docker Compose may override th
 
 ## Observability Backends
 
-Current backend connectivity is a single-environment model: each Agent instance has one active endpoint per backend type, while that environment may contain many services. See [Backend Connectivity Scope](backend-connectivity.md) for the multi-service and multi-backend boundary.
+Current backend connectivity is a single-environment model: each Agent instance has one active endpoint per backend type, while that environment may contain many services. See [Backend Connectivity Scope](backend-connectivity.md) for the multi-service and multi-backend boundary. For worker dependency construction, `EffectiveConfig` versus settings-only adapters, cache buckets, URL safety, and read-only diagnostics behavior, see [Observability Backend Adapters Deep Dive](../00-overview/observability-backend-adapters-deep-dive.md).
 
 | Variable | Default | Notes |
 |----------|---------|-------|
@@ -70,7 +75,7 @@ Current backend connectivity is a single-environment model: each Agent instance 
 | `JAEGER_URL` | `http://localhost:16686` | Jaeger query UI/API base URL. |
 | `TEMPO_URL` | `http://localhost:3200` | Native Tempo API base URL. |
 | `ALERTMANAGER_URL` | `http://localhost:9093` | Alertmanager read API. |
-| `ALERTMANAGER_READ_TOKEN` | unset | Optional read token, stored as `SecretStr`. |
+| `ALERTMANAGER_READ_TOKEN` | unset | Optional read token field, stored as `SecretStr`; current `poll_alertmanager` path does not pass it into `AlertmanagerClient`. |
 | `BACKEND_URL_ALLOWLIST` | empty | Comma-separated host patterns for production URL safety exceptions. |
 
 ## Tool Layer
@@ -95,7 +100,7 @@ Current backend connectivity is a single-environment model: each Agent instance 
 | `ARGOCD_TOKEN` | unset | Optional secret token. |
 | `K8S_BACKEND` | `fixture` | `fixture` or read-only `live`. |
 | `K8S_FIXTURE_PATH` | `demo/faults/k8s.json` | K8s fixture data. |
-| `K8S_NAMESPACE` | `default` | Namespace for K8s read diagnostics and discovery allowlist; discovery supports comma-separated namespaces. |
+| `K8S_NAMESPACE` | `default` | Namespace for K8s read diagnostics and discovery allowlist; live read diagnostics trim whitespace and fall back to `default` when blank. Discovery supports comma-separated namespaces. |
 | `DB_DIAGNOSTICS_BACKEND` | `fixture` | `fixture` or read-only `live`. |
 | `DB_DIAGNOSTICS_FIXTURE_PATH` | `demo/faults/db_diagnostics.json` | DB diagnostic fixture data. |
 | `DB_DIAGNOSTICS_URL` | unset | Live read-only diagnostic database URL. |
@@ -104,15 +109,21 @@ Current backend connectivity is a single-environment model: each Agent instance 
 
 ## Executor
 
+Executor 配置只选择 backend；真实执行仍由 guardrail、approval、snapshot、capability preflight 和 verify/replan 闭环控制。完整代码路径见 [执行器、动作能力与验证闭环技术深挖](../00-overview/executor-action-verification-loop-deep-dive.md)。
+
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `EXECUTOR_BACKEND` | `fixture` | `fixture` is default for tests, CI, and local demo. `live` is explicit operator opt-in. |
 | `EXECUTOR_TIMEOUT_SECONDS` | `30.0` | Timeout for executor operations. |
 | `EXECUTOR_K8S_NAMESPACE` | `default` | Namespace for live K8s executor operations. |
 
+`EXECUTOR_BACKEND` accepts only `fixture` or `live` after trimming whitespace and normalizing case. Any other value fails dependency construction instead of silently falling back to fixture.
+
+Agent snapshot, live execution, and post-action K8s verify use the same effective namespace: `EXECUTOR_K8S_NAMESPACE` first, then `K8S_NAMESPACE` only when executor namespace is blank, then `default`.
+
 `EXECUTOR_BACKEND=live` may perform only the existing guarded Kubernetes mutations after guardrails and approval:
 
-- rolling restart for `restart_pod` / `restart_service`,
+- rolling restart for `restart_pod` / `restart_deployment` / `restart_service`,
 - StatefulSet rolling restart for `restart_statefulset`,
 - rollout pause patch for `pause_rollout`,
 - rollout resume patch for `resume_rollout`,
@@ -157,6 +168,8 @@ Current database vector dimensions:
 
 ## LLM
 
+Provider 工厂、FakeLLM / disabled provider、真实 provider 手动边界、usage metadata 和 M9 draft-only 能力的完整代码路径见 [LLM、Prompt、FakeLLM 与 Provider 边界技术深挖](../00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md)。
+
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `LLM_PROVIDER` | `fake` | `fake`, `vllm`, `openai`, `deepseek`, `anthropic`, or `disabled` in production safety paths. |
@@ -197,12 +210,12 @@ wrapper rule.
 | `RUNBOOK_WEB_SEARCH_MAX_CONTENT_BYTES` | `1048576` | Per-result content cap. |
 | `RUNBOOK_WEB_SEARCH_CACHE_TTL_SECONDS` | `86400` | Web context cache TTL. |
 | `RUNBOOK_WEB_SEARCH_MAX_REDIRECTS` | `3` | Redirect cap. |
-| `GRAFANA_WEBHOOK_SECRET_REF` | empty | Secret reference for Grafana webhook integrations. |
-| `GRAFANA_WEBHOOK_MAX_BYTES` | `256000` | Grafana webhook payload size policy. |
+| `GRAFANA_WEBHOOK_SECRET_REF` | empty | Secret reference field for Grafana webhook integrations; current app has no registered Grafana webhook route using it for HMAC. |
+| `GRAFANA_WEBHOOK_MAX_BYTES` | `256000` | Payload size policy field for Grafana webhook integrations; current app has no registered Grafana webhook route enforcing it. |
 | `LLM_INCIDENT_DIFF_ENABLED` | `false` | M9 incident/runbook diff gate. |
 | `MIN_INCIDENT_DIFF_EVIDENCE_REFS` | `5` | Evidence ref threshold when no report/feedback/action/version evidence is present. |
 | `TEMPO_DISCOVERY_ENABLED` | `false` | M9 Tempo endpoint discovery gate. |
-| `GRAFANA_ALERT_INGEST_ENABLED` | `false` | M9 Grafana webhook helper gate. |
+| `GRAFANA_ALERT_INGEST_ENABLED` | `false` | M9 Grafana helper gate for `AlertService.ingest_grafana_alert()`; the helper currently checks this raw setting directly, while `/api/alerts` can still normalize Grafana-shaped payloads. |
 | `SEMANTIC_RUNBOOK_SEARCH_ENABLED` | `false` | M9 semantic/hybrid runbook search gate. |
 | `EXTERNAL_EMBEDDING_PROVIDER_ENABLED` | `false` | M9 external embedding gate. |
 | `LLM_EXTERNAL_PROVIDER_ALLOWED` | `false` | Required for cloud LLM providers in M9 draft/diff flows. |
@@ -233,12 +246,15 @@ TRACE_ENABLED="${PRE_M9_TRACE_ENABLED:-true}"
 |----------|---------|-------|
 | `AUTOMATION_LEVEL` | `supervised` | Discovery/proposal automation profile. |
 | `DISCOVERY_ENABLED` | `true` locally, `false` in production when unset | Backend discovery master switch. |
-| `DISCOVERY_MANUAL_RERUN_ENABLED` | `true` | Allows operator-triggered rerun APIs/tasks. |
+| `DISCOVERY_MANUAL_RERUN_ENABLED` | `true` | Settings field for manual rerun rollout; current rerun router does not enforce this flag and instead relies on `discovery:write` scope, Redis lock, and Celery enqueue. |
 | `DISCOVERY_APPLY_MODE` | `inherit` | `inherit`, `propose`, or `supervised`. |
 
 Published effective config statuses are documented in [Status and IDs](status-and-ids.md). Workers use only the latest `published` effective config and otherwise rely on settings/defaults.
+Discovery runner, capability matrix, topology, manual rerun lock behavior, and proposal boundaries are documented in [Discovery、Capability Matrix 与服务拓扑技术深挖](../00-overview/discovery-capability-topology-deep-dive.md).
 
 ## Alert Ingestion and Polling
+
+`/api/alerts`、Alertmanager poll、Grafana-shaped payload、filter hash、poll cursor 和 resolved inference 的当前代码边界见 [Alertmanager Poll、Grafana 与告警来源归一化技术深挖](../00-overview/alert-source-normalization-poll-grafana-deep-dive.md)。
 
 | Variable | Default | Notes |
 |----------|---------|-------|
@@ -275,6 +291,8 @@ Published effective config statuses are documented in [Status and IDs](status-an
 L2 and L3 actions still require approval. L3 approval requires `risk_ack=true`, `confirm_action_type`, and `confirm_target`.
 
 ## Auth, Rate Limit, and API Keys
+
+For the code-level path across API key middleware, scopes, bootstrap seed, WebSocket tickets, rate limiting, audit logs, and redaction, see [认证、API Key、审计与安全边界技术深挖](../00-overview/auth-api-key-audit-security-deep-dive.md).
 
 | Variable | Default | Notes |
 |----------|---------|-------|

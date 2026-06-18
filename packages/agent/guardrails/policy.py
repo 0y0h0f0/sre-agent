@@ -17,6 +17,7 @@ _RISK_TABLE: dict[str, tuple[str, bool, str]] = {
     "warmup_cache": ("L1", False, "cache warming"),
     "adjust_connection_pool": ("L1", False, "pool tuning"),
     "restart_pod": ("L2", True, "pod restart needs approval"),
+    "restart_deployment": ("L2", True, "deployment restart needs approval"),
     "scale_deployment": ("L2", True, "scaling needs approval"),
     "restart_service": ("L2", True, "service restart needs approval"),
     "pause_rollout": ("L2", True, "rollout pause needs approval"),

@@ -118,7 +118,7 @@ submit_alert() {
       severity:$severity,
       alert_name:$alert_name,
       starts_at:$starts_at,
-      labels:{service:$service,job:$service,scenario:$scenario,namespace:"task-platform"},
+      labels:{service:$service,job:$service,scenario:$scenario,namespace:"target-namespace"},
       annotations:{summary:($alert_name + " safety smoke"),description:"Synthetic approval safety smoke"},
       raw_payload:{scenario:$scenario,run_id:$run_id}
     }' >"${dir}/alert.json"

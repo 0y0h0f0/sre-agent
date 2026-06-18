@@ -13,6 +13,7 @@ from packages.agent.actions.capabilities import (
     ActionCapability,
     get_action_capability,
 )
+from packages.agent.nodes._k8s_targeting import effective_executor_k8s_namespace
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
@@ -24,6 +25,8 @@ from packages.tools.executor_backends import (
     ExecutionResult,
     FixtureExecutorBackend,
     canonical_action_type,
+    coerce_live_rollback_revision,
+    coerce_live_scale_replicas,
     has_live_rollback_handler,
     is_valid_k8s_resource_name,
 )
@@ -45,14 +48,14 @@ def execute_action(state: IncidentState, deps: AgentDeps) -> IncidentState:
             executable,
             state=state,
             action_repo=action_repo,
-            executor=getattr(backend, "name", "unknown"),
+            backend=backend,
         )
 
         context = ExecutionContext(
             service=state.get("service_name", "unknown"),
             incident_id=state["incident_id"],
             agent_run_id=state["agent_run_id"],
-            namespace=deps.settings.executor_k8s_namespace or None,
+            namespace=effective_executor_k8s_namespace(deps.settings),
         )
         results: list[dict[str, Any]] = []
         failed = 0
@@ -60,12 +63,17 @@ def execute_action(state: IncidentState, deps: AgentDeps) -> IncidentState:
         for action in executable:
             atype = canonical_action_type(action.get("type"))
             _attach_capability_metadata(action, atype)
+            execution_backend = _execution_backend_for_action(backend, atype)
             try:
-                preflight_block = _live_preflight_block(action, state, context, backend)
+                preflight_block = _live_preflight_block(action, state, context, execution_backend)
                 if preflight_block is not None:
                     result = preflight_block
                 elif state.get("verify_result") == "degraded" and atype in ROLLBACK_ACTION_TYPES:
-                    result = backend.rollback(action, state.get("pre_action_snapshot", {}), context)
+                    result = execution_backend.rollback(
+                        action,
+                        state.get("pre_action_snapshot", {}),
+                        context,
+                    )
                 else:
                     # Reject non-rollback actions when degraded.
                     if state.get("verify_result") == "degraded":
@@ -74,7 +82,7 @@ def execute_action(state: IncidentState, deps: AgentDeps) -> IncidentState:
                             message=(f"non-rollback action '{atype}' rejected after degradation"),
                         )
                     else:
-                        result = backend.execute(action, context)
+                        result = execution_backend.execute(action, context)
                 failed += 1 if result.status in {"failed", "blocked", "timeout"} else 0
             except Exception as exc:
                 failed += 1
@@ -153,6 +161,19 @@ def _attach_capability_metadata(action: dict[str, Any], action_type: str) -> Non
     }
 
 
+def _execution_backend_for_action(backend: Any, action_type: str) -> Any:
+    """Route non-K8s registered actions away from the live K8s backend."""
+    if getattr(backend, "name", "") != "live":
+        return backend
+
+    capability = get_action_capability(action_type)
+    if capability is None:
+        return backend
+    if capability.live_backend == "k8s":
+        return backend
+    return FixtureExecutorBackend()
+
+
 def _live_preflight_block(
     action: dict[str, Any],
     state: IncidentState,
@@ -207,7 +228,14 @@ def _live_preflight_block(
             {"failed": identity_errors},
         )
 
-    failed_checks = _failed_preflight_checks(capability, action, snapshot, context)
+    failed_checks = _failed_preflight_checks(
+        capability,
+        action,
+        snapshot,
+        context,
+        degraded_rollback=state.get("verify_result") == "degraded"
+        and atype in ROLLBACK_ACTION_TYPES,
+    )
     if failed_checks:
         return _blocked_result(
             atype,
@@ -280,6 +308,8 @@ def _failed_preflight_checks(
     action: dict[str, Any],
     snapshot: object,
     context: ExecutionContext,
+    *,
+    degraded_rollback: bool = False,
 ) -> list[str]:
     failed: list[str] = []
     k8s_snapshot = snapshot.get("k8s") if isinstance(snapshot, dict) else None
@@ -321,7 +351,11 @@ def _failed_preflight_checks(
             if k8s_snapshot.get("paused") is not True:
                 failed.append(check)
         elif check == "k8s_rolling_restart_patch_only":
-            if canonical_action_type(action.get("type")) not in {"restart_pod", "restart_service"}:
+            if canonical_action_type(action.get("type")) not in {
+                "restart_deployment",
+                "restart_pod",
+                "restart_service",
+            }:
                 failed.append(check)
         elif check == "k8s_statefulset_restart_patch_only":
             if canonical_action_type(action.get("type")) != "restart_statefulset":
@@ -332,9 +366,94 @@ def _failed_preflight_checks(
         elif check == "k8s_rollout_resume_patch_only":
             if canonical_action_type(action.get("type")) != "resume_rollout":
                 failed.append(check)
+        elif check == "k8s_scale_params_only":
+            if not _scale_params_are_replica_only(action):
+                failed.append(check)
+        elif check == "k8s_scale_replicas_valid":
+            _, error_message = coerce_live_scale_replicas(
+                _scale_replicas_for_preflight(
+                    action,
+                    snapshot,
+                    allow_snapshot=degraded_rollback,
+                )
+            )
+            if error_message is not None:
+                failed.append(check)
+        elif check == "k8s_deployment_scale_patch_only":
+            if canonical_action_type(action.get("type")) not in {
+                "scale_back",
+                "scale_deployment",
+            }:
+                failed.append(check)
+        elif check == "k8s_rollback_params_only":
+            if not _rollback_params_are_revision_only(action):
+                failed.append(check)
+        elif check == "k8s_rollback_revision_valid":
+            _, error_message = coerce_live_rollback_revision(
+                _rollback_revision_for_preflight(
+                    action,
+                    snapshot,
+                    allow_snapshot=degraded_rollback,
+                )
+            )
+            if error_message is not None:
+                failed.append(check)
+        elif check == "k8s_deployment_rollback_subresource_only":
+            if canonical_action_type(action.get("type")) != "rollback_release":
+                failed.append(check)
         else:
             failed.append(check)
     return failed
+
+
+def _scale_params_are_replica_only(action: dict[str, Any]) -> bool:
+    params = action.get("params", {})
+    if params is None:
+        return True
+    if not isinstance(params, dict):
+        return False
+    return set(params).issubset({"replicas"})
+
+
+def _scale_replicas_for_preflight(
+    action: dict[str, Any],
+    snapshot: object,
+    *,
+    allow_snapshot: bool,
+) -> object:
+    params = action.get("params", {})
+    if isinstance(params, dict) and "replicas" in params:
+        return params.get("replicas")
+    if allow_snapshot and canonical_action_type(action.get("type")) == "scale_back":
+        k8s_snapshot = snapshot.get("k8s") if isinstance(snapshot, dict) else None
+        if isinstance(k8s_snapshot, dict):
+            return k8s_snapshot.get("replicas")
+    return None
+
+
+def _rollback_params_are_revision_only(action: dict[str, Any]) -> bool:
+    params = action.get("params", {})
+    if params is None:
+        return True
+    if not isinstance(params, dict):
+        return False
+    return set(params).issubset({"to_revision"})
+
+
+def _rollback_revision_for_preflight(
+    action: dict[str, Any],
+    snapshot: object,
+    *,
+    allow_snapshot: bool,
+) -> object:
+    params = action.get("params", {})
+    if isinstance(params, dict) and "to_revision" in params:
+        return params.get("to_revision")
+    if allow_snapshot and canonical_action_type(action.get("type")) == "rollback_release":
+        k8s_snapshot = snapshot.get("k8s") if isinstance(snapshot, dict) else None
+        if isinstance(k8s_snapshot, dict):
+            return k8s_snapshot.get("revision")
+    return None
 
 
 def _snapshot_identity_errors(
@@ -389,7 +508,7 @@ def _persist_missing_executable_actions(
     *,
     state: IncidentState,
     action_repo: ActionRepository,
-    executor: str,
+    backend: Any,
 ) -> None:
     """Create Action rows for automatic actions before any executor call.
 
@@ -407,13 +526,15 @@ def _persist_missing_executable_actions(
         if existing_id in current_run_action_ids:
             continue
         action.pop("action_id", None)
+        atype = canonical_action_type(action.get("type"))
+        execution_backend = _execution_backend_for_action(backend, atype)
         db_action = action_repo.create(
             incident_id=state["incident_id"],
             agent_run_id=state["agent_run_id"],
             type=action.get("type", "unknown"),
             risk_level=action.get("risk_level", "L1"),
             status="executing",
-            executor=executor,
+            executor=getattr(execution_backend, "name", "unknown"),
             target=action.get("target", ""),
             params=action.get("params", {}),
             reason=action.get("reason", ""),

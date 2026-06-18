@@ -25,6 +25,10 @@ _API_KEY_HEADER_RE = re.compile(
     r"""["']?(?:X-?Api-?Key|api_key|apikey)["']?\s*[:=]\s*["']?[^"'\s,}]+["']?""",
     re.IGNORECASE,
 )
+_SECRET_VALUE_RE = re.compile(
+    r"""["']?(?:auth[-_]?token|access[-_]?token|refresh[-_]?token|id[-_]?token|session[-_]?token|token|secret|client[-_]?secret)["']?\s*[:=]\s*["']?[^"'\s,}]+["']?""",
+    re.IGNORECASE,
+)
 # Matches "password": "value", password=value, etc.
 _PASSWORD_RE = re.compile(
     r"""["']?(?:password|passwd|pwd)["']?\s*[:=]\s*["']?[^"'\s,}]+["']?""",
@@ -90,6 +94,7 @@ _REDACTION_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("bearer_token", _BEARER_TOKEN_RE),
     ("basic_auth", _BASIC_AUTH_RE),
     ("api_key_header", _API_KEY_HEADER_RE),
+    ("secret_value", _SECRET_VALUE_RE),
     ("password", _PASSWORD_RE),
     ("private_key", _PRIVATE_KEY_RE),
     ("url_credential", _URL_CREDENTIAL_RE),

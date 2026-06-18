@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from packages.agent.actions.capabilities import get_action_capability
+from packages.agent.nodes._k8s_targeting import effective_executor_k8s_namespace
 from packages.agent.nodes._persist import persist_evidence
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
@@ -173,7 +174,7 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
 def _build_gate_plan(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build a de-duplicated verify gate plan from action capability metadata."""
     planned: list[dict[str, Any]] = []
-    seen: dict[tuple[str, str], int] = {}
+    seen: dict[tuple[str, ...], int] = {}
     for action in actions:
         gates = _action_verify_gates(action)
         if not gates:
@@ -195,13 +196,45 @@ def _build_gate_plan(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "action_id": action.get("action_id", ""),
                 }
             )
+            expected_replicas = _expected_scale_replicas(action)
+            if expected_replicas is not None:
+                planned[-1]["expected_replicas"] = expected_replicas
     return planned
 
 
-def _gate_key(gate: str, action: dict[str, Any]) -> tuple[str, str]:
+def _gate_key(gate: str, action: dict[str, Any]) -> tuple[str, ...]:
+    action_type = canonical_action_type(action.get("type"))
     if gate == "k8s_rollout":
-        return gate, str(action.get("target", ""))
+        expected_replicas = _expected_scale_replicas(action)
+        if action_type in {"scale_deployment", "scale_back"} and expected_replicas is not None:
+            return (
+                gate,
+                str(action.get("target", "")),
+                action_type,
+                str(expected_replicas),
+            )
+        return (
+            gate,
+            str(action.get("target", "")),
+            action_type,
+        )
     return gate, ""
+
+
+def _expected_scale_replicas(action: dict[str, Any]) -> float | None:
+    if canonical_action_type(action.get("type")) not in {"scale_deployment", "scale_back"}:
+        return None
+
+    params = action.get("params")
+    if isinstance(params, dict) and "replicas" in params:
+        return _number_value(params.get("replicas"))
+
+    execution_result = action.get("execution_result")
+    if isinstance(execution_result, dict):
+        details = execution_result.get("details")
+        if isinstance(details, dict):
+            return _number_value(details.get("replicas"))
+    return None
 
 
 def _action_verify_gates(action: dict[str, Any]) -> tuple[str, ...]:
@@ -311,7 +344,7 @@ def _run_k8s_rollout_gate(
         }
 
     target = str(gate.get("target") or service)
-    namespace = deps.settings.executor_k8s_namespace or deps.settings.k8s_namespace or "default"
+    namespace = effective_executor_k8s_namespace(deps.settings)
     operation = (
         "get_statefulset"
         if str(gate.get("action_type", "")).lower() == "restart_statefulset"
@@ -348,7 +381,14 @@ def _run_k8s_rollout_gate(
     evidence = [
         {**item, "_verify_fresh": True, "verify_gate": "k8s_rollout"} for item in result.evidence
     ]
-    verdict = _assess_k8s_rollout(result.data, result.status, required=required)
+    action_type = str(gate.get("action_type", "")).lower()
+    verdict = _assess_k8s_rollout(
+        result.data,
+        result.status,
+        action_type=action_type,
+        expected_replicas=_number_value(gate.get("expected_replicas")),
+        required=required,
+    )
     return {
         **_gate_base(gate),
         "verdict": verdict,
@@ -416,13 +456,16 @@ def _run_db_readonly_gate(
 
 
 def _gate_base(gate: dict[str, Any]) -> dict[str, Any]:
-    return {
+    base = {
         "gate": str(gate.get("gate", "")),
         "required": bool(gate.get("required", True)),
         "action_type": str(gate.get("action_type", "")),
         "target": str(gate.get("target", "")),
         "action_id": str(gate.get("action_id", "")),
     }
+    if "expected_replicas" in gate:
+        base["expected_replicas"] = gate["expected_replicas"]
+    return base
 
 
 def _safe_query_metrics(
@@ -617,6 +660,8 @@ def _assess_k8s_rollout(
     data: dict[str, Any],
     status: str,
     *,
+    action_type: str = "",
+    expected_replicas: float | None = None,
     required: bool,
 ) -> str:
     """Assess a read-only rollout status payload."""
@@ -632,10 +677,35 @@ def _assess_k8s_rollout(
         return "degraded" if required else "unknown"
 
     rollout_status = str(payload.get("status", "")).strip().lower()
+    desired = _first_number(payload, "desired_replicas", "replicas")
+    if action_type in {"scale_deployment", "scale_back"} and expected_replicas is not None:
+        if desired is None:
+            return "unknown"
+        if desired != expected_replicas:
+            return "unchanged"
+
+    if action_type == "pause_rollout":
+        if payload.get("paused") is True or rollout_status == "paused":
+            return "resolved"
+        if rollout_status in {"failed", "failure", "degraded"}:
+            return "degraded"
+        return "unchanged"
+    if action_type == "resume_rollout" and (
+        payload.get("paused") is True or rollout_status == "paused"
+    ):
+        return "unchanged"
+
     if rollout_status in {"failed", "failure", "degraded"}:
         return "degraded"
     if rollout_status in {"complete", "completed", "successful", "success"}:
         return "resolved"
+    if rollout_status in {"progressing", "in_progress"}:
+        return "improving"
+    if rollout_status in {"pending", "paused"}:
+        return "unchanged"
+    if action_type in {"scale_deployment", "scale_back"} and expected_replicas == 0:
+        if desired == 0:
+            return "resolved"
 
     for condition in payload.get("conditions", []) or []:
         if not isinstance(condition, dict):
@@ -647,7 +717,6 @@ def _assess_k8s_rollout(
         if ctype == "Progressing" and cstatus == "false":
             return "degraded"
 
-    desired = _first_number(payload, "desired_replicas", "replicas")
     ready = _first_number(payload, "ready_replicas", "available_replicas")
     updated = _first_number(payload, "updated_replicas")
     if desired is not None and desired > 0:
@@ -797,11 +866,19 @@ def _first_number(payload: dict[str, Any], *keys: str) -> float | None:
         value = payload.get(key)
         if value is None:
             continue
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            continue
+        number = _number_value(value)
+        if number is not None:
+            return number
     return None
+
+
+def _number_value(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _metric_for_alert(alert_name: str) -> MetricType:

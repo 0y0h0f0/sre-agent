@@ -13,6 +13,7 @@ structured evidence and propose safe, ranked remediation actions.
 Rules:
 - Only use evidence that is provided. Do not invent facts.
 - Reference evidence by its evidence_id whenever you make a claim.
+- When runbook context supports a claim, preserve its chunk_id in runbook_chunk_ids.
 - If evidence is insufficient, list what is missing in missing_evidence.
 - Output must be valid JSON matching the requested schema — no prose, no markdown.
 - Do not propose destructive actions (delete_data, truncate_table, flush_cache,
@@ -47,9 +48,10 @@ Reason step by step from evidence to hypotheses to root cause. For each
 hypothesis, cite supporting_evidence_ids and explain its rank in rank_explanation.
 For root_cause, cite evidence_ids and explain why it was chosen over alternatives.
 
-Output JSON with keys: hypotheses, root_cause, evidence_ids, missing_evidence.
+Output JSON with keys: hypotheses, root_cause, evidence_ids, runbook_chunk_ids, missing_evidence.
 Each hypothesis must have: id, statement, supporting_evidence_ids, confidence (0-1),
-rank_explanation. Root cause must have: summary, confidence (0-1), evidence_ids.
+rank_explanation, runbook_chunk_ids. Root cause must have: summary, confidence (0-1),
+evidence_ids, runbook_chunk_ids.
 
 Example structure (do not copy values — this is a format example only):
 {{
@@ -58,6 +60,7 @@ Example structure (do not copy values — this is a format example only):
       "id": "h1",
       "statement": "Connection pool saturated by slow queries",
       "supporting_evidence_ids": ["evd_abc123"],
+      "runbook_chunk_ids": ["chk_runbook123"],
       "confidence": 0.88,
       "rank_explanation": "DB connections near max with elevated query latency"
     }}
@@ -65,9 +68,11 @@ Example structure (do not copy values — this is a format example only):
   "root_cause": {{
     "summary": "DB connection pool exhausted near max connections due to slow query accumulation",
     "confidence": 0.88,
-    "evidence_ids": ["evd_abc123", "evd_def456"]
+    "evidence_ids": ["evd_abc123", "evd_def456"],
+    "runbook_chunk_ids": ["chk_runbook123"]
   }},
   "evidence_ids": ["evd_abc123", "evd_def456"],
+  "runbook_chunk_ids": ["chk_runbook123"],
   "missing_evidence": ["stack traces", "pool configuration"]
 }}
 """
@@ -122,6 +127,7 @@ Rules:
 - The runbook and memory provide known patterns — match against them.
 - Output valid JSON matching the DiagnosisOutput schema.
 - Cite evidence_ids from ALL sources, not just one specialist.
+- Preserve runbook chunk_id values in runbook_chunk_ids when runbook context is used.
 - Rank hypotheses by integrated evidence strength across all perspectives.
 """
 
@@ -171,9 +177,10 @@ Reason step by step. Weigh each specialist's hypotheses by confidence and eviden
 quality. Resolve contradictions explicitly. The final root cause and hypotheses
 should integrate findings across all perspectives.
 
-Output JSON with keys: hypotheses, root_cause, evidence_ids, missing_evidence.
+Output JSON with keys: hypotheses, root_cause, evidence_ids, runbook_chunk_ids, missing_evidence.
 Each hypothesis: id, statement, supporting_evidence_ids, confidence (0-1),
-rank_explanation. Root cause: summary, confidence (0-1), evidence_ids.
+rank_explanation, runbook_chunk_ids. Root cause: summary, confidence (0-1),
+evidence_ids, runbook_chunk_ids.
 """
 
 RANK_PROMPT_TEMPLATE = """\
@@ -206,6 +213,7 @@ _ALLOWED_ACTIONS = {
     "warmup_cache": "L1",
     "adjust_connection_pool": "L1",
     "restart_pod": "L2",
+    "restart_deployment": "L2",
     "scale_deployment": "L2",
     "restart_service": "L2",
     "restart_statefulset": "L2",
@@ -245,9 +253,10 @@ For each action specify:
 
 Rules:
 - Prefer lower-risk actions first (L0/L1 before L2/L3)
-- restart_pod and restart_service are bounded irreversible rolling restarts:
-  use them only when evidence supports a restart, and do not claim they can be
-  rolled back or fully restored
+- restart_pod, restart_deployment, and restart_service are bounded
+  irreversible Deployment rolling restarts: use restart_deployment when the
+  target workload is explicitly a Deployment; do not claim they can be rolled
+  back or fully restored
 - restart_statefulset is a bounded irreversible StatefulSet rolling restart:
   use it only when evidence identifies the target as a StatefulSet workload
 - rollback_plan for restart actions must describe monitoring/verification or

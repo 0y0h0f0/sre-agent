@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from packages.common.redaction import redact_text
 from packages.common.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,8 @@ ExecutionStatus = str  # "succeeded" | "failed" | "partial" | "timeout"
 _K8S_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$")
 
 #: Conservative live scale bounds. Fixture execution is unaffected.
-_MIN_LIVE_SCALE_REPLICAS = 0
-_MAX_LIVE_SCALE_REPLICAS = 50
+LIVE_SCALE_MIN_REPLICAS = 0
+LIVE_SCALE_MAX_REPLICAS = 50
 
 #: Action types that are classified as rollback operations.
 ROLLBACK_ACTION_TYPES: frozenset[str] = frozenset(
@@ -113,6 +114,9 @@ class ExecutorBackend(Protocol):
 # type has a deterministic result.
 _FIXTURE_RESULTS: dict[str, ExecutionResult] = {
     "restart_pod": ExecutionResult(status="succeeded", message="mock pod restart completed"),
+    "restart_deployment": ExecutionResult(
+        status="succeeded", message="mock deployment restart completed"
+    ),
     "restart_service": ExecutionResult(
         status="succeeded", message="mock service restart completed"
     ),
@@ -187,7 +191,7 @@ class LiveK8sExecutorBackend:
         namespace: str = "default",
         timeout_seconds: float = 30.0,
     ) -> None:
-        self.namespace = namespace
+        self.namespace = _effective_live_namespace(namespace)
         self.timeout_seconds = timeout_seconds
 
     # ------------------------------------------------------------------
@@ -196,12 +200,12 @@ class LiveK8sExecutorBackend:
 
     def execute(self, action: dict[str, Any], context: ExecutionContext) -> ExecutionResult:
         atype = canonical_action_type(action.get("type"))
-        target = str(action.get("target", ""))
-        params = dict(_to_dict(action.get("params")))
-        ns = context.namespace or self.namespace
+        target = _normalize_k8s_name(action.get("target", ""))
+        raw_params = action.get("params")
+        ns = _effective_live_namespace(context.namespace, self.namespace)
 
         # Validate K8s resource names to prevent path traversal.
-        if target and not _K8S_NAME_RE.match(target):
+        if not target or not _K8S_NAME_RE.match(target):
             return ExecutionResult(
                 status="failed",
                 message=f"invalid k8s resource name for target: {target}",
@@ -219,15 +223,24 @@ class LiveK8sExecutorBackend:
                 message=f"unknown action type '{atype}' for live executor",
             )
 
+        params_type_error = _params_type_error(raw_params)
+        if params_type_error:
+            return ExecutionResult(status="failed", message=params_type_error)
+        params = dict(_to_dict(raw_params))
+        params_error = _live_params_error(atype, params)
+        if params_error is not None:
+            return params_error
+
         try:
             return handler(atype, target, params, ns, self.timeout_seconds)
         except Exception as exc:
             logger.error(
-                "live executor: action=%s target=%s ns=%s failed",
+                "live executor: action=%s target=%s ns=%s failed error_type=%s error=%s",
                 atype,
                 target,
                 ns,
-                exc_info=True,
+                type(exc).__name__,
+                _safe_exception_message(exc),
             )
             return ExecutionResult(
                 status="failed",
@@ -246,12 +259,12 @@ class LiveK8sExecutorBackend:
         context: ExecutionContext,
     ) -> ExecutionResult:
         atype = canonical_action_type(action.get("type"))
-        target = str(action.get("target", ""))
-        params = dict(_to_dict(action.get("params")))
-        ns = context.namespace or self.namespace
+        target = _normalize_k8s_name(action.get("target", ""))
+        raw_params = action.get("params")
+        ns = _effective_live_namespace(context.namespace, self.namespace)
 
         # Validate K8s resource names to prevent path traversal.
-        if target and not _K8S_NAME_RE.match(target):
+        if not target or not _K8S_NAME_RE.match(target):
             return ExecutionResult(
                 status="failed",
                 message=f"invalid k8s resource name for target: {target}",
@@ -262,15 +275,28 @@ class LiveK8sExecutorBackend:
                 message=f"invalid k8s resource name for namespace: {ns}",
             )
 
+        params_type_error = _params_type_error(raw_params)
+        if params_type_error:
+            return ExecutionResult(status="failed", message=params_type_error)
+        params = dict(_to_dict(raw_params))
+
         # Prefer concrete values from the snapshot so the LLM does not
         # need to "remember" what the system looked like before.
         k8s_snap = snapshot.get("k8s") if isinstance(snapshot, dict) else {}
         if isinstance(k8s_snap, dict) and "error" not in k8s_snap:
             revision = k8s_snap.get("revision")
             replicas = k8s_snap.get("replicas")
-            if params.get("to_revision") is None and revision is not None:
+            if (
+                atype == "rollback_release"
+                and params.get("to_revision") is None
+                and revision is not None
+            ):
                 params["to_revision"] = revision
-            if params.get("replicas") is None and replicas is not None:
+            if (
+                atype in {"scale_back", "scale_deployment"}
+                and params.get("replicas") is None
+                and replicas is not None
+            ):
                 params["replicas"] = replicas
 
         handler = _LIVE_ROLLBACK_HANDLERS.get(atype)
@@ -280,15 +306,20 @@ class LiveK8sExecutorBackend:
                 message=f"unknown rollback type '{atype}' for live executor",
             )
 
+        params_error = _live_params_error(atype, params)
+        if params_error is not None:
+            return params_error
+
         try:
             return handler(atype, target, params, ns, self.timeout_seconds)
         except Exception as exc:
             logger.error(
-                "live executor: rollback=%s target=%s ns=%s failed",
+                "live executor: rollback=%s target=%s ns=%s failed error_type=%s error=%s",
                 atype,
                 target,
                 ns,
-                exc_info=True,
+                type(exc).__name__,
+                _safe_exception_message(exc),
             )
             return ExecutionResult(
                 status="failed",
@@ -308,6 +339,9 @@ def _live_restart_pod(
     atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
 ) -> ExecutionResult:
     """Trigger a rolling restart by patching the Deployment's pod template."""
+    target, params, ns, preflight_error = _live_handler_preflight(atype, target, params, ns)
+    if preflight_error is not None:
+        return preflight_error
     _ensure_k8s_client()
     from kubernetes import client  # type: ignore[import-untyped]
 
@@ -327,6 +361,13 @@ def _live_restart_pod(
     return ExecutionResult(
         status="succeeded",
         message=f"restart triggered for deployment/{target} in {ns}",
+        details={
+            "resource": "deployment",
+            "target": target,
+            "namespace": ns,
+            "patch": "pod_template_annotation",
+            "annotation": "kubectl.kubernetes.io/restartedAt",
+        },
     )
 
 
@@ -334,6 +375,9 @@ def _live_restart_statefulset(
     atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
 ) -> ExecutionResult:
     """Trigger a StatefulSet rolling restart by patching its pod template."""
+    target, params, ns, preflight_error = _live_handler_preflight(atype, target, params, ns)
+    if preflight_error is not None:
+        return preflight_error
     _ensure_k8s_client()
     from kubernetes import client  # type: ignore[import-untyped]
 
@@ -357,6 +401,13 @@ def _live_restart_statefulset(
     return ExecutionResult(
         status="succeeded",
         message=f"restart triggered for statefulset/{target} in {ns}",
+        details={
+            "resource": "statefulset",
+            "target": target,
+            "namespace": ns,
+            "patch": "pod_template_annotation",
+            "annotation": "kubectl.kubernetes.io/restartedAt",
+        },
     )
 
 
@@ -364,15 +415,18 @@ def _live_scale_deployment(
     atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
 ) -> ExecutionResult:
     """Scale a Deployment to the requested replica count."""
+    target, params, ns, preflight_error = _live_handler_preflight(atype, target, params, ns)
+    if preflight_error is not None:
+        return preflight_error
     raw_replicas = params.get("replicas")
-    replicas, error_message = _coerce_live_scale_replicas(raw_replicas)
+    replicas, error_message = coerce_live_scale_replicas(raw_replicas)
     if error_message is not None:
         return ExecutionResult(
             status="failed",
             message=error_message,
             details={
-                "min_replicas": _MIN_LIVE_SCALE_REPLICAS,
-                "max_replicas": _MAX_LIVE_SCALE_REPLICAS,
+                "min_replicas": LIVE_SCALE_MIN_REPLICAS,
+                "max_replicas": LIVE_SCALE_MAX_REPLICAS,
             },
         )
     _ensure_k8s_client()
@@ -386,6 +440,13 @@ def _live_scale_deployment(
     return ExecutionResult(
         status="succeeded",
         message=f"scaled deployment/{target} to {replicas} replicas in {ns}",
+        details={
+            "resource": "deployment",
+            "target": target,
+            "namespace": ns,
+            "subresource": "scale",
+            "replicas": replicas,
+        },
     )
 
 
@@ -393,6 +454,9 @@ def _live_pause_rollout(
     atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
 ) -> ExecutionResult:
     """Pause a Deployment rollout by setting spec.paused=true."""
+    target, params, ns, preflight_error = _live_handler_preflight(atype, target, params, ns)
+    if preflight_error is not None:
+        return preflight_error
     _ensure_k8s_client()
     from kubernetes import client  # type: ignore[import-untyped]
 
@@ -406,7 +470,13 @@ def _live_pause_rollout(
     return ExecutionResult(
         status="succeeded",
         message=f"paused rollout for deployment/{target} in {ns}",
-        details={"paused": True},
+        details={
+            "resource": "deployment",
+            "target": target,
+            "namespace": ns,
+            "patch": "spec.paused",
+            "paused": True,
+        },
     )
 
 
@@ -414,6 +484,9 @@ def _live_resume_rollout(
     atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
 ) -> ExecutionResult:
     """Resume a Deployment rollout by setting spec.paused=false."""
+    target, params, ns, preflight_error = _live_handler_preflight(atype, target, params, ns)
+    if preflight_error is not None:
+        return preflight_error
     _ensure_k8s_client()
     from kubernetes import client  # type: ignore[import-untyped]
 
@@ -427,7 +500,13 @@ def _live_resume_rollout(
     return ExecutionResult(
         status="succeeded",
         message=f"resumed rollout for deployment/{target} in {ns}",
-        details={"paused": False},
+        details={
+            "resource": "deployment",
+            "target": target,
+            "namespace": ns,
+            "patch": "spec.paused",
+            "paused": False,
+        },
     )
 
 
@@ -435,7 +514,12 @@ def _live_rollback_release(
     atype: str, target: str, params: dict[str, Any], ns: str, timeout: float
 ) -> ExecutionResult:
     """Rollback a Deployment to a previous revision."""
-    to_revision = params.get("to_revision")
+    target, params, ns, preflight_error = _live_handler_preflight(atype, target, params, ns)
+    if preflight_error is not None:
+        return preflight_error
+    to_revision, error_message = coerce_live_rollback_revision(params.get("to_revision"))
+    if error_message is not None:
+        return ExecutionResult(status="failed", message=error_message)
     _ensure_k8s_client()
 
     # POST to the deployment's rollback sub-resource.
@@ -443,7 +527,7 @@ def _live_rollback_release(
 
     body: dict[str, Any] = {"name": target}
     if to_revision is not None:
-        body["rollbackTo"] = {"revision": int(to_revision)}
+        body["rollbackTo"] = {"revision": to_revision}
 
     client.AppsV1Api().api_client.call_api(
         f"/apis/apps/v1/namespaces/{ns}/deployments/{target}/rollback",
@@ -456,6 +540,13 @@ def _live_rollback_release(
     return ExecutionResult(
         status="succeeded",
         message=f"rollback deployment/{target}{rev_msg} in {ns}",
+        details={
+            "resource": "deployment",
+            "target": target,
+            "namespace": ns,
+            "subresource": "rollback",
+            "to_revision": to_revision,
+        },
     )
 
 
@@ -485,6 +576,7 @@ def _live_not_implemented(
 
 _LIVE_HANDLERS: dict[str, _LiveHandler] = {
     "restart_pod": _live_restart_pod,
+    "restart_deployment": _live_restart_pod,
     "restart_statefulset": _live_restart_statefulset,
     "scale_deployment": _live_scale_deployment,
     "pause_rollout": _live_pause_rollout,
@@ -505,14 +597,97 @@ _LIVE_ROLLBACK_HANDLERS: dict[str, _LiveHandler] = {
     "scale_deployment": _live_scale_back,
     "revert_config": _live_not_implemented,
     "restart_pod": _live_not_implemented,
+    "restart_deployment": _live_not_implemented,
     "restart_statefulset": _live_not_implemented,
     "restart_service": _live_not_implemented,
+}
+
+_LIVE_ALLOWED_PARAMS: dict[str, frozenset[str]] = {
+    "restart_pod": frozenset(),
+    "restart_deployment": frozenset(),
+    "restart_service": frozenset(),
+    "restart_statefulset": frozenset(),
+    "pause_rollout": frozenset(),
+    "resume_rollout": frozenset(),
+    "scale_deployment": frozenset({"replicas"}),
+    "scale_back": frozenset({"replicas"}),
+    "rollback_release": frozenset({"to_revision"}),
 }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _params_type_error(value: object) -> str:
+    if value is None or isinstance(value, (dict, BaseModel)):
+        return ""
+    return "live action params must be an object"
+
+
+def _live_params_error(
+    action_type: str,
+    params: dict[str, Any],
+) -> ExecutionResult | None:
+    allowed = _LIVE_ALLOWED_PARAMS.get(action_type)
+    if allowed is None:
+        return None
+    unexpected = sorted(set(params) - allowed)
+    if not unexpected:
+        return None
+    allowed_params = sorted(allowed)
+    return ExecutionResult(
+        status="failed",
+        message=f"live action '{action_type}' received unsupported params",
+        details={
+            "allowed_params": allowed_params,
+            "unexpected_params": unexpected,
+        },
+    )
+
+
+def _live_handler_preflight(
+    action_type: str,
+    target: object,
+    params: object,
+    namespace: object,
+) -> tuple[str, dict[str, Any], str, ExecutionResult | None]:
+    normalized_target = _normalize_k8s_name(target)
+    normalized_namespace = _effective_live_namespace(namespace)
+    if not normalized_target or not _K8S_NAME_RE.match(normalized_target):
+        return (
+            normalized_target,
+            {},
+            normalized_namespace,
+            ExecutionResult(
+                status="failed",
+                message=f"invalid k8s resource name for target: {normalized_target}",
+            ),
+        )
+    if not _K8S_NAME_RE.match(normalized_namespace):
+        return (
+            normalized_target,
+            {},
+            normalized_namespace,
+            ExecutionResult(
+                status="failed",
+                message=f"invalid k8s resource name for namespace: {normalized_namespace}",
+            ),
+        )
+
+    params_type_error = _params_type_error(params)
+    if params_type_error:
+        return (
+            normalized_target,
+            {},
+            normalized_namespace,
+            ExecutionResult(status="failed", message=params_type_error),
+        )
+    normalized_params = _to_dict(params)
+    canonical_type = canonical_action_type(action_type)
+    params_error = _live_params_error(canonical_type, normalized_params)
+    return normalized_target, normalized_params, normalized_namespace, params_error
 
 
 def _to_dict(value: object) -> dict[str, Any]:
@@ -526,7 +701,24 @@ def _to_dict(value: object) -> dict[str, Any]:
     return {}
 
 
-def _coerce_live_scale_replicas(value: object) -> tuple[int | None, str | None]:
+def _normalize_k8s_name(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _effective_live_namespace(*candidates: object) -> str:
+    for candidate in candidates:
+        namespace = _normalize_k8s_name(candidate)
+        if namespace:
+            return namespace
+    return "default"
+
+
+def _safe_exception_message(exc: Exception) -> str:
+    return redact_text(str(exc)).redacted_text
+
+
+def coerce_live_scale_replicas(value: object) -> tuple[int | None, str | None]:
+    """Return a bounded live Deployment replica count or an audit-friendly error."""
     if value is None:
         return None, "scale_deployment requires 'replicas' in params"
     if isinstance(value, bool):
@@ -537,12 +729,29 @@ def _coerce_live_scale_replicas(value: object) -> tuple[int | None, str | None]:
         replicas = int(value.strip())
     else:
         return None, "scale_deployment replicas must be an integer"
-    if replicas < _MIN_LIVE_SCALE_REPLICAS or replicas > _MAX_LIVE_SCALE_REPLICAS:
+    if replicas < LIVE_SCALE_MIN_REPLICAS or replicas > LIVE_SCALE_MAX_REPLICAS:
         return None, (
             "scale_deployment replicas must be between "
-            f"{_MIN_LIVE_SCALE_REPLICAS} and {_MAX_LIVE_SCALE_REPLICAS}"
+            f"{LIVE_SCALE_MIN_REPLICAS} and {LIVE_SCALE_MAX_REPLICAS}"
         )
     return replicas, None
+
+
+def coerce_live_rollback_revision(value: object) -> tuple[int | None, str | None]:
+    """Return a positive Deployment rollback revision or an audit-friendly error."""
+    if value is None:
+        return None, None
+    if isinstance(value, bool):
+        return None, "rollback_release to_revision must be a positive integer"
+    if isinstance(value, int):
+        revision = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        revision = int(value.strip())
+    else:
+        return None, "rollback_release to_revision must be a positive integer"
+    if revision <= 0:
+        return None, "rollback_release to_revision must be a positive integer"
+    return revision, None
 
 
 def _now_iso() -> str:
@@ -558,14 +767,17 @@ def _ensure_k8s_client() -> None:
         raise RuntimeError(msg) from exc
     try:
         config.load_incluster_config()
-    except config.ConfigException:
+    except Exception as incluster_exc:
         try:
             config.load_kube_config()
-        except config.ConfigException as exc:
+        except Exception as kubeconfig_exc:
+            incluster_error = _safe_exception_message(incluster_exc)
+            kubeconfig_error = _safe_exception_message(kubeconfig_exc)
             raise RuntimeError(
                 "Cannot configure Kubernetes client: "
-                "not running in-cluster and no valid kubeconfig found"
-            ) from exc
+                f"in-cluster config failed: {incluster_error}; "
+                f"kubeconfig failed: {kubeconfig_error}"
+            ) from kubeconfig_exc
 
 
 # ---------------------------------------------------------------------------
@@ -580,10 +792,20 @@ def build_executor_backend(settings: Settings) -> ExecutorBackend:
     ``"fixture"`` (the default) and a ``LiveK8sExecutorBackend`` when set
     to ``"live"``.
     """
-    backend = settings.executor_backend
+    backend = settings.executor_backend.strip().lower()
+    if backend == "fixture":
+        return FixtureExecutorBackend()
     if backend == "live":
         return LiveK8sExecutorBackend(
-            namespace=settings.executor_k8s_namespace,
+            namespace=_effective_live_executor_namespace(settings),
             timeout_seconds=settings.executor_timeout_seconds,
         )
-    return FixtureExecutorBackend()
+    msg = f"unknown executor_backend '{settings.executor_backend}'"
+    raise ValueError(msg)
+
+
+def _effective_live_executor_namespace(settings: Settings) -> str:
+    return _effective_live_namespace(
+        getattr(settings, "executor_k8s_namespace", ""),
+        getattr(settings, "k8s_namespace", ""),
+    )

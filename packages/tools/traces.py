@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from packages.common.redaction import redact_text
 from packages.common.time import ensure_utc
 from packages.tools.base import ToolResult, ToolStatus, compact_summary, elapsed_ms, start_timer
 from packages.tools.cache import RequestLocalToolCache, build_cache_key
@@ -61,10 +62,11 @@ class TraceTool:
 
     def run(self, query: BaseModel) -> ToolResult:
         trace_query = TraceQuery.model_validate(query)
+        public_service = _redact_query_text(trace_query.service)
         started_at = start_timer()
         cache_key = build_cache_key(
             tool_name=self.name,
-            service=trace_query.service,
+            service=public_service,
             query=trace_query,
             start=trace_query.start,
             end=trace_query.end,
@@ -76,14 +78,12 @@ class TraceTool:
             return cached.model_copy(update={"duration_ms": elapsed_ms(started_at)})
 
         try:
-            spans = self.backend.fetch_spans(
-                trace_query.service, trace_query.start, trace_query.end
-            )
+            spans = self.backend.fetch_spans(public_service, trace_query.start, trace_query.end)
             matching = [_normalize_span(span) for span in spans]
             matching = [
                 span
                 for span in matching
-                if span["service"] == trace_query.service
+                if span["service"] == public_service
                 and trace_query.start <= span["start"] <= trace_query.end
             ]
             slow_spans = [
@@ -92,7 +92,7 @@ class TraceTool:
             error_spans = [span for span in matching if span.get("status") == "error"]
             downstream = sorted(
                 {
-                    span["downstream_service"]
+                    _redact_public_text(span["downstream_service"])
                     for span in matching
                     if isinstance(span.get("downstream_service"), str)
                 }
@@ -113,7 +113,7 @@ class TraceTool:
                 summary=(
                     compact_summary(
                         {
-                            "service": trace_query.service,
+                            "service": public_service,
                             "spans": len(matching),
                             "slow": len(slow_spans),
                             "errors": len(error_spans),
@@ -121,13 +121,13 @@ class TraceTool:
                         }
                     )
                     if matching
-                    else f"no trace spans for {trace_query.service}"
+                    else f"no trace spans for {public_service}"
                 ),
                 evidence=[
                     {
                         "type": "trace",
                         "source": self.backend.name,
-                        "title": f"trace spans for {trace_query.service}",
+                        "title": f"trace spans for {public_service}",
                         "payload": data,
                     }
                 ]
@@ -141,10 +141,10 @@ class TraceTool:
             result = ToolResult(
                 status="timeout",
                 data={},
-                summary=f"trace backend timed out for {trace_query.service}",
+                summary=f"trace backend timed out for {public_service}",
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
-                error_message=str(exc),
+                error_message=_redact_exception(exc),
             )
         except (
             httpx.HTTPError,
@@ -157,10 +157,10 @@ class TraceTool:
             result = ToolResult(
                 status="degraded",
                 data={},
-                summary=f"trace backend unavailable for {trace_query.service}",
+                summary=f"trace backend unavailable for {public_service}",
                 cache_key=cache_key,
                 duration_ms=elapsed_ms(started_at),
-                error_message=str(exc),
+                error_message=_redact_exception(exc),
             )
 
         if self.cache and result.status in {"succeeded", "degraded"}:
@@ -187,10 +187,35 @@ def _p95(values: list[int]) -> int:
 
 def _public_span(span: dict[str, Any]) -> dict[str, Any]:
     return {
-        "trace_id": span.get("trace_id"),
-        "span_id": span.get("span_id"),
-        "name": span.get("name"),
+        "trace_id": _redact_trace_identifier(span.get("trace_id")),
+        "span_id": _redact_trace_identifier(span.get("span_id")),
+        "name": _redact_public_text(span.get("name")),
         "duration_ms": span.get("duration_ms"),
         "status": span.get("status"),
-        "downstream_service": span.get("downstream_service"),
+        "downstream_service": _redact_public_text(span.get("downstream_service")),
     }
+
+
+def _redact_exception(exc: BaseException) -> str:
+    return redact_text(str(exc)).redacted_text
+
+
+def _redact_query_text(value: str) -> str:
+    return redact_text(value).redacted_text
+
+
+def _redact_public_text(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_text(value).redacted_text
+    return value
+
+
+def _redact_trace_identifier(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    result = redact_text(value)
+    # Trace/span IDs can look like opaque tokens. Preserve raw-token-shaped IDs
+    # while still redacting explicit keyed secrets or internal endpoints.
+    if any(redaction_type != "raw_token" for redaction_type in result.redaction_types):
+        return result.redacted_text
+    return value

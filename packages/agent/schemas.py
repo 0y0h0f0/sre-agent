@@ -20,6 +20,7 @@ class Hypothesis(BaseModel):
     id: str = ""
     statement: str = ""
     supporting_evidence_ids: list[str] = Field(default_factory=list)
+    runbook_chunk_ids: list[str] = Field(default_factory=list)
     confidence: float = 0.0
     rank_explanation: str = ""
 
@@ -28,6 +29,7 @@ class DiagnosisOutput(BaseModel):
     hypotheses: list[Hypothesis] = Field(default_factory=list)
     root_cause: dict[str, Any] = Field(default_factory=dict)
     evidence_ids: list[str] = Field(default_factory=list)
+    runbook_chunk_ids: list[str] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
 
 

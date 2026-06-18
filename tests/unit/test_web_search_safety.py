@@ -67,6 +67,14 @@ class TestWebSearchQueryRedaction:
         result = redact_text(text)
         assert token not in result.redacted_text
 
+    def test_query_redacts_short_token_and_secret_values(self):
+        """Short keyed token/secret values must not bypass redaction."""
+        text = "k8s event token=short-secret secret: prod-db-password"
+        result = redact_text(text)
+        assert "short-secret" not in result.redacted_text
+        assert "prod-db-password" not in result.redacted_text
+        assert result.redaction_count >= 2
+
     def test_query_redacts_password(self):
         """Search queries must not contain passwords."""
         text = 'database error password: "s3cret!"'

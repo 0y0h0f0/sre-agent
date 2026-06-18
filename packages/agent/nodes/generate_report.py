@@ -33,6 +33,7 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
             + state.get("k8s_evidence", [])
             + state.get("db_evidence", [])
             + state.get("verify_evidence", [])
+            + _runbook_context_evidence(state.get("runbook_context", []))
         )
         # Build a richer prompt with evidence and actions
         evidence_summary = json.dumps(
@@ -41,6 +42,8 @@ def generate_report(state: IncidentState, deps: AgentDeps) -> IncidentState:
                     "evidence_id": e.get("evidence_id", ""),
                     "type": e.get("type", ""),
                     "source": e.get("source", ""),
+                    "source_id": e.get("source_id", ""),
+                    "source_path": _source_path(e),
                     "summary": str(e.get("summary", ""))[:200],
                 }
                 for e in evidence
@@ -180,3 +183,38 @@ def _fallback_report(
         "evidence_ids": evidence_ids,
         "follow_ups": ["Review monitoring", "Update runbook"],
     }
+
+
+def _runbook_context_evidence(chunks: list[dict[str, object]]) -> list[dict[str, object]]:
+    evidence: list[dict[str, object]] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict) or not chunk.get("evidence_id"):
+            continue
+        evidence.append(
+            {
+                "evidence_id": chunk.get("evidence_id"),
+                "type": "runbook",
+                "source": "runbook",
+                "source_id": chunk.get("source_id") or chunk.get("chunk_id"),
+                "title": chunk.get("title", "Runbook match"),
+                "summary": chunk.get("excerpt", ""),
+                "confidence": chunk.get("score"),
+                "payload": {
+                    "chunk_id": chunk.get("chunk_id"),
+                    "source_path": chunk.get("source_path"),
+                    "metadata": chunk.get("metadata", {}),
+                    "score": chunk.get("score"),
+                },
+            }
+        )
+    return evidence
+
+
+def _source_path(evidence: dict[str, object]) -> object:
+    payload = evidence.get("payload")
+    if isinstance(payload, dict):
+        nested = payload.get("payload")
+        if isinstance(nested, dict) and nested.get("source_path"):
+            return nested.get("source_path")
+        return payload.get("source_path", "")
+    return evidence.get("source_path", "")

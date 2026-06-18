@@ -1,8 +1,11 @@
 # React 控制台
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-18
 
 本文描述 `apps/web/` 当前实现。前端是运维控制台，不是营销页；第一屏默认进入事件列表，所有关键交互都围绕事件、诊断运行、审批和报告。
+
+需要沿代码路径理解 API client、TanStack Query、轮询/WebSocket ticket、Redis Pub/Sub、审批 mutation、通知和错误状态时，见 [前端控制台与实时更新技术深挖](../00-overview/frontend-realtime-console-deep-dive.md)。需要把浏览器通知、service worker、comments、evidence annotations、audit 和邮件通知放到同一条操作员交互链路里看时，见 [通知、邮件、评论协作与操作员交互技术深挖](../00-overview/notifications-collaboration-operator-interaction-deep-dive.md)。
+需要聚焦事件详情页里的 NFA、根因修正、相关事件和反馈/学习边界时，见 [反馈、NFA、关联事件与持续学习技术深挖](../00-overview/feedback-nfa-correlation-continuous-learning-deep-dive.md)。
 
 ## 技术栈
 
@@ -34,7 +37,7 @@
 | `apps/web/src/main.tsx` | React 根节点、QueryClient、Router、生产 service worker 注册 |
 | `apps/web/src/styles.css` | 全局布局、页面、表格、状态徽章、可视化、弹窗、响应式样式 |
 | `apps/web/public/sw.js` | 浏览器通知使用的 service worker |
-| `apps/web/src/App.test.tsx` | 页面级行为测试，目前 19 个测试 |
+| `apps/web/src/App.test.tsx` | 页面级行为测试，目前 20 个测试 |
 | `apps/web/src/api.test.ts` | API client 测试，目前 11 个测试 |
 | `apps/web/src/e2e/smoke.spec.ts` | Playwright smoke 流程，目前 1 个测试 |
 
@@ -58,12 +61,12 @@
 `api.ts` 的请求封装有几个固定行为：
 
 - `VITE_API_BASE_URL` 存在时作为 API 前缀；未设置时使用相对路径，开发环境由 Vite proxy 处理 `/api`。
-- 每个请求自动带 `X-Request-Id`，格式为 `web_<timestamp>_<random>`。
+- 每个请求自动带 `X-Request-Id`，格式为 `req_<base36 timestamp>_<random>`。
 - API key 存在 `localStorage` 的 `sre_api_key` 中，请求时写入 `Authorization: Bearer <key>`。
 - `createApiKey(payload, authToken)` 使用输入的 bootstrap token，而不是本地已保存 key。
 - 侧边栏“生成密钥”默认创建 `scopes=["api_key:admin"]`、`roles=["operator"]` 的本地 Web key，避免 bootstrap seed 移除后无法继续管理 key。
 - 标准错误信封会转换为 `ApiError(status, code, requestId, details)`，页面错误态会显示 `request_id`。
-- 列表接口通过 `normalizePaginatedResponse` 同时兼容分页响应和旧的数组响应。
+- 列表接口通过 `normalizePaginated()` 同时兼容分页响应和旧的数组响应。
 
 Vite 配置中的容器开发代理是：`/api` -> `http://api:8000`。如果在宿主机直接运行前端并且不走 Docker 网络，优先设置：
 
@@ -80,7 +83,7 @@ VITE_API_BASE_URL=http://localhost:8000 npm run dev
 | 事件详情 | `['incident', incidentId]` | incident live 时 5 秒轮询 |
 | 事件运行列表 | `['incident-runs', incidentId]` | mutation 后失效刷新 |
 | 事件审批列表 | `['incident-approvals', incidentId]` | 在 pending approvals 区块 5 秒轮询 |
-| 相关事件 | `['correlated-incidents', incidentId]` | `staleTime=30s` |
+| 相关事件 | `['correlated-incidents', incidentId]` | `staleTime=60s` |
 | Agent Run | `['agent-run', agentRunId]` | run live 时 5 秒轮询 + WebSocket 事件失效刷新 |
 | 审批列表 | `['approvals', status]` | `status=waiting` 时 5 秒轮询 |
 | 单个审批 | `['approval', approvalId]` | 打开深链接时查询 |
@@ -111,7 +114,7 @@ WebSocket 收到 `node_update`、`approval_update`、`incident_update` 后，会
 `IncidentDetailPage` 聚合事件主记录、agent runs、审批、相关事件、评论和审计日志。主要交互包括：
 
 - 手动重新诊断：`POST /api/incidents/{incident_id}/diagnose`，payload 为 `{force: true, reason: 'manual rerun from UI'}`。
-- NFA 标记、根因纠正、动作纠正，全部通过 feedback/correction API 写入后端。
+- 页面当前暴露 NFA 标记和根因纠正；`api.ts` 还提供 action feedback/list feedback helper，但事件详情页尚未渲染独立 action feedback 表单或 feedback timeline。
 - 展示证据、动作、审批摘要、相关事件、评论和审计。
 - 从 run 列表进入 `/agent-runs/:agentRunId`，从报告按钮进入 `/incidents/:incidentId/report`。
 
@@ -137,14 +140,14 @@ WebSocket 收到 `node_update`、`approval_update`、`incident_update` 后，会
 
 - L2 审批：审批人必填；批准或驳回后刷新审批、incident、agent-run。
 - L3 审批：单个审批弹窗要求 `risk_ack=true`、`confirm_action_type`、`confirm_target`，并把字段原样发送到后端。
-- 批量审批：只发送 `approval_ids`、`decision`、`approver` 和 comment；不会自动补 L3 二次确认字段。L3 批量批准应由后端按规则拒绝或要求单独审批。
+- 批量审批：只发送 `approval_ids`、`decision`、`approver` 和 comment；选中项包含 L3 时前端禁用批量批准并提示需要单独确认，批量拒绝仍可用。最终校验仍由后端执行。
 - 驳回：comment 必填。
 
 `ApprovalNotificationControl` 在浏览器允许通知后，会对新出现的 waiting approval 发送浏览器通知，并用内存 set 避免同一个 approval 重复通知。
 
 ### 报告
 
-`ReportPage` 查询当前事件报告。后端返回 404 时显示“尚无报告”的空态，其他错误走标准错误态。重新生成报告调用 `POST /api/incidents/{incident_id}/report/regenerate`，成功后刷新 `['incident-report', incidentId]`。
+`ReportPage` 查询当前事件报告。后端返回 404 时显示“尚无报告”的空态，其他错误走标准错误态。重新生成报告调用 `POST /api/incidents/{incident_id}/report/regenerate`，成功后刷新 `['incident-report', incidentId]`。报告版本追加、latest-only API、报告通知和 incident/run lifecycle 见 [报告生成、版本与事件生命周期技术深挖](../00-overview/report-generation-incident-lifecycle-deep-dive.md)。
 
 报告展示版本、关联 run、根因、影响、时间线、执行动作、后续项和 evidence references。报告版本管理由后端保证，前端不覆盖历史版本。
 

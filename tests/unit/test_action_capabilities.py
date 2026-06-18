@@ -109,7 +109,14 @@ def test_live_reversible_capabilities_have_rollback_snapshot_and_verify_contract
 
 
 @pytest.mark.parametrize(
-    "action_type", ["restart_pod", "restart_service", "pause_rollout", "resume_rollout"]
+    "action_type",
+    [
+        "restart_pod",
+        "restart_deployment",
+        "restart_service",
+        "pause_rollout",
+        "resume_rollout",
+    ],
 )
 def test_bounded_irreversible_k8s_actions_are_not_reversible(action_type: str) -> None:
     capability = get_action_capability(action_type)
@@ -158,6 +165,35 @@ def test_restart_statefulset_has_statefulset_snapshot_contract() -> None:
     assert "k8s_statefulset_restart_patch_only" in capability.preflight_checks
     assert "k8s_rollout" in capability.verify_gates
     assert capability.risk_level_expectation == "L2"
+
+
+@pytest.mark.parametrize("action_type", ["scale_deployment", "scale_back"])
+def test_scale_actions_have_replica_only_live_preflight_contract(action_type: str) -> None:
+    capability = get_action_capability(action_type)
+    assert capability is not None
+    assert capability.category == "live_mutating_reversible"
+    assert capability.live_backend == "k8s"
+    assert "k8s.replicas" in capability.required_snapshot_paths
+    assert "k8s_deployment_exists" in capability.preflight_checks
+    assert "k8s_scale_params_only" in capability.preflight_checks
+    assert "k8s_scale_replicas_valid" in capability.preflight_checks
+    assert "k8s_deployment_scale_patch_only" in capability.preflight_checks
+    assert "k8s_rollout" in capability.verify_gates
+
+
+@pytest.mark.parametrize("action_type", ["rollback_release", "rollback_deployment"])
+def test_rollback_actions_have_revision_only_live_preflight_contract(action_type: str) -> None:
+    capability = get_action_capability(action_type)
+    assert capability is not None
+    assert capability.category == "live_mutating_reversible"
+    assert capability.live_backend == "k8s"
+    assert capability.risk_level_expectation == "L3"
+    assert "k8s.revision" in capability.required_snapshot_paths
+    assert "k8s_deployment_exists" in capability.preflight_checks
+    assert "k8s_rollback_params_only" in capability.preflight_checks
+    assert "k8s_rollback_revision_valid" in capability.preflight_checks
+    assert "k8s_deployment_rollback_subresource_only" in capability.preflight_checks
+    assert "db_readonly" in capability.verify_gates
 
 
 @pytest.mark.parametrize(
@@ -231,6 +267,9 @@ def test_fallback_only_actions_do_not_get_live_backend(action_type: str) -> None
 
 def test_lookup_normalizes_action_type() -> None:
     assert get_action_capability(" Restart_Pod ") == get_action_capability("restart_pod")
+    assert get_action_capability(" Restart_Deployment ") == get_action_capability(
+        "restart_deployment"
+    )
 
 
 def test_capability_iteration_is_deterministic() -> None:

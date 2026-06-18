@@ -31,9 +31,9 @@ def test_live_k8s_config_failure_degrades_with_both_errors(monkeypatch) -> None:
     )
     monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
 
-    tool = K8sDiagnosticsTool(backend=LiveK8sBackend(namespace="task-platform"))
+    tool = K8sDiagnosticsTool(backend=LiveK8sBackend(namespace="target-namespace"))
     result = tool.run(
-        K8sQuery(service="task-service", operation="events", namespace="task-platform")
+        K8sQuery(service="task-service", operation="events", namespace="target-namespace")
     )
 
     assert result.status == "degraded"
@@ -59,7 +59,7 @@ def test_collect_k8s_records_degraded_tool_call_when_backend_raises() -> None:
             redis_url="memory://",
             celery_broker_url="memory://",
             celery_result_backend="memory://",
-            k8s_namespace="task-platform",
+            k8s_namespace="target-namespace",
         ),
         k8s_tool=_BrokenK8sTool(),
         tool_call_recorder=lambda **kwargs: tool_calls.append(kwargs),

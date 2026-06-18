@@ -6,7 +6,7 @@
 
 **状态：** M0–M8 完成 | M9 受控增强已纳入当前文档（生产默认关闭，按特性开关启用）
 
-**核心指标：** 100 个 Python 测试文件 · 15 个数据库迁移 · 默认 13 个 Compose 服务（mailpit 为 dev profile）· 14 个 API router / 76 个 HTTP route · 32 个数据模型
+**核心指标：** 111 个 Python `test_*.py` 源文件 · 17 个数据库迁移 · 默认 13 个 Compose 服务（mailpit 为 dev profile）· 14 个 API router / 79 个 HTTP route + 1 个 WebSocket · 32 个数据模型
 
 ---
 
@@ -47,7 +47,7 @@ docker compose --profile dev up -d
 ## 系统架构
 
 ```
-告警 (Webhook / Alertmanager Poll)
+告警 (Webhook / Alertmanager Poll / Grafana-shaped payload)
         │
         ▼
   FastAPI (apps/api)
@@ -91,7 +91,7 @@ docker compose --profile dev up -d
 | 层 | 技术 | 说明 |
 |----|------|------|
 | **后端** | Python 3.11+ · FastAPI · Pydantic · SQLAlchemy · Alembic | REST API + 数据模型 |
-| **Agent** | LangGraph · LangChain | 有状态诊断工作流，PostgreSQL 持久化检查点 |
+| **Agent** | LangGraph | 有状态诊断工作流，PostgreSQL 持久化检查点 |
 | **异步任务** | Celery · Redis | 诊断任务调度，Celery Beat 定时任务 |
 | **数据库** | PostgreSQL 16 · pgvector | 关系数据 + 向量相似搜索 |
 | **前端** | React 19 · TypeScript 5.7 · Vite 6 · React Router 7 · TanStack Query 5 | SPA 控制台 |
@@ -109,7 +109,7 @@ M9 在 M0–M8 确定性诊断基础上，新增 AI、Web 搜索、Tempo、Grafa
 | 9.4 | Web 搜索安全 | `RUNBOOK_WEB_SEARCH_ENABLED` |
 | 9.5 | Tempo Trace 后端 | `TRACE_BACKEND=tempo` |
 | 9.6 | Tempo 自动发现 | `TEMPO_DISCOVERY_ENABLED` |
-| 9.7 | Grafana 告警 Webhook | `GRAFANA_ALERT_INGEST_ENABLED` |
+| 9.7 | Grafana-shaped 告警归一化与 helper | `GRAFANA_ALERT_INGEST_ENABLED` |
 | 9.8 | 语义 Runbook 搜索 | `SEMANTIC_RUNBOOK_SEARCH_ENABLED` |
 | 9.9 | 外部 Embedding 提供商 | `EXTERNAL_EMBEDDING_PROVIDER_ENABLED` |
 
@@ -137,11 +137,12 @@ packages/
   rag/           Runbook RAG（入库 / 嵌入 / 检索 / 重排序 / 生成）
   memory/        记忆存储、上下文压缩、token 计数
 tests/
-  unit/          71 个单元测试文件
-  integration/   22 个集成测试文件
+  unit/          77 个单元测试文件
+  integration/   27 个集成测试文件
   e2e/           4 个端到端测试文件
   contract/      1 个契约测试文件
-migrations/      15 个 Alembic 版本
+  manual/        2 个手动测试文件
+migrations/      17 个 Alembic 版本
 deploy/          Docker Compose 配置（Prometheus / Loki / Grafana / OTel / BGE）
 demo/            告警 fixture、演示服务、故障数据、runbook 模板
 docs/            架构文档、API 参考、运维手册、M9 上线计划
@@ -226,7 +227,30 @@ npm run test:e2e       # Playwright E2E 测试
 | [docs/00-overview/architecture.md](docs/00-overview/architecture.md) | 系统架构详解 |
 | [docs/00-overview/quick-start.md](docs/00-overview/quick-start.md) | 快速开始指南 |
 | [docs/00-overview/project-overview.md](docs/00-overview/project-overview.md) | 项目全景 |
-| [docs/01-backend/api-reference.md](docs/01-backend/api-reference.md) | API 参考（76 个 HTTP route + 1 个 WebSocket） |
+| [docs/00-overview/engineering-metrics.md](docs/00-overview/engineering-metrics.md) | 工程评估指标 |
+| [docs/00-overview/alert-to-report-deep-dive.md](docs/00-overview/alert-to-report-deep-dive.md) | 告警到报告主链路深挖 |
+| [docs/00-overview/alert-source-normalization-poll-grafana-deep-dive.md](docs/00-overview/alert-source-normalization-poll-grafana-deep-dive.md) | `/api/alerts`、Alertmanager poll、Grafana-shaped payload 与 resolved inference 深挖 |
+| [docs/00-overview/guardrail-approval-deep-dive.md](docs/00-overview/guardrail-approval-deep-dive.md) | 护栏、审批、恢复与执行深挖 |
+| [docs/00-overview/executor-action-verification-loop-deep-dive.md](docs/00-overview/executor-action-verification-loop-deep-dive.md) | 执行器、动作能力、快照、验证与重规划闭环深挖 |
+| [docs/00-overview/report-generation-incident-lifecycle-deep-dive.md](docs/00-overview/report-generation-incident-lifecycle-deep-dive.md) | 报告生成、报告版本与事件生命周期深挖 |
+| [docs/00-overview/runbook-draft-version-amendment-lifecycle-deep-dive.md](docs/00-overview/runbook-draft-version-amendment-lifecycle-deep-dive.md) | Runbook 草稿、版本、审核与 amendment 生命周期深挖 |
+| [docs/00-overview/tool-evidence-deep-dive.md](docs/00-overview/tool-evidence-deep-dive.md) | 工具调用、证据持久化与 verify gates 深挖 |
+| [docs/00-overview/rag-memory-context-deep-dive.md](docs/00-overview/rag-memory-context-deep-dive.md) | RAG、记忆、上下文压缩与 cache 指标深挖 |
+| [docs/00-overview/config-discovery-effective-config-deep-dive.md](docs/00-overview/config-discovery-effective-config-deep-dive.md) | 配置、Discovery、EffectiveConfig 与生产安全深挖 |
+| [docs/00-overview/discovery-capability-topology-deep-dive.md](docs/00-overview/discovery-capability-topology-deep-dive.md) | Discovery、能力矩阵、服务拓扑、rerun 与 proposal 边界深挖 |
+| [docs/00-overview/observability-backend-adapters-deep-dive.md](docs/00-overview/observability-backend-adapters-deep-dive.md) | Prometheus、Loki、Trace、Deployment、K8s、DB 后端适配器深挖 |
+| [docs/00-overview/deployment-change-github-argocd-deep-dive.md](docs/00-overview/deployment-change-github-argocd-deep-dive.md) | Deployment Change、GitHub、Argo CD 与发布变更证据深挖 |
+| [docs/00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md](docs/00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md) | LLM provider、Prompt、FakeLLM、真实 provider 与 M9 draft-only 边界深挖 |
+| [docs/00-overview/frontend-realtime-console-deep-dive.md](docs/00-overview/frontend-realtime-console-deep-dive.md) | 前端控制台、TanStack Query、WebSocket ticket 与实时更新深挖 |
+| [docs/00-overview/api-control-plane-service-deep-dive.md](docs/00-overview/api-control-plane-service-deep-dive.md) | API 控制面、服务层事务、认证、错误和审计深挖 |
+| [docs/00-overview/worker-celery-langgraph-checkpoint-deep-dive.md](docs/00-overview/worker-celery-langgraph-checkpoint-deep-dive.md) | Worker、Celery、LangGraph checkpoint、审批恢复与任务幂等深挖 |
+| [docs/00-overview/testing-eval-engineering-metrics-deep-dive.md](docs/00-overview/testing-eval-engineering-metrics-deep-dive.md) | 测试门禁、Eval harness、工程指标和 CI 调试深挖 |
+| [docs/00-overview/production-operations-rollback-deep-dive.md](docs/00-overview/production-operations-rollback-deep-dive.md) | 生产发布、运维、M9 rollout 与回滚深挖 |
+| [docs/00-overview/data-model-migrations-persistence-deep-dive.md](docs/00-overview/data-model-migrations-persistence-deep-dive.md) | 数据模型、Alembic 迁移、repository 事务边界与持久化不变量深挖 |
+| [docs/00-overview/auth-api-key-audit-security-deep-dive.md](docs/00-overview/auth-api-key-audit-security-deep-dive.md) | API key auth、scope、WebSocket ticket、rate limit、audit 与 secret redaction 深挖 |
+| [docs/00-overview/notifications-collaboration-operator-interaction-deep-dive.md](docs/00-overview/notifications-collaboration-operator-interaction-deep-dive.md) | 邮件通知、email token、评论、证据标注、WebSocket 和浏览器通知深挖 |
+| [docs/00-overview/feedback-nfa-correlation-continuous-learning-deep-dive.md](docs/00-overview/feedback-nfa-correlation-continuous-learning-deep-dive.md) | NFA、根因/action 反馈、相关事件、runbook amendment、memory/eval 回流边界深挖 |
+| [docs/01-backend/api-reference.md](docs/01-backend/api-reference.md) | API 参考（79 个 HTTP route + 1 个 WebSocket） |
 | [docs/01-backend/data-model.md](docs/01-backend/data-model.md) | 数据模型（32 个模型） |
 | [docs/01-backend/backend-architecture.md](docs/01-backend/backend-architecture.md) | 后端架构 |
 | [docs/02-agent/workflow.md](docs/02-agent/workflow.md) | Agent 工作流（18 个节点） |

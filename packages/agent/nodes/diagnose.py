@@ -56,6 +56,8 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
         # ---- Post-diagnosis processing (identical for both paths) ----
         hypotheses = [h.model_dump() for h in output.hypotheses]
         root_cause = dict(output.root_cause)
+        if output.runbook_chunk_ids and not root_cause.get("runbook_chunk_ids"):
+            root_cause["runbook_chunk_ids"] = list(output.runbook_chunk_ids)
         rationale = _build_rationale(output, hypotheses)
 
         cross_validation = cross_validate_state(state)
@@ -101,6 +103,8 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
             **state,
             "hypotheses": hypotheses,
             "root_cause": root_cause,
+            "evidence_ids": list(output.evidence_ids),
+            "runbook_chunk_ids": list(output.runbook_chunk_ids),
             "diagnosis_rationale": rationale,
             "cross_validation": cross_validation,
             "needs_human_review": needs_review,
@@ -273,6 +277,7 @@ def _serialize_partial_output(output: DiagnosisOutput) -> str:
         "hypotheses": [h.model_dump() for h in output.hypotheses],
         "root_cause": output.root_cause,
         "evidence_ids": output.evidence_ids,
+        "runbook_chunk_ids": output.runbook_chunk_ids,
         "missing_evidence": output.missing_evidence,
     })
 
@@ -383,12 +388,14 @@ def _build_rationale(
         "root_cause": root_cause.get("summary", ""),
         "root_cause_confidence": root_cause.get("confidence", 0),
         "evidence_ids": list(root_evidence),
+        "runbook_chunk_ids": list(output.runbook_chunk_ids),
         "hypothesis_ranking": [
             {
                 "id": h.get("id", ""),
                 "confidence": h.get("confidence", 0),
                 "why": h.get("rank_explanation", ""),
                 "evidence_ids": h.get("supporting_evidence_ids", []),
+                "runbook_chunk_ids": h.get("runbook_chunk_ids", []),
             }
             for h in hypotheses
         ],
@@ -403,6 +410,10 @@ def _state_evidence_ids(state: IncidentState) -> list[str]:
         "logs_evidence",
         "traces_evidence",
         "deployment_evidence",
+        "k8s_evidence",
+        "db_evidence",
+        "verify_evidence",
+        "runbook_context",
     ):
         items = state.get(key, []) or []
         for item in items if isinstance(items, list) else []:

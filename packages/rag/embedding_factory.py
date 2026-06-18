@@ -84,6 +84,7 @@ class BGEZhEmbeddingProvider:
                 f"{self.base_url}/embed",
                 json={"inputs": texts},
                 timeout=self.timeout,
+                trust_env=False,
             )
             response.raise_for_status()
             vectors = response.json()
@@ -114,6 +115,7 @@ class Text2VecEmbeddingProvider:
                 f"{self.base_url}/embed",
                 json={"sentences": texts},
                 timeout=self.timeout,
+                trust_env=False,
             )
             response.raise_for_status()
             vectors = response.json()

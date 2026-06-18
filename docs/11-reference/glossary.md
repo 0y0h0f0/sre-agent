@@ -121,7 +121,7 @@ This glossary defines terms used across the SRE Incident Response Agent document
 | Web context | Redacted, URL-validated Web search result used as review evidence for runbook enrichment. |
 | Native Tempo backend | `TRACE_BACKEND=tempo` using Tempo HTTP APIs. Treat as M9 rollout. |
 | Tempo discovery | M9 discovery of Tempo services from K8s service data. Production status is at most `requires_review`. |
-| Grafana webhook helper | Gated helper path `AlertService.ingest_grafana_alert()`. The generic alert endpoint can still normalize Grafana-shaped payloads. |
+| Grafana helper | Gated service path `AlertService.ingest_grafana_alert()`. The generic alert endpoint can still normalize Grafana-shaped payloads; the current app has no dedicated Grafana webhook router. |
 | Semantic search | M9/hybrid runbook search mode using embeddings when enabled and available. |
 | External embedding provider | Optional HTTP embedding provider that must redact input and degrade to keyword fallback on failure. |
 | External LLM allow | `LLM_EXTERNAL_PROVIDER_ALLOWED`, the second opt-in for cloud LLM providers. |

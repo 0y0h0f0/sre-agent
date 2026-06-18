@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# K8s smoke harness for validating sre-agent against the task-platform project
-# in ~/gos. It does not run pytest/vitest/playwright. It drives the deployed
+# K8s smoke harness for validating sre-agent against the target-namespace project
+# in ~/target-backend. It does not run pytest/vitest/playwright. It drives the deployed
 # systems through Kubernetes, business traffic, /api/alerts, discovery APIs, and
 # agent-run tool_call checks.
 
 AGENT_NS="${AGENT_NS:-sre-agent}"
-GOS_NS="${GOS_NS:-task-platform}"
-GOS_REPO="${GOS_REPO:-${HOME}/gos}"
+GOS_NS="${GOS_NS:-target-namespace}"
+GOS_REPO="${GOS_REPO:-${HOME}/target-backend}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-reports/k8s-gos-detection}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUT_DIR="${OUT_DIR:-${OUTPUT_ROOT}/${RUN_ID}}"

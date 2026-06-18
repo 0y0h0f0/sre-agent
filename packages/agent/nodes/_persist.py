@@ -19,6 +19,8 @@ def persist_evidence(
     repo = EvidenceItemRepository(db)
     persisted: list[dict[str, Any]] = []
     for item in evidence_list:
+        summary = item.get("summary")
+        excerpt = item.get("excerpt")
         evidence = repo.create(
             incident_id=incident_id,
             agent_run_id=agent_run_id,
@@ -26,7 +28,7 @@ def persist_evidence(
             source=item.get("source", "unknown"),
             source_id=item.get("source_id"),
             title=item.get("title", str(item.get("summary", ""))[:200]),
-            excerpt=str(item.get("summary", ""))[:500],
+            excerpt=str(summary if summary not in (None, "") else excerpt or "")[:500],
             payload=dict(item),
             confidence=item.get("confidence"),
         )
@@ -51,6 +53,8 @@ def persist_evidence_batch(
     repo = EvidenceItemRepository(db)
     for _source_name, items in evidence_by_source.items():
         for item in items:
+            summary = item.get("summary")
+            excerpt = item.get("excerpt")
             evidence = repo.create(
                 incident_id=incident_id,
                 agent_run_id=agent_run_id,
@@ -58,7 +62,7 @@ def persist_evidence_batch(
                 source=item.get("source", "unknown"),
                 source_id=item.get("source_id"),
                 title=item.get("title", str(item.get("summary", ""))[:200]),
-                excerpt=str(item.get("summary", ""))[:500],
+                excerpt=str(summary if summary not in (None, "") else excerpt or "")[:500],
                 payload=dict(item),
                 confidence=item.get("confidence"),
             )

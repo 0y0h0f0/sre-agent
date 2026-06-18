@@ -17,6 +17,7 @@ from packages.agent.rules_fallback import (
 from packages.agent.schemas import DiagnosisOutput, PlannedAction
 
 _EVIDENCE_ID_RE = re.compile(r"\b(?:evi|evd)_[A-Za-z0-9_-]+")
+_RUNBOOK_CHUNK_ID_RE = re.compile(r"\bchk_[A-Za-z0-9_-]+")
 _PERSPECTIVE_RE = re.compile(r"\[perspective:(metrics|logs|traces|synthesizer)\]")
 
 # Re-export for backward-compatible imports by tests
@@ -132,6 +133,7 @@ class FakeLLM:
         alert_name = self._extract_alert_name(messages)
         content = str(messages)
         evidence_ids = self._extract_evidence_ids_from_text(content)
+        runbook_chunk_ids = self._extract_runbook_chunk_ids_from_text(content)
         perspective = self._extract_perspective(content)
         if "report" in content.lower():
             return json.dumps(self._report_dict(alert_name))
@@ -139,7 +141,9 @@ class FakeLLM:
             return self._ranked_json(alert_name, evidence_ids)
         if "plan" in content.lower() or "action" in content.lower():
             return json.dumps(_ACTIONS_MAP.get(alert_name, _ACTIONS_MAP["High5xxAfterDeploy"]))
-        return json.dumps(self._diagnosis_dict(alert_name, evidence_ids, perspective))
+        return json.dumps(
+            self._diagnosis_dict(alert_name, evidence_ids, perspective, runbook_chunk_ids)
+        )
 
     def generate_json(
         self, prompt: str, output_schema: type[BaseModel], *, thinking: bool = False, **kwargs: Any
@@ -152,7 +156,12 @@ class FakeLLM:
             return [PlannedAction(**a) for a in actions]
         if output_schema is DiagnosisOutput:
             evidence_ids = self._extract_evidence_ids_from_text(prompt)
-            return DiagnosisOutput(**self._diagnosis_dict(alert_name, evidence_ids, perspective))
+            runbook_chunk_ids = self._extract_runbook_chunk_ids_from_text(prompt)
+            return DiagnosisOutput(
+                **self._diagnosis_dict(
+                    alert_name, evidence_ids, perspective, runbook_chunk_ids
+                )
+            )
         return output_schema()
 
     def _report_dict(self, alert_name: str) -> dict[str, Any]:
@@ -177,8 +186,12 @@ class FakeLLM:
         return json.dumps(data)
 
     @staticmethod
-    def _diagnosis_dict(alert_name: str, evidence_ids: list[str] | None = None,
-                        perspective: str | None = None) -> dict[str, Any]:
+    def _diagnosis_dict(
+        alert_name: str,
+        evidence_ids: list[str] | None = None,
+        perspective: str | None = None,
+        runbook_chunk_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         if perspective and perspective != "synthesizer":
             key = (alert_name, perspective)
             fallback_key = ("High5xxAfterDeploy", perspective)
@@ -198,6 +211,13 @@ class FakeLLM:
             for hypothesis in data.get("hypotheses", []) or []:
                 if not hypothesis.get("supporting_evidence_ids"):
                     hypothesis["supporting_evidence_ids"] = ids
+        chunk_ids = list(runbook_chunk_ids or [])
+        if chunk_ids:
+            data["runbook_chunk_ids"] = chunk_ids
+            data.setdefault("root_cause", {})["runbook_chunk_ids"] = chunk_ids
+            for hypothesis in data.get("hypotheses", []) or []:
+                if not hypothesis.get("runbook_chunk_ids"):
+                    hypothesis["runbook_chunk_ids"] = chunk_ids
         return data
 
     @staticmethod
@@ -225,6 +245,14 @@ class FakeLLM:
     def _extract_evidence_ids_from_text(text: str) -> list[str]:
         ids: list[str] = []
         for match in _EVIDENCE_ID_RE.findall(text):
+            if match not in ids:
+                ids.append(match)
+        return ids
+
+    @staticmethod
+    def _extract_runbook_chunk_ids_from_text(text: str) -> list[str]:
+        ids: list[str] = []
+        for match in _RUNBOOK_CHUNK_ID_RE.findall(text):
             if match not in ids:
                 ids.append(match)
         return ids

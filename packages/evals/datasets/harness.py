@@ -33,7 +33,9 @@ from packages.db.repositories.runbooks import RunbookChunkRepository
 from packages.db.repositories.tool_calls import ToolCallRepository
 from packages.memory.context_builder import ContextBuilder
 from packages.memory.memory_store import MemoryStore
+from packages.rag.embedding_factory import FakeEmbeddingProvider
 from packages.rag.ingest import RunbookIngestor
+from packages.rag.reranker_backends import FakeRerankerBackend
 from packages.rag.retriever import RunbookRetriever
 from packages.tools.base import ToolResult, compact_summary, elapsed_ms, start_timer
 from packages.tools.cache import RequestLocalToolCache, build_cache_key
@@ -474,7 +476,10 @@ def _make_environment(settings: Settings) -> _EvalEnvironment:
 
 
 def _seed_runbooks(session: Session, runbook_path: Path) -> None:
-    ingestor = RunbookIngestor(RunbookChunkRepository(session))
+    ingestor = RunbookIngestor(
+        RunbookChunkRepository(session),
+        embedding_provider=FakeEmbeddingProvider(),
+    )
     ingestor.ingest_path(runbook_path, reingest=True)
     session.commit()
 
@@ -487,7 +492,11 @@ def _build_deps(
     tool_cache: RequestLocalToolCache,
 ) -> AgentDeps:
     chunk_repo = RunbookChunkRepository(session)
-    retriever = RunbookRetriever(chunk_repo)
+    retriever = RunbookRetriever(
+        chunk_repo,
+        embedding_provider=FakeEmbeddingProvider(),
+        reranker=FakeRerankerBackend(),
+    )
     return AgentDeps(
         db=session,
         settings=settings,
@@ -885,6 +894,8 @@ def _eval_settings() -> Settings:
         "celery_result_backend": "memory://backend",
         "llm_provider": provider,
         "llm_model": os.getenv("LLM_MODEL", "fake-diagnosis-model"),
+        "embedding_provider": "fake",
+        "reranker_provider": "fake",
         "trace_fixture_path": "demo/faults/traces.json",
         "git_changes_fixture_path": "demo/faults/git_changes.json",
     }

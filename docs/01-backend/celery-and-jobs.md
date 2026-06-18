@@ -1,6 +1,8 @@
 # Celery 与异步任务
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-17
+
+本文列出 Celery app、任务和调度契约。需要沿代码路径理解 task 幂等、run lock、`PostgresSaver`、`GraphInterrupt` resume、node/tool audit、通知、poll/discovery/eval task 的执行细节时，见 [Worker、Celery 与 LangGraph Checkpoint 技术深挖](../00-overview/worker-celery-langgraph-checkpoint-deep-dive.md)。需要进一步聚焦 `EmailLog`、SMTP/template、approval email token、daily summary 和通知失败降级时，见 [通知、邮件、评论协作与操作员交互技术深挖](../00-overview/notifications-collaboration-operator-interaction-deep-dive.md)。
 
 ## Celery 应用
 
@@ -197,6 +199,8 @@ Production discovery 不应自动发布配置；worker 只使用 published confi
 - 通过 `AlertmanagerClient` 拉取 alerts。
 - 使用与 webhook 相同 fingerprint 规则创建 incident，保证 dedup。
 - 使用 `AlertPollCursor` 和 missing rounds 做 conservative resolved inference。
+
+poll scope、filter hash、cursor、resolved inference 和 Grafana-shaped alert 归一化的完整路径见 [Alertmanager Poll、Grafana 与告警来源归一化技术深挖](../00-overview/alert-source-normalization-poll-grafana-deep-dive.md)。
 
 ## Eval 任务
 

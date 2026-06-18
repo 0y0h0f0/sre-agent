@@ -174,8 +174,8 @@ Risk:
 
 Mitigations:
 
-- `GRAFANA_WEBHOOK_MAX_BYTES` sets payload size policy for webhook integrations.
-- Parser validates expected `alerts` shape in the helper path.
+- Generic `/api/alerts` uses the normal API key, rate limit, request validation, and incident dedup path.
+- Parser validates expected `alerts` shape in the helper path when `AlertService.ingest_grafana_alert()` is invoked.
 - Stable Grafana fingerprints exclude dashboard URL, panel URL, rule UID, generator URL, and similar volatile fields.
 - Deduplication still uses open incident fingerprint constraints.
 - Malformed helper payloads are rejected cleanly.
@@ -183,6 +183,7 @@ Mitigations:
 Implementation nuance:
 
 - Generic `/api/alerts` can still normalize `source=grafana` payloads. Treat this as provider normalization, not the gated webhook helper.
+- The current FastAPI app does not register a dedicated Grafana webhook route. `GRAFANA_WEBHOOK_SECRET_REF` and `GRAFANA_WEBHOOK_MAX_BYTES` are settings fields but are not enforced by a public Grafana route yet. Any future dedicated route must wire HMAC and payload size checks before production use.
 
 ### T8: External Embedding Provider Leakage or Availability Failure
 

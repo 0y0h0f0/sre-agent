@@ -73,6 +73,7 @@ class RunbookRetriever:
         repository: RunbookChunkRepository,
         *,
         embedding_provider: EmbeddingProvider | None = None,
+        reranker: RerankerBackend | None = None,
         cache: RunbookSearchCache | None = None,
         use_hybrid: bool = True,
     ) -> None:
@@ -83,7 +84,7 @@ class RunbookRetriever:
         self.embedding_provider: EmbeddingProvider = embedding_provider
         self.cache = cache
         self.use_hybrid = use_hybrid
-        self._reranker: RerankerBackend | None = None  # lazy-init from settings
+        self._reranker: RerankerBackend | None = reranker  # lazy-init from settings
 
     def search(self, query: RunbookSearchQuery) -> RunbookSearchResultList:
         normalized_query = RunbookSearchQuery.model_validate(query)

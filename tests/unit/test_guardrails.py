@@ -27,6 +27,7 @@ _RISK_MATRIX = [
     ("adjust_connection_pool", "L1", False, True),
     # L2: approval required
     ("restart_pod", "L2", True, True),
+    ("restart_deployment", "L2", True, True),
     ("scale_deployment", "L2", True, True),
     ("restart_service", "L2", True, True),
     ("restart_statefulset", "L2", True, True),

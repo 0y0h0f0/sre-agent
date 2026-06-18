@@ -1,8 +1,12 @@
 # M9 Rollout, Feature Gates, and Rollback
 
-**Last updated:** 2026-06-14
+**Last updated:** 2026-06-18
 
 M9 adds optional AI, Web, Tempo, Grafana, semantic search, and external embedding capabilities on top of the M0-M8 deterministic incident response system. These capabilities are controlled enhancements, not a replacement for the fixture/FakeLLM default path.
+
+For the production release and rollback path that ties M9 gates to deployment profiles, readiness checks, audit, metrics, and rollback verification, see [生产发布、运维与回滚技术深挖](00-overview/production-operations-rollback-deep-dive.md).
+For the LLM provider factory, FakeLLM / disabled defaults, prompt redaction, usage metadata, manual real-provider eval, and M9 draft-only boundary, see [LLM、Prompt、FakeLLM 与 Provider 边界技术深挖](00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md).
+For Runbook draft review, version publish, draft chunk ingest, and amendment review/apply metadata boundaries, see [Runbook 草稿、版本与 Amendment 生命周期技术深挖](00-overview/runbook-draft-version-amendment-lifecycle-deep-dive.md).
 
 The safe default remains:
 
@@ -79,7 +83,7 @@ The safe default remains:
    - Web search with `RUNBOOK_WEB_SEARCH_PROVIDER=fake`.
    - Tempo backend in a staging environment.
    - Tempo discovery.
-   - Grafana webhook helper.
+   - Grafana helper service path; expose a dedicated webhook route only after HMAC/size checks are wired.
    - Semantic search with local/fake embeddings.
    - External embedding provider only after security review.
 
@@ -112,6 +116,7 @@ Behavior:
 - Draft content is classified for risky action wording.
 - The persisted draft is `RunbookDraft(status=pending_review, draft_type=llm_generated)`.
 - Review is still performed through `POST /api/runbooks/drafts/{draft_id}/review`.
+- Publishing creates a `RunbookVersion` and ingests draft chunks; the LLM path does not do this automatically.
 
 Rollback:
 
@@ -135,6 +140,7 @@ Behavior:
 - Review uses `POST /api/runbooks/amendments/{amendment_id}/review`.
 - `approved` and `applied` are separate states; low-confidence notes without evidence cannot be applied.
 - `applied` review requests must name exactly one target: a reviewed draft or a runbook version.
+- Current `applied` records lifecycle metadata only; it does not merge content, create a new version, or reingest chunks.
 
 Rollback:
 
@@ -212,13 +218,16 @@ TEMPO_DISCOVERY_ENABLED=false
 There are two related but different paths:
 
 - Generic `POST /api/alerts` accepts normalized alerts and can normalize provider-shaped payloads, including `source=grafana`.
-- `AlertService.ingest_grafana_alert()` is the M9 Grafana webhook helper and is gated by `GRAFANA_ALERT_INGEST_ENABLED`.
+- `AlertService.ingest_grafana_alert()` is the M9 Grafana helper and is gated by `GRAFANA_ALERT_INGEST_ENABLED`.
+- The current FastAPI app does not register a dedicated Grafana webhook router. `GRAFANA_WEBHOOK_SECRET_REF` and `GRAFANA_WEBHOOK_MAX_BYTES` exist as settings, but no public route currently enforces HMAC or payload size with them.
+- The helper currently checks `settings.grafana_alert_ingest_enabled` directly. A future public route should use resolved M9 feature flags, not the raw setting alone.
 
 Behavior:
 
 - Grafana payload parsing uses stable fingerprints that exclude volatile dashboard/panel/rule/generator URL fields.
-- Malformed helper payloads raise a structured failure path and increment Grafana ingest metrics.
+- Malformed helper payloads raise a structured failure path and increment Grafana ingest metrics when the helper is invoked.
 - Duplicate fingerprints still deduplicate through the normal incident path.
+- Current public HTTP behavior and Alertmanager poll interaction are documented in [Alertmanager Poll、Grafana 与告警来源归一化技术深挖](00-overview/alert-source-normalization-poll-grafana-deep-dive.md).
 
 Rollback:
 
@@ -268,7 +277,8 @@ Focused M9 tests:
 
 ```bash
 pytest tests/unit/test_m9_feature_flags.py -q
-pytest tests/unit/test_m9_ai_extensions.py -q
+pytest tests/unit/test_llm_runbook_generation.py -q
+pytest tests/unit/test_incident_diff_analysis.py -q
 pytest tests/unit/test_web_search_safety.py -q
 pytest tests/unit/test_tempo_endpoint_detection.py -q
 pytest tests/unit/test_grafana_alert_parser.py -q

@@ -43,11 +43,32 @@ class TestFakeLLM:
             assert len(actions) >= 1
             assert actions[0].type
 
+    def test_fake_llm_rollback_params_are_live_executor_compatible(self) -> None:
+        llm = FakeLLM()
+        allowed = {"to_revision"}
+
+        for alert in ("High5xxAfterDeploy", "PodRestartLoop"):
+            actions = llm.generate_json(f"plan {alert}", list[PlannedAction])
+            rollback = next(action for action in actions if action.type == "rollback_deployment")
+
+            assert set(rollback.params).issubset(allowed)
+
     def test_unknown_alert_fallback(self) -> None:
         llm = FakeLLM()
         output = llm.generate_json("diagnose UnknownAlert", DiagnosisOutput)
         assert isinstance(output, DiagnosisOutput)
         assert len(output.hypotheses) >= 1
+
+    def test_runbook_chunk_ids_are_preserved(self) -> None:
+        llm = FakeLLM()
+        output = llm.generate_json(
+            "diagnose High5xxAfterDeploy evidence_id=evi_001 chunk_id=chk_runbook_001",
+            DiagnosisOutput,
+        )
+
+        assert output.runbook_chunk_ids == ["chk_runbook_001"]
+        assert output.root_cause["runbook_chunk_ids"] == ["chk_runbook_001"]
+        assert output.hypotheses[0].runbook_chunk_ids == ["chk_runbook_001"]
 
 
 class TestGuardrailPolicy:
@@ -84,7 +105,7 @@ class TestGuardrailPolicy:
 class TestPlannerPrompt:
     def test_prompt_documents_live_action_safety_boundaries(self) -> None:
         prompt = PLAN_ACTIONS_PROMPT_TEMPLATE
-        assert "bounded irreversible rolling restarts" in prompt
+        assert "irreversible Deployment rolling restarts" in prompt
         assert "not a guaranteed undo" in prompt
         assert "DB diagnostics and DB verify gates are read-only" in prompt
         assert "required verify gates come from the" in prompt

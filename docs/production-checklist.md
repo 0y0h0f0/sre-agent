@@ -1,8 +1,10 @@
 # 生产环境就绪检查清单
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-17
 
 本清单用于启用生产环境、计划发现、Alertmanager 轮询、live read adapters、live executor 或任何 M9 功能之前的检查。它不放宽安全边界：默认执行器仍应为 fixture，L2/L3 必须人工审批，L4 必须直接拒绝。
+
+需要沿代码路径理解生产默认值、Compose/K8s profile、健康检查、migration、M9 rollout、live backend 和回滚验证时，见 [生产发布、运维与回滚技术深挖](00-overview/production-operations-rollback-deep-dive.md)。
 
 ## 生产默认值口径
 
@@ -132,7 +134,7 @@ pytest tests/unit/test_backend_url_safety.py tests/unit/test_production_safety.p
 
 只有显式 `EXECUTOR_BACKEND=live` 才能启用，并且只允许：
 
-- `restart_pod` / `restart_service`：Deployment patch 触发 rolling restart。
+- `restart_pod` / `restart_deployment` / `restart_service`：Deployment patch 触发 rolling restart。
 - `restart_statefulset`：StatefulSet patch 触发 rolling restart。
 - `pause_rollout`：Deployment patch 设置 `spec.paused=true`，暂停 rollout。
 - `resume_rollout`：Deployment patch 设置 `spec.paused=false`，恢复 rollout。

@@ -5,6 +5,11 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 
 import App from './App';
+import {
+  batchDecideApprovals,
+  createEvidenceAnnotation,
+  listEvidenceAnnotations,
+} from './api';
 
 type RouteHandler = (url: URL, init: RequestInit) => Response | Promise<Response>;
 
@@ -62,10 +67,13 @@ const incidentDetail = {
   evidence: [
     {
       evidence_id: 'evd_1',
-      type: 'logs',
-      source: 'loki',
+      type: 'runbook',
+      source: 'runbook',
+      source_id: 'chk_high_5xx',
+      source_path: 'runbooks/high-5xx.md',
       title: 'Timeout errors',
       excerpt: 'payment-api timeout after deploy',
+      metadata: { service: 'checkout-api' },
       confidence: 0.9,
       timestamp: '2026-06-01T00:03:00Z'
     }
@@ -222,6 +230,8 @@ test('renders incident detail with diagnosis, actions, approvals, run link, and 
 
   expect(await screen.findByText('New checkout release introduced downstream timeouts')).toBeInTheDocument();
   expect(screen.getByText('Timeout errors')).toBeInTheDocument();
+  expect(screen.getByText('chk_high_5xx')).toBeInTheDocument();
+  expect(screen.getByText('runbooks/high-5xx.md')).toBeInTheDocument();
   expect(screen.getAllByText('rollback_release').length).toBeGreaterThan(0);
   expect(screen.getByRole('link', { name: 'Agent 运行' })).toHaveAttribute('href', '/agent-runs/run_1');
   expect(screen.getByRole('link', { name: '报告' })).toHaveAttribute('href', '/incidents/inc_1/report');
@@ -232,6 +242,70 @@ test('renders incident detail with diagnosis, actions, approvals, run link, and 
   await waitFor(() => {
     expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/api/incidents/inc_1/diagnose' && init?.method === 'POST')).toBe(true);
   });
+});
+
+test('renders plain evidence without optional source metadata', async () => {
+  mockFetch({
+    'GET /api/incidents/inc_1': () => jsonResponse({
+      ...incidentDetail,
+      evidence: [
+        {
+          evidence_id: 'evd_plain',
+          type: 'logs',
+          source: 'loki',
+          title: 'Plain log evidence',
+          excerpt: 'plain log excerpt',
+          confidence: null,
+          timestamp: null
+        }
+      ]
+    }),
+    'GET /api/incidents/inc_1/runs': () => jsonResponse([]),
+    'GET /api/incidents/inc_1/approvals': () => jsonResponse([]),
+    'GET /api/incidents/inc_1/correlated': () => jsonResponse([]),
+    'GET /api/incidents/inc_1/comments': () => jsonResponse({ items: [], total: 0 }),
+    'GET /api/incidents/inc_1/audit': () => jsonResponse({ items: [], total: 0 })
+  });
+
+  renderApp('/incidents/inc_1');
+
+  expect(await screen.findByText('Plain log evidence')).toBeInTheDocument();
+  expect(screen.getByText('plain log excerpt')).toBeInTheDocument();
+  expect(screen.getByText('evd_plain')).toBeInTheDocument();
+  expect(screen.queryByText('chk_high_5xx')).not.toBeInTheDocument();
+  expect(screen.queryByText('runbooks/high-5xx.md')).not.toBeInTheDocument();
+  expect(screen.getByText('未知')).toBeInTheDocument();
+  expect(screen.getAllByText('暂无').length).toBeGreaterThan(0);
+  expect(await screen.findByText('无审计记录')).toBeInTheDocument();
+});
+
+test('api helper branches used by collaboration controls call expected endpoints', async () => {
+  const calls: Array<{ path: string; method: string; body: unknown }> = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+    const url = new URL(String(input), 'http://localhost');
+    const method = init.method ?? 'GET';
+    calls.push({ path: url.pathname, method, body: init.body ? JSON.parse(String(init.body)) : null });
+    if (url.pathname.endsWith('/annotations') && method === 'GET') {
+      return jsonResponse({ items: [], total: 0 });
+    }
+    if (url.pathname.endsWith('/annotations') && method === 'POST') {
+      return jsonResponse({ annotation_id: 'ann_1', evidence_id: 'evd_1', incident_id: 'inc_1', author: 'sre', content: 'note', created_at: '2026-06-01T00:00:00Z' }, 201);
+    }
+    if (url.pathname === '/api/approvals/batch') {
+      return jsonResponse([{ approval_id: 'apv_1', action_id: 'act_1', status: 'approved', agent_run_id: 'run_1' }]);
+    }
+    return jsonResponse({ error: { code: 'NOT_FOUND', message: 'missing', request_id: 'req-test', details: {} } }, 404);
+  });
+
+  await expect(listEvidenceAnnotations('evd_1')).resolves.toEqual({ items: [], total: 0 });
+  await expect(createEvidenceAnnotation('evd_1', { author: 'sre', content: 'note' })).resolves.toMatchObject({ annotation_id: 'ann_1' });
+  await expect(batchDecideApprovals({ decision: 'approve', approver: 'sre', approval_ids: ['apv_1'] })).resolves.toHaveLength(1);
+
+  expect(calls).toEqual(expect.arrayContaining([
+    expect.objectContaining({ path: '/api/evidence/evd_1/annotations', method: 'GET' }),
+    expect.objectContaining({ path: '/api/evidence/evd_1/annotations', method: 'POST' }),
+    expect.objectContaining({ path: '/api/approvals/batch', method: 'POST' }),
+  ]));
 });
 
 test('renders agent run timeline, tool calls, and context summary', async () => {
@@ -532,6 +606,58 @@ test('renders report and regenerates it', async () => {
   await waitFor(() => expect(regenerated).toBe(true));
 });
 
+test('renders report sections with empty arrays', async () => {
+  mockFetch({
+    'GET /api/incidents/inc_empty/report': () => jsonResponse({
+      report_id: 'rpt_empty',
+      incident_id: 'inc_empty',
+      agent_run_id: 'run_1',
+      version: 3,
+      root_cause: 'No confirmed root cause',
+      impact: 'Impact under review',
+      timeline: [],
+      actions: [],
+      follow_ups: [],
+      evidence_ids: [],
+      body_markdown: '# report',
+      created_at: '2026-06-01T00:15:00Z'
+    })
+  });
+
+  renderApp('/incidents/inc_empty/report');
+
+  expect(await screen.findByText('No confirmed root cause')).toBeInTheDocument();
+  expect(screen.getByText('无时间线')).toBeInTheDocument();
+  expect(screen.getByText('无操作')).toBeInTheDocument();
+  expect(screen.getByText('无后续跟进')).toBeInTheDocument();
+  expect(screen.getByText('无证据引用')).toBeInTheDocument();
+});
+
+test('renders report string follow-ups and timeline events without timestamps', async () => {
+  mockFetch({
+    'GET /api/incidents/inc_strings/report': () => jsonResponse({
+      report_id: 'rpt_strings',
+      incident_id: 'inc_strings',
+      agent_run_id: 'run_2',
+      version: 1,
+      root_cause: 'Manual triage found no regression',
+      impact: 'No customer impact',
+      timeline: [{ event: 'Operator reviewed the alert' }],
+      actions: [{ type: 'query_logs', status: 'succeeded', note: 'checked logs' }],
+      follow_ups: ['Tune noisy alert threshold'],
+      evidence_ids: ['evd_log'],
+      body_markdown: '# report',
+      created_at: 'not-a-date'
+    })
+  });
+
+  renderApp('/incidents/inc_strings/report');
+
+  expect(await screen.findByText('Operator reviewed the alert')).toBeInTheDocument();
+  expect(screen.getByText('Tune noisy alert threshold')).toBeInTheDocument();
+  expect(screen.getByText('not-a-date')).toBeInTheDocument();
+});
+
 
 test('renders incident detail empty states and compact alert values', async () => {
   mockFetch({
@@ -589,6 +715,7 @@ test('handles incident detail feedback, comments, and audit trail interactions',
 
   expect(await screen.findByText('相关事件')).toBeInTheDocument();
   expect(await screen.findByText('alice')).toBeInTheDocument();
+  expect(await screen.findByText('提及: bob')).toBeInTheDocument();
   expect(await screen.findByText('sre-system')).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('button', { name: '修正根因' }));
@@ -660,24 +787,27 @@ test('rejects an approval with a reason', async () => {
 
 test('renders missing report empty state and generates a report', async () => {
   let generated = false;
+  const generatedReport = {
+    report_id: 'rpt_new',
+    incident_id: 'inc_empty',
+    agent_run_id: 'run_1',
+    version: 1,
+    root_cause: 'Generated root cause',
+    impact: 'Generated impact',
+    timeline: [],
+    actions: [],
+    follow_ups: [],
+    evidence_ids: [],
+    body_markdown: '# report',
+    created_at: '2026-06-01T00:12:00Z'
+  };
   mockFetch({
-    'GET /api/incidents/inc_empty/report': () => jsonResponse({ error: { code: 'NOT_FOUND', message: 'report not found', request_id: 'req-report', details: {} } }, 404),
+    'GET /api/incidents/inc_empty/report': () => generated
+      ? jsonResponse(generatedReport)
+      : jsonResponse({ error: { code: 'NOT_FOUND', message: 'report not found', request_id: 'req-report', details: {} } }, 404),
     'POST /api/incidents/inc_empty/report/regenerate': () => {
       generated = true;
-      return jsonResponse({
-        report_id: 'rpt_new',
-        incident_id: 'inc_empty',
-        agent_run_id: 'run_1',
-        version: 1,
-        root_cause: 'Generated root cause',
-        impact: 'Generated impact',
-        timeline: [],
-        actions: [],
-        follow_ups: [],
-        evidence_ids: [],
-        body_markdown: '# report',
-        created_at: '2026-06-01T00:12:00Z'
-      }, 201);
+      return jsonResponse(generatedReport, 201);
     }
   });
 
@@ -686,6 +816,9 @@ test('renders missing report empty state and generates a report', async () => {
   expect(await screen.findByText('无可用报告')).toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: '生成' }));
   await waitFor(() => expect(generated).toBe(true));
+  expect(await screen.findByText('Generated root cause')).toBeInTheDocument();
+  expect(screen.getByText('无时间线')).toBeInTheDocument();
+  expect(screen.getByText('无证据引用')).toBeInTheDocument();
 });
 
 test('renders the not found route', () => {

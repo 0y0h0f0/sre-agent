@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from typing import Any, cast
+
 import pytest
 
 from packages.db.repositories.runbooks import RunbookChunkRepository
@@ -618,6 +621,42 @@ def test_normalize_bm25_clamps_to_0_1() -> None:
     assert normalize_bm25(1.5) == 1.0
 
 
+def test_search_bm25_sqlite_uses_lexical_fallback(
+    db_session,
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from packages.rag.bm25 import build_tsquery
+
+    base = tmp_path / "runbooks"
+    base.mkdir()
+    (base / "high.md").write_text(_runbook_text(), encoding="utf-8")
+    (base / "cache.md").write_text(
+        _runbook_text(
+            incident_type="cache_avalanche",
+            title="Redis Cache Avalanche Triage",
+            body="Redis cache miss spike and database pressure indicate cache avalanche.",
+        ),
+        encoding="utf-8",
+    )
+    repository = RunbookChunkRepository(db_session)
+    RunbookIngestor(repository).ingest_path(base)
+    db_session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="packages.db.repositories.runbooks"):
+        results = repository.search_bm25(
+            build_tsquery("high 5xx after deploy"),
+            service="checkout",
+            incident_type="high_5xx",
+        )
+
+    assert results
+    assert "runbook full-text search query failed" not in caplog.text
+    chunk, score = results[0]
+    assert chunk.metadata_json["incident_type"] == "high_5xx"
+    assert score > 0.0
+
+
 # ---------------------------------------------------------------------------
 # 4.4 Embedding factory
 # ---------------------------------------------------------------------------
@@ -710,6 +749,43 @@ def test_build_embedding_provider_rejects_text2vec_for_primary_512_store() -> No
     settings = Settings(embedding_provider="text2vec")
     with pytest.raises(ValidationAppError, match="1024-dimensional"):
         build_embedding_provider(settings)
+
+
+def test_local_embedding_providers_ignore_env_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from packages.rag.embedding_factory import BGEZhEmbeddingProvider, Text2VecEmbeddingProvider
+
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[list[float]]:
+            return [[0.0] * 512]
+
+    def fake_post(*args: object, **kwargs: object) -> Response:
+        calls.append({"args": args, "kwargs": kwargs})
+        return Response()
+
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:7892")
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    BGEZhEmbeddingProvider(base_url="http://bge.local").embed_text("checkout")
+    assert cast(dict[str, Any], calls[-1]["kwargs"])["trust_env"] is False
+
+    class Text2VecResponse(Response):
+        def json(self) -> list[list[float]]:
+            return [[0.0] * 1024]
+
+    def fake_text2vec_post(*args: object, **kwargs: object) -> Text2VecResponse:
+        calls.append({"args": args, "kwargs": kwargs})
+        return Text2VecResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_text2vec_post)
+    Text2VecEmbeddingProvider(base_url="http://text2vec.local").embed_text("checkout")
+    assert cast(dict[str, Any], calls[-1]["kwargs"])["trust_env"] is False
 
 
 # ---------------------------------------------------------------------------

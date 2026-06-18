@@ -17,6 +17,7 @@ celery_app = Celery(
     backend=settings.celery_result_backend,
 )
 celery_app.conf.update(
+    imports=("apps.worker.tasks", "apps.worker.eval_tasks"),
     task_track_started=True,
     task_acks_late=True,
     task_reject_on_worker_lost=True,

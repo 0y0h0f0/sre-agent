@@ -28,6 +28,8 @@ class IncidentState(TypedDict, total=False):
     cross_incident_context: list[dict[str, Any]]
     hypotheses: list[dict[str, Any]]
     root_cause: dict[str, Any]
+    evidence_ids: list[str]
+    runbook_chunk_ids: list[str]
     diagnosis_rationale: dict[str, Any]
     llm_calls: list[dict[str, Any]]
     cross_validation: dict[str, Any]

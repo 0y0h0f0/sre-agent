@@ -34,8 +34,11 @@ export type EvidenceItem = {
   evidence_id: string;
   type: string;
   source: string;
+  source_id?: string | null;
+  source_path?: string | null;
   title: string;
   excerpt: string;
+  metadata?: Record<string, unknown>;
   confidence: number | null;
   timestamp: string | null;
 };

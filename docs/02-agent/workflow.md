@@ -1,12 +1,14 @@
 # Agent 工作流
 
-**最后更新：** 2026-06-15
+**最后更新：** 2026-06-18
 
 ## 概述
 
 Agent 工作流由 `packages/agent/graph.py` 构建，是一个 18 节点 LangGraph `StateGraph`。API 不内联运行诊断；`POST /api/alerts` 创建 incident 和 agent run 后入队 Celery，worker 再构造 `AgentDeps`、编译图并执行。
 
 当前图把六类证据采集收敛到一个并行节点 `collect_all_evidence`。单项采集函数仍保留在 `packages/agent/nodes/collect_*.py`，但图上的节点是并行编排器。
+
+需要理解 Celery worker 如何领取 run、初始化 checkpointer、处理 `GraphInterrupt`、resume 审批和同步状态时，见 [Worker、Celery 与 LangGraph Checkpoint 技术深挖](../00-overview/worker-celery-langgraph-checkpoint-deep-dive.md)。需要按代码路径理解 fixture/live executor、action capability metadata、snapshot、execute preflight、verify gates 和 replan 时，见 [执行器、动作能力与验证闭环技术深挖](../00-overview/executor-action-verification-loop-deep-dive.md)。需要理解 `generate_report`、报告版本、report regeneration 和 incident/run 状态同步时，见 [报告生成、版本与事件生命周期技术深挖](../00-overview/report-generation-incident-lifecycle-deep-dive.md)。
 
 ## 代码入口
 
@@ -67,7 +69,7 @@ parse_alert
 | `collect_all_evidence` | service、time window、tool deps | 六类 evidence | 使用 `ThreadPoolExecutor` 并行调用 metrics/logs/traces/deployment/k8s/db，主线程统一记录 trace 和持久化 evidence |
 | `retrieve_memory` | incident/run/service/alert | `memory_context` | 读取 L0 run、L1 incident、L2 service、L3 global procedural memory |
 | `cross_incident` | service/fingerprint | `cross_incident_context` | 查找相似历史 incident |
-| `retrieve_runbook` | alert/service/root query | `runbook_context` | 通过 `RunbookSearchTool` 返回带 chunk ID/source path 的上下文 |
+| `retrieve_runbook` | alert/service/root query | `runbook_context` | 通过 `RunbookSearchTool` 返回带 chunk ID/source path 的上下文，并把命中持久化为 runbook evidence 后回写 `evidence_id` |
 | `build_context` | evidence、runbook、memory、cross incident | `_built_messages`、`token_budget`、`compression_events` | 调用 `ContextBuilder`，不直接调用 LLM |
 | `diagnose` | `_built_messages` 和 state evidence | `hypotheses`、`root_cause`、`diagnosis_rationale`、`llm_calls` | 支持单次诊断或 multi-perspective 诊断，失败时可规则回退 |
 | `compress_context` | `compression_events` | L2 compressed memory | 将超预算上下文摘要写入 service scope memory |
@@ -79,7 +81,7 @@ parse_alert
 | `take_snapshot` | pending executable actions | `pre_action_snapshot` | 执行前抓取 evidence count 和 K8s deployment 状态，供回滚/降级处理使用 |
 | `execute_action` | allowed 且无需审批的 actions | action records、`execution_results` | 对无 `action_id` 的自动动作先创建 Action 记录，再通过注入的 executor backend 执行；默认 fixture |
 | `verify` | execution results | `verify_result`、`verify_evidence`、`verify_gates` | 按 action capability metadata 执行只读 verify gates；默认重新查 metrics/logs，K8s live 能力追加 `k8s_rollout`，rollback 类能力可追加 `db_readonly`；最多 2 轮验证/重规划 |
-| `generate_report` | run trajectory | `incident_report` | 生成结构化 incident report |
+| `generate_report` | run trajectory、evidence、verify gates | `incident_report` | 生成结构化 incident report，并向 `incident_reports` 追加版本 |
 | `persist_memory` | diagnosis/report/actions | L0-L3 memory writes | best-effort 写入，失败不终止主流程 |
 
 ## 条件路由和循环上限
@@ -134,8 +136,8 @@ config = {
 | `incident_id` / `agent_run_id` | 业务 ID 和 graph checkpoint thread ID |
 | `alert_payload`、`service_name`、`severity`、`alert_name`、`time_window` | 标准化告警上下文 |
 | `metrics_evidence`、`logs_evidence`、`traces_evidence`、`deployment_evidence`、`k8s_evidence`、`db_evidence` | 六类证据，持久化后带 evidence ID |
-| `runbook_context`、`memory_context`、`cross_incident_context` | RAG、记忆和相似 incident 上下文 |
-| `hypotheses`、`root_cause`、`diagnosis_rationale` | 诊断输出和可审计依据 |
+| `runbook_context`、`memory_context`、`cross_incident_context` | RAG、记忆和相似 incident 上下文；runbook context 命中带 `chunk_id`、`source_path` 和持久化后的 `evidence_id` |
+| `hypotheses`、`root_cause`、`evidence_ids`、`runbook_chunk_ids`、`diagnosis_rationale` | 诊断输出和可审计依据 |
 | `cross_validation`、`needs_human_review`、`cascade_analysis` | 证据交叉验证和级联故障分析 |
 | `recommended_actions` | planner 输出，经 guardrail 后补充风险字段 |
 | `approval_status`、`approval_decision`、`rejection_feedback`、`_replan_count` | 审批与拒绝重规划状态 |
@@ -149,7 +151,7 @@ config = {
 - 工具调用通过 `deps.tool_call_recorder` 记录 query、result、cache key、cache hit 和摘要。
 - `collect_all_evidence` 在线程中只捕获 trace 参数，不共享 DB session；主线程统一 replay 和批量写 evidence。
 - 大日志不直接塞入 prompt。`ContextBuilder` 与 `Compressor` 会根据预算压缩，并保留 retained/omitted evidence ID。
-- 诊断结论和 root cause 必须引用 evidence ID 或 runbook chunk ID；缺失证据时写入 `missing_evidence`，由 `collect_gap` 受限补采。
+- 诊断结论和 root cause 必须引用 evidence ID；使用 runbook 时还应在 `runbook_chunk_ids` 保留 chunk ID。缺失证据时写入 `missing_evidence`，由 `collect_gap` 受限补采。
 
 ## 新增节点的规则
 
@@ -163,9 +165,12 @@ config = {
 ## 常用测试入口
 
 - `tests/unit/test_agent_nodes.py`
-- `tests/unit/test_agent_graph.py`
-- `tests/unit/test_agent_runner.py`
-- `tests/unit/test_checkpoint_resume.py`
-- `tests/unit/test_react_loops.py`
-- `tests/integration/test_worker_tasks.py`
+- `tests/unit/test_agent_core.py`
+- `tests/unit/test_collect_all_evidence.py`
+- `tests/unit/test_cross_incident.py`
+- `tests/unit/test_diagnose_multi_perspective.py`
+- `tests/unit/test_reasoning_layering.py`
+- `tests/integration/test_graph_flow.py`
+- `tests/integration/test_worker_task.py`
+- `tests/integration/test_worker_with_effective_config.py`
 - `tests/e2e/` 中的端到端诊断和审批用例

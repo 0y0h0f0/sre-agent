@@ -346,6 +346,63 @@ class TestBatchApprovalResume:
         client.post(f"/api/approvals/{approval.approval_id}/approve", json={"approver": "sre"})
         assert len(fake_resume_enqueue.calls) == 1
 
+    def test_batch_approve_rejects_multiple_l3_approvals_atomically(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        inc = _create_incident(db_session)
+        run_id = new_id("run_")
+        action_1 = _create_action(
+            db_session,
+            inc.incident_id,
+            run_id,
+            type="rollback_release",
+            risk_level="L3",
+            target="checkout-api",
+        )
+        action_2 = _create_action(
+            db_session,
+            inc.incident_id,
+            run_id,
+            type="rollback_deployment",
+            risk_level="L3",
+            target="payments-api",
+        )
+        approval_1 = _create_approval(
+            db_session, action_1.action_id, inc.incident_id, run_id
+        )
+        approval_2 = _create_approval(
+            db_session, action_2.action_id, inc.incident_id, run_id
+        )
+        db_session.commit()
+
+        resp = client.post(
+            "/api/approvals/batch",
+            json={
+                "decision": "approve",
+                "approver": "sre",
+                "approval_ids": [approval_1.approval_id, approval_2.approval_id],
+                "risk_ack": True,
+                "confirm_action_type": "rollback_release",
+                "confirm_target": "checkout-api",
+            },
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+        assert "batch approve supports at most one L3 approval" in str(
+            body["error"]["details"]
+        )
+
+        db_session.refresh(approval_1)
+        db_session.refresh(approval_2)
+        db_session.refresh(action_1)
+        db_session.refresh(action_2)
+        assert approval_1.status == "waiting"
+        assert approval_2.status == "waiting"
+        assert action_1.status == "waiting_approval"
+        assert action_2.status == "waiting_approval"
+
 
 class TestApprovalRejectAPI:
     def test_reject_success(self, client: TestClient, db_session: Session) -> None:

@@ -1,10 +1,14 @@
 # 后端架构
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-17
 
 ## 目标
 
 后端负责把外部告警转换为持久化 incident 和 agent run，把诊断工作安全地交给 Celery worker，并为 React 控制台、审批、runbook、配置、发现和 eval 提供 API。后端不直接执行 LangGraph 诊断图，也不直接绕过 guardrail 执行动作。
+
+需要沿真实代码路径理解 middleware、request id、API key auth、scope、rate limit、service 事务、Celery 入队、审计和错误信封时，见 [API 控制面与服务层技术深挖](../00-overview/api-control-plane-service-deep-dive.md)。
+
+需要沿持久化路径理解 SQLAlchemy 模型、Alembic 迁移、repository 事务边界、checkpoint pointer、pgvector fallback、audit append-only 和 API key hash 时，见 [数据模型、迁移与持久化技术深挖](../00-overview/data-model-migrations-persistence-deep-dive.md)。
 
 ## 分层原则
 
@@ -35,7 +39,7 @@ HTTP / WebSocket request
 - 注册 14 个 HTTP router 和 1 个 WebSocket router。
 - 暴露 FastAPI 自动文档 route：`/docs`、`/docs/oauth2-redirect`、`/redoc`、`/openapi.json`。
 
-当前业务 route 口径：76 条 HTTP application route + 1 条 WebSocket。若把 FastAPI 自动文档/OpenAPI route 算入，总 HTTP route 为 80 条。
+当前业务 route 口径：79 条 HTTP application route + 1 条 WebSocket。若把 FastAPI 自动文档/OpenAPI route 算入，总 HTTP route 为 83 条。
 
 ## Router 层
 
@@ -54,12 +58,12 @@ HTTP / WebSocket request
 | Config | `apps/api/routers/config.py` | 8 | EffectiveConfig 发布、回滚、撤销、覆盖项 |
 | Discovery | `apps/api/routers/discovery.py` | 6 | 发现状态、服务、指标、拓扑、能力、手动 rerun |
 | Runbooks | `apps/api/routers/runbooks.py` | 14 | ingest/search/drafts/templates/versions/M9 LLM/Web/diff |
-| Evals | `apps/api/routers/evals.py` | 4 | eval run 创建/列表/详情、shadow run |
-| WebSocket | `apps/api/ws/router.py` | 1 WS | `/api/ws/incidents/{incident_id}` 实时事件 |
+| Evals | `apps/api/routers/evals.py` | 5 | 工程指标、eval run 创建/列表/详情、shadow run |
+| WebSocket | `apps/api/ws/router.py` | 1 HTTP + 1 WS | ticket 签发和 `/api/ws/incidents/{incident_id}` 实时事件 |
 
 ## Service 层
 
-`apps/api/services/` 当前有 14 个 service 模块：
+`apps/api/services/` 当前有 15 个 service 模块：
 
 | Service | 主要职责 |
 |---------|----------|
@@ -74,9 +78,10 @@ HTTP / WebSocket request
 | `api_key_service.py` | raw key 生成、SHA-256 hash 存储、验证、撤销、last_used 更新 |
 | `runbook_service.py` | runbook ingest/search/draft/review/regenerate/template/M9 draft/diff |
 | `eval_service.py` | eval run 创建、列表、详情、shadow run 入队 |
+| `engineering_metrics_service.py` | 只读聚合工程评估指标，复用 eval 和运行时业务表 |
 | `email_service.py` | 邮件事件排队、发送、状态和重试记录 |
 | `feedback_service.py` | root cause/action/operator feedback |
-| `action_service.py` | action 状态和执行响应封装 |
+| `ws_ticket_service.py` | WebSocket 短期 ticket 签发和校验 |
 
 Service 层可以调用多个 repository，并负责提交或回滚事务。Router 不应该直接 `commit()`，除非对应本地模式已经明确把事务封装在 service 内部。
 
@@ -91,12 +96,13 @@ Service 层可以调用多个 repository，并负责提交或回滚事务。Rout
 - `runbooks.py` / `runbook_drafts.py` / `runbook_versions.py`：RAG 和 runbook 生命周期。
 - `effective_configs.py` / `discovery_*`：发现、proposal、published config 和 override。
 - `audit_logs.py`：append-only 审计记录。
+- `engineering_metrics.py`：只读工程指标聚合查询。
 
 所有 DB 读写应通过 repository，避免在 router 或 Agent node 中写散落 SQL。
 
 ## Schema 层
 
-`apps/api/schemas/` 当前有 17 个 schema 模块。公共枚举在 `apps/api/schemas/common.py`：
+`apps/api/schemas/` 当前有 16 个 schema 模块。公共枚举在 `apps/api/schemas/common.py`：
 
 - `Severity`: `P1`、`P2`、`P3`、`P4`
 - `IncidentStatus`: `open`、`diagnosing`、`waiting_approval`、`mitigated`、`resolved`、`failed`
@@ -121,7 +127,7 @@ Schema 负责 API 形状和 provider payload 标准化。例如 `AlertCreateRequ
 | `get_current_api_key()` | 从 `request.state.api_key` 读取认证身份；auth disabled 时返回 `{}` |
 | `require_scope()` / `require_any_scope()` | scope dependency，auth disabled 时跳过检查 |
 
-Scope dependency 当前通过 FastAPI `HTTPException` 返回 401/403，而不是 `AppError`。认证中间件自己的 401 响应使用标准错误信封。
+Scope dependency 当前通过 FastAPI `HTTPException` 返回 401/403；`apps/api/main.py` 的 HTTPException handler 会把它包装成标准错误信封。认证中间件自己的 401 响应也使用同一信封。
 
 ## 核心请求流程
 
@@ -198,7 +204,7 @@ ticket 缺失、过期、incident 不匹配或签名无效时关闭连接，code
 | 变更 | 应修改位置 | 必补测试 | 必补文档 |
 |------|------------|----------|----------|
 | 新 HTTP endpoint | router、schema、service、repository | router/service/unit 或 integration | `api-reference.md` |
-| 新 DB 表或字段 | `packages/db/models.py`、migration、repository | migration/repository/integration | `data-model.md` |
+| 新 DB 表或字段 | `packages/db/models.py`、migration、repository | migration/repository/integration | `data-model.md`、`data-model-migrations-persistence-deep-dive.md` |
 | 新 Celery task | `apps/worker/tasks.py` 或专用 task 模块 | eager/idempotency/retry tests | `celery-and-jobs.md` |
 | 新 protected scope | dependency/router/API key docs | auth/scope tests | `auth-and-api-keys.md`、`api-reference.md` |
 | 新错误类型 | `packages/common/errors.py` 或 exception handler | error envelope tests | `errors-and-request-ids.md` |

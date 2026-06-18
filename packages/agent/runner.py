@@ -42,6 +42,8 @@ class AgentRunner:
             "memory_context": [],
             "hypotheses": [],
             "root_cause": {},
+            "evidence_ids": [],
+            "runbook_chunk_ids": [],
             "recommended_actions": [],
             "approval_status": {},
             "execution_results": [],

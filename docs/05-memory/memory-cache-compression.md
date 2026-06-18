@@ -1,12 +1,15 @@
 # 记忆、缓存与上下文压缩
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-18
 
 ## 概述
 
 `packages/memory` 负责记忆存储、上下文预算、prompt 组装、确定性压缩和 token 估算。它不直接实例化或调用 LLM provider。需要 LLM 摘要时，应由 `packages/agent` 通过注入的 summarizer/LLM adapter 调用，再把结果写回 memory。
 
 当前实现的压缩是规则型、确定性的，目的是避免大日志和超预算证据直接进入 prompt，同时保留 retained/omitted evidence ID 供审计。
+
+如果需要沿当前代码路径理解 RAG chunk、memory scopes、context builder、压缩事件和 cache 指标如何在一次 Agent run 中组合，见 [RAG、记忆与上下文技术深挖](../00-overview/rag-memory-context-deep-dive.md)。
+如果需要理解 feedback API 为什么当前默认不写入 memory、以及 feedback -> memory/eval 需要哪些额外接线，见 [反馈、NFA、关联事件与持续学习技术深挖](../00-overview/feedback-nfa-correlation-continuous-learning-deep-dive.md)。
 
 下图先概括 memory、context builder、压缩事件和 cache 指标的边界。后续小节给出触发条件和字段契约。
 
@@ -92,6 +95,8 @@ L3 procedural memory 当前只记录 `status` 为 `succeeded`、`executed` 或 `
 | cross incident | 1,200 | 相似 incident context |
 | scratchpad | 0 | 当前默认不分配 |
 
+注意：`ContextBudget` schema 本身还有一组原始字段默认值，例如 `evidence=9_600`、`runbook=6_400`、`memory=3_200`、`cross_incident=3_200`。当前 `build_context` 节点构造 `BuildContextInput` 时没有显式传入 `total_limit <= 0`，因此主路径会使用 `ContextBudget()` 原始默认值；`ContextBudget.with_defaults()` 是 `ContextBudgeter.allocate_budget()` 的百分比分配路径。调整预算时需要同时确认两处语义。
+
 `TokenCounter` 使用 `len(text) // 4` 的启发式估算，空文本为 0，非空至少 1。
 
 ## ContextBuilder 输入输出
@@ -162,6 +167,8 @@ Runbook chunks 和 memory 超预算时当前是按分配预算裁剪纳入 promp
 
 `apps/worker/tasks.py` 的 `_populate_run_metrics()` 会从 `state.llm_calls` 汇总 prompt/completion token 和 provider cache 计数，并从 `RequestLocalToolCache` 写入 app cache hit/miss。
 
+`llm_calls` metadata、provider cache 计数、FakeLLM / disabled provider 和真实 provider 手动边界的完整路径见 [LLM、Prompt、FakeLLM 与 Provider 边界技术深挖](../00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md)。
+
 ## 与 Agent 的职责边界
 
 - `packages/memory` 不调用 LLM。
@@ -182,10 +189,7 @@ Runbook chunks 和 memory 超预算时当前是按分配预算裁剪纳入 promp
 
 ## 常用测试入口
 
-- `tests/unit/test_memory_store.py`
-- `tests/unit/test_context_budget.py`
-- `tests/unit/test_context_builder.py`
-- `tests/unit/test_context_compression.py`
-- `tests/unit/test_token_counter.py`
+- `tests/unit/test_memory.py`
 - `tests/unit/test_agent_nodes.py`
-- `tests/unit/test_agent_run_metrics.py`
+- `tests/unit/test_worker_celery_app_metrics.py`
+- `tests/integration/test_engineering_metrics_api.py`

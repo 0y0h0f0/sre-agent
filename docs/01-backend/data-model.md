@@ -1,6 +1,11 @@
 # 数据模型
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-18
+
+需要沿代码路径理解 ORM、migration、repository 事务边界、checkpoint pointer、pgvector fallback、audit append-only 和 API key 持久化约束时，见 [数据模型、迁移与持久化技术深挖](../00-overview/data-model-migrations-persistence-deep-dive.md)。
+需要聚焦 `FalsePositivePattern`、`FeedbackItem`、`IncidentCorrelation`、`RunbookFeedbackSummary`、`AmendmentDraft` 与 memory/eval 回流边界时，见 [反馈、NFA、关联事件与持续学习技术深挖](../00-overview/feedback-nfa-correlation-continuous-learning-deep-dive.md)。
+需要聚焦 `RunbookDraft`、`RunbookVersion`、`AmendmentDraft` 的生成、审核、发布和 apply 元数据边界时，见 [Runbook 草稿、版本与 Amendment 生命周期技术深挖](../00-overview/runbook-draft-version-amendment-lifecycle-deep-dive.md)。
+需要聚焦 `DiscoveryRun.summary`、`DiscoveryProposal`、capability matrix、topology 和 published config 分界时，见 [Discovery、Capability Matrix 与服务拓扑技术深挖](../00-overview/discovery-capability-topology-deep-dive.md)。
 
 ## 设计原则
 
@@ -38,7 +43,7 @@
 |------|----|----------|------|
 | `Action` | `actions` | `action_id`、`incident_id`、`agent_run_id`、`type`、`risk_level`、`status`、`executor`、`target`、`params`、`reason`、`rollback_plan`、`execution_result` | Agent proposed/approved/executed action |
 | `Approval` | `approvals` | `approval_id`、`action_id`、`incident_id`、`agent_run_id`、`status`、`approver`、`comment`、`risk_ack`、`confirm_action_type`、`confirm_target`、`email_token` | L2/L3 人工审批；L3 二次确认字段持久化在这里 |
-| `IncidentReport` | `incident_reports` | `report_id`、`incident_id`、`agent_run_id`、`version`、`root_cause`、`impact`、`timeline`、`actions`、`follow_ups`、`body_markdown` | 版本化报告；唯一约束 `(incident_id, version)` |
+| `IncidentReport` | `incident_reports` | `report_id`、`incident_id`、`agent_run_id`、`version`、`root_cause`、`impact`、`timeline`、`actions`、`follow_ups`、`body_markdown` | 版本化报告；唯一约束 `(incident_id, version)`；生命周期见 [报告生成、版本与事件生命周期技术深挖](../00-overview/report-generation-incident-lifecycle-deep-dive.md) |
 | `EmailLog` | `email_log` | `email_log_id`、`notification_type`、`status`、`recipients`、`subject`、related ids、`attempts`、`last_error`、`provider_message_id`、`sent_at` | 邮件通知队列和发送结果记录 |
 
 ### Runbook / RAG
@@ -86,7 +91,7 @@
 
 ## 迁移
 
-当前有 15 个 Alembic 迁移版本：
+当前有 17 个 Alembic 迁移版本：
 
 ```text
 c26ca1452607_0001_initial_schema.py
@@ -104,6 +109,8 @@ c26ca1452607_0001_initial_schema.py
 a1b2c3d4e5f6_discovery_config_models.py
 b2c3d4e5f6a7_api_key_scopes.py
 c3d4e5f6a7b8_alert_poll_cursor.py
+d4e5f6a7b8c9_m9_amendment_draft_lifecycle.py
+e5f6a7b8c9d0_runbook_chunk_embeddings.py
 ```
 
 新增/修改模型时必须添加迁移；不要只改 ORM。
@@ -113,7 +120,7 @@ c3d4e5f6a7b8_alert_poll_cursor.py
 - Fingerprint 去重：业务查询只 deduplicate 未终态 incident；终态包括 `resolved`、`failed`、`mitigated`。
 - Agent run 幂等：worker 使用 `SELECT ... FOR UPDATE` 锁 run 行，终态和 waiting approval 不重复执行。
 - Checkpoint：`agent_runs.state` 不是 checkpoint；审批恢复必须使用 LangGraph PostgresSaver。
-- Report：唯一约束 `(incident_id, version)`；重新生成创建新版本。
+- Report：唯一约束 `(incident_id, version)`；重新生成创建新版本，不覆盖旧版本；latest report API 当前只返回最新版本。
 - Runbook version：唯一约束 `(document_id, version_number)`。
 - API key：raw key 只返回一次；DB 只保存 SHA-256 hash。
 - Audit log：无业务更新/删除路径，按 append-only 使用。
@@ -131,7 +138,7 @@ c3d4e5f6a7b8_alert_poll_cursor.py
 | DiscoveryProposal | `pending_review -> auto_applied/rejected/superseded` |  |
 | EffectiveConfigVersion | `published -> superseded/rolled_back/revoked` |  |
 | DiscoveryOverride | active until `expires_at` or `revoked_at` |  |
-| RunbookDraft | `draft -> pending_review -> approved/rejected` |  |
+| RunbookDraft | `draft/pending_review -> published/rejected` | `pending_review` 主要用于 M9 LLM draft；普通 template/cluster draft 默认 `draft` |
 | AmendmentDraft | `pending_review -> approved/rejected`，`approved -> applied/superseded` |  |
 
 ## Repository 边界

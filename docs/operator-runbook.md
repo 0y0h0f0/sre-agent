@@ -1,8 +1,10 @@
 # Day-2 运维操作手册
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-17
 
 本文是生产化和长期运维入口，偏向 Day-2 操作：服务管理、监控、故障排查、备份恢复、扩缩容、M9 受控增强和回滚。日常本地命令见 [运维 Runbook](10-operations/runbook.md)，生产前门禁见 [生产环境检查清单](production-checklist.md)。
+
+需要沿代码路径理解运行 profile、健康检查、M9 gate、live backend 和回滚验证时，见 [生产发布、运维与回滚技术深挖](00-overview/production-operations-rollback-deep-dive.md)。
 
 ## 服务拓扑
 
@@ -175,7 +177,7 @@ export EMBEDDING_PROVIDER=external
 - LLM 只能生成 `pending_review` draft/amendment。
 - Web search 必须 HTTPS、allowlist、redaction、timeout、audit、metric、degraded。
 - Tempo discovery 生产不 auto-publish。
-- Grafana ingest 启用时必须 HMAC。
+- Grafana-shaped payload 当前走通用 `/api/alerts`；若未来暴露独立 Grafana webhook route，启用前必须接入 HMAC、payload size 和 dedup 验证。
 - External embedding 需要 safe URL 和 scope。
 
 ## 回滚

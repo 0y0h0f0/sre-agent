@@ -1,6 +1,8 @@
 # 错误响应与请求 ID
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-17
+
+需要沿完整请求路径理解 middleware、auth、scope、service 事务和审计时，见 [API 控制面与服务层技术深挖](../00-overview/api-control-plane-service-deep-dive.md)。
 
 ## Request ID Middleware
 
@@ -61,20 +63,27 @@ API key middleware 的认证失败返回 HTTP 401，并使用同一信封：
 }
 ```
 
-## 当前例外：HTTPException
+## HTTPException
 
 部分 router 或 dependency 当前直接抛出 FastAPI `HTTPException`，例如：
 
 - `require_scope()` 缺少认证身份或 scope 时返回 401/403。
 - `config` router 捕获 publish/rollback/revoke/override 错误时返回 400/404。
 
-这些响应目前使用 FastAPI 默认结构，例如：
+`apps/api/main.py` 当前注册了 `_http_exception_handler`，因此这些响应也会被包装成标准错误信封，而不是 FastAPI 默认的裸 `{"detail": ...}` 结构。例如：
 
 ```json
-{"detail": "Missing required scope(s): config:write"}
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "Missing required scope(s): config:write",
+    "request_id": "req_abc123",
+    "details": {}
+  }
+}
 ```
 
-新增业务错误应优先使用 `AppError` 子类，除非明确需要保持 FastAPI 默认行为。
+新增业务错误仍应优先使用 `AppError` 子类；只有需要表达 FastAPI/dependency 层状态时才使用 `HTTPException`。
 
 ## AppError 类型
 
@@ -96,7 +105,7 @@ API key middleware 的认证失败返回 HTTP 401，并使用同一信封：
 |------|------|-------------|------|
 | Pydantic 请求体验证失败 | 422 | `VALIDATION_ERROR` 信封 | `details.errors` 来自 Pydantic |
 | 未认证 API key | 401 | `UNAUTHORIZED` 信封 | 由 auth middleware 返回 |
-| 缺少 scope | 403 | FastAPI `detail` | 由 `require_scope()` 抛 `HTTPException` |
+| 缺少 scope | 403 | `FORBIDDEN` 信封 | 由 `require_scope()` 抛 `HTTPException`，再由 handler 包装 |
 | 未找到 public ID | 404 | `NOT_FOUND` 信封 | `NotFoundError` |
 | active run 冲突 | 409 | `CONFLICT` 信封 | 手动 diagnose `force=false` 等 |
 | 告警摄取限流 | 429 | `TOO_MANY_REQUESTS` 信封 | Redis sliding-window rate limit |

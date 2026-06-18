@@ -79,8 +79,11 @@ class EvidenceItem(BaseModel):
     evidence_id: str
     type: str
     source: str
+    source_id: str | None = None
+    source_path: str | None = None
     title: str
     excerpt: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
     confidence: float | None = None
     timestamp: datetime | None = None
 

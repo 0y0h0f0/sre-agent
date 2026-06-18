@@ -169,6 +169,55 @@ def test_metrics_tool_falls_back_to_backend_metric_and_job_alias() -> None:
     assert len(seen) > 1
 
 
+def test_metrics_tool_redacts_sensitive_service_before_query_and_output() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = str(request.url.params["query"])
+        seen.append(query)
+        assert "service-secret" not in query
+        return httpx.Response(
+            200,
+            json={"status": "success", "data": {"result": [{"values": [[1, "1"]]}]}},
+        )
+
+    client = httpx.Client(base_url="http://prom", transport=httpx.MockTransport(handler))
+    tool = MetricsTool(base_url="http://prom", client=client)
+    result = tool.run(
+        MetricsQuery(
+            service="checkout token=service-secret",
+            metric_type="qps",
+            start=START,
+            end=END,
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert seen and "[REDACTED]" in seen[0]
+    assert "service-secret" not in str(result.data)
+    assert "service-secret" not in str(result.evidence)
+    assert "service-secret" not in result.summary
+    assert "service-secret" not in (result.cache_key or "")
+
+
+def test_metrics_tool_redacts_error_messages() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("prometheus failed token=short-secret")
+
+    client = httpx.Client(base_url="http://prom", transport=httpx.MockTransport(handler))
+    tool = MetricsTool(base_url="http://prom", client=client)
+    result = tool.run(MetricsQuery(service="checkout", metric_type="qps", start=START, end=END))
+
+    assert result.status == "degraded"
+    assert "[REDACTED]" in (result.error_message or "")
+    assert "short-secret" not in (result.error_message or "")
+
+
+def test_metrics_tool_rejects_invalid_service_label() -> None:
+    with pytest.raises(ValueError, match="valid Prometheus label name"):
+        MetricsTool(base_url="http://prom", service_label='service"} or up{job="prometheus')
+
+
 def test_logs_tool_falls_back_to_common_service_labels() -> None:
     seen: list[str] = []
     line = json.dumps({"level": "error", "message": "db pool wait"})
@@ -193,6 +242,108 @@ def test_logs_tool_falls_back_to_common_service_labels() -> None:
     assert result.status == "succeeded"
     assert result.data["samples"][0]["labels"] == {"app": "task-service"}
     assert any(query.startswith('{app="task-service"}') for query in seen)
+
+
+def test_logs_tool_redacts_sensitive_log_samples() -> None:
+    line = json.dumps(
+        {
+            "level": "error",
+            "message": "db connect failed password=super-secret token=short-secret",
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": {
+                    "result": [
+                        {
+                            "stream": {"service": "checkout"},
+                            "values": [["1780272000000000000", line]],
+                        }
+                    ]
+                },
+            },
+        )
+
+    client = httpx.Client(base_url="http://loki", transport=httpx.MockTransport(handler))
+    tool = LogsTool(base_url="http://loki", client=client)
+    result = tool.run(LogsQuery(service="checkout", start=START, end=END))
+
+    assert result.status == "succeeded"
+    assert "[REDACTED]" in result.data["samples"][0]["message"]
+    assert "super-secret" not in str(result.data)
+    assert "short-secret" not in str(result.data)
+    assert "super-secret" not in str(result.evidence)
+    assert "short-secret" not in str(result.evidence)
+
+
+def test_logs_tool_redacts_sensitive_query_and_labels() -> None:
+    seen: list[str] = []
+    line = json.dumps({"level": "error", "message": "upstream failed"})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = str(request.url.params["query"])
+        seen.append(query)
+        assert "service-secret" not in query
+        assert "keyword-secret" not in query
+        return httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": {
+                    "result": [
+                        {
+                            "stream": {"service": "checkout token=label-secret"},
+                            "values": [["1780272000000000000", line]],
+                        }
+                    ]
+                },
+            },
+        )
+
+    client = httpx.Client(base_url="http://loki", transport=httpx.MockTransport(handler))
+    tool = LogsTool(base_url="http://loki", client=client)
+    result = tool.run(
+        LogsQuery(
+            service="checkout token=service-secret",
+            start=START,
+            end=END,
+            keywords=["password=keyword-secret"],
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert seen and "[REDACTED]" in seen[0]
+    assert "[REDACTED]" in result.data["samples"][0]["labels"]["service"]
+    assert "service-secret" not in str(result.data)
+    assert "keyword-secret" not in str(result.data)
+    assert "label-secret" not in str(result.data)
+    assert "service-secret" not in str(result.evidence)
+    assert "keyword-secret" not in str(result.evidence)
+    assert "label-secret" not in str(result.evidence)
+    assert "service-secret" not in result.summary
+    assert "service-secret" not in (result.cache_key or "")
+
+
+def test_logs_tool_redacts_error_messages() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connect failed token=short-secret")
+
+    client = httpx.Client(base_url="http://loki", transport=httpx.MockTransport(handler))
+    tool = LogsTool(base_url="http://loki", client=client)
+    result = tool.run(LogsQuery(service="checkout", start=START, end=END))
+
+    assert result.status == "degraded"
+    assert "[REDACTED]" in (result.error_message or "")
+    assert "short-secret" not in (result.error_message or "")
+
+
+def test_logs_tool_rejects_invalid_service_label() -> None:
+    with pytest.raises(ValueError, match="valid Loki label name"):
+        LogsTool(base_url="http://loki", service_label='service"} |= "token')
 
 
 # --- 2.1 Trace backend ---
@@ -252,6 +403,103 @@ def test_trace_backend_timeout_degrades() -> None:
     tool = TraceTool(backend=JaegerTraceBackend(base_url="http://jaeger", client=client))
     result = tool.run(TraceQuery(service="checkout", start=START, end=END))
     assert result.status == "timeout"
+
+
+def test_trace_tool_redacts_public_span_fields() -> None:
+    class SensitiveTraceBackend:
+        name = "sensitive"
+
+        def fetch_spans(
+            self,
+            service: str,
+            start: datetime,
+            end: datetime,
+        ) -> list[dict[str, object]]:
+            return [
+                {
+                    "trace_id": "trace-1",
+                    "span_id": "span-1",
+                    "name": "POST /checkout password=super-secret",
+                    "service": service,
+                    "downstream_service": "payments token=downstream-secret",
+                    "duration_ms": 900,
+                    "status": "error",
+                    "start": START.isoformat(),
+                }
+            ]
+
+    tool = TraceTool(backend=SensitiveTraceBackend())
+    result = tool.run(TraceQuery(service="checkout", start=START, end=END))
+
+    assert result.status == "succeeded"
+    assert result.data["error_spans"][0]["trace_id"] == "trace-1"
+    assert "[REDACTED]" in result.data["error_spans"][0]["name"]
+    assert "[REDACTED]" in result.data["error_spans"][0]["downstream_service"]
+    assert "[REDACTED]" in result.data["downstream_services"][0]
+    assert "super-secret" not in str(result.data)
+    assert "downstream-secret" not in str(result.data)
+    assert "super-secret" not in str(result.evidence)
+    assert "downstream-secret" not in str(result.evidence)
+
+
+def test_trace_tool_redacts_sensitive_service_before_backend_and_output() -> None:
+    seen: list[str] = []
+
+    class SensitiveServiceTraceBackend:
+        name = "sensitive"
+
+        def fetch_spans(
+            self,
+            service: str,
+            start: datetime,
+            end: datetime,
+        ) -> list[dict[str, object]]:
+            seen.append(service)
+            assert "service-secret" not in service
+            return [
+                {
+                    "trace_id": "trace-1",
+                    "span_id": "span-1",
+                    "name": "GET /checkout",
+                    "service": service,
+                    "downstream_service": "payments",
+                    "duration_ms": 900,
+                    "status": "ok",
+                    "start": START.isoformat(),
+                }
+            ]
+
+    tool = TraceTool(backend=SensitiveServiceTraceBackend())
+    result = tool.run(
+        TraceQuery(service="checkout token=service-secret", start=START, end=END)
+    )
+
+    assert result.status == "succeeded"
+    assert seen and "[REDACTED]" in seen[0]
+    assert "service-secret" not in result.summary
+    assert "service-secret" not in str(result.data)
+    assert "service-secret" not in str(result.evidence)
+    assert "service-secret" not in (result.cache_key or "")
+
+
+def test_trace_tool_redacts_error_messages() -> None:
+    class BrokenTraceBackend:
+        name = "broken"
+
+        def fetch_spans(
+            self,
+            service: str,
+            start: datetime,
+            end: datetime,
+        ) -> list[dict[str, object]]:
+            raise httpx.ConnectError("connect failed token=short-secret")
+
+    tool = TraceTool(backend=BrokenTraceBackend())
+    result = tool.run(TraceQuery(service="checkout", start=START, end=END))
+
+    assert result.status == "degraded"
+    assert "[REDACTED]" in (result.error_message or "")
+    assert "short-secret" not in (result.error_message or "")
 
 
 def test_build_trace_backend_selects_by_setting() -> None:
@@ -417,6 +665,109 @@ def test_deployment_backend_http_error_degrades() -> None:
     assert result.error_message
 
 
+def test_git_change_tool_redacts_change_values_from_backend() -> None:
+    class SensitiveDeploymentBackend:
+        name = "sensitive"
+
+        def fetch_changes(
+            self,
+            service: str,
+            start: datetime,
+            end: datetime,
+        ) -> list[dict[str, object]]:
+            return [
+                {
+                    "service": service,
+                    "deployed_at": START.isoformat(),
+                    "commit_sha": "1234567890abcdef1234567890abcdef12345678",
+                    "author": "deployer token=author-secret",
+                    "summary": "deploy checkout password=super-secret",
+                    "files": [
+                        "apps/checkout/config/token=path-secret.yaml",
+                        {"filename": "ignored-extra-shape"},
+                    ],
+                    "raw_backend_payload": "token=must-not-leak",
+                }
+            ]
+
+    tool = GitChangeTool(backend=SensitiveDeploymentBackend())
+    result = tool.run(GitChangeQuery(service="checkout", start=START, end=END))
+
+    assert result.status == "succeeded"
+    assert result.data["changes"][0]["commit_sha"] == "1234567890abcdef1234567890abcdef12345678"
+    assert "[REDACTED]" in result.data["changes"][0]["author"]
+    assert "[REDACTED]" in result.data["changes"][0]["summary"]
+    assert "[REDACTED]" in result.data["changes"][0]["files"][0]
+    assert "author-secret" not in str(result.data)
+    assert "super-secret" not in str(result.data)
+    assert "path-secret" not in str(result.data)
+    assert "must-not-leak" not in str(result.data)
+    assert "ignored-extra-shape" not in str(result.data)
+    assert "author-secret" not in str(result.evidence)
+    assert "super-secret" not in str(result.evidence)
+    assert "path-secret" not in str(result.evidence)
+    assert "must-not-leak" not in str(result.evidence)
+    assert "ignored-extra-shape" not in str(result.evidence)
+
+
+def test_git_change_tool_redacts_sensitive_service_before_backend_and_output() -> None:
+    seen: list[str] = []
+
+    class SensitiveServiceDeploymentBackend:
+        name = "sensitive"
+
+        def fetch_changes(
+            self,
+            service: str,
+            start: datetime,
+            end: datetime,
+        ) -> list[dict[str, object]]:
+            seen.append(service)
+            assert "service-secret" not in service
+            return [
+                {
+                    "service": service,
+                    "deployed_at": START.isoformat(),
+                    "commit_sha": "abcdef123456",
+                    "author": "deployer",
+                    "summary": "deploy checkout",
+                    "files": ["apps/checkout/app.py"],
+                }
+            ]
+
+    tool = GitChangeTool(backend=SensitiveServiceDeploymentBackend())
+    result = tool.run(
+        GitChangeQuery(service="checkout token=service-secret", start=START, end=END)
+    )
+
+    assert result.status == "succeeded"
+    assert seen and "[REDACTED]" in seen[0]
+    assert "service-secret" not in result.summary
+    assert "service-secret" not in str(result.data)
+    assert "service-secret" not in str(result.evidence)
+    assert "service-secret" not in (result.cache_key or "")
+
+
+def test_git_change_tool_redacts_error_messages() -> None:
+    class BrokenDeploymentBackend:
+        name = "broken"
+
+        def fetch_changes(
+            self,
+            service: str,
+            start: datetime,
+            end: datetime,
+        ) -> list[dict[str, object]]:
+            raise httpx.ConnectError("github failed token=short-secret")
+
+    tool = GitChangeTool(backend=BrokenDeploymentBackend())
+    result = tool.run(GitChangeQuery(service="checkout", start=START, end=END))
+
+    assert result.status == "degraded"
+    assert "[REDACTED]" in (result.error_message or "")
+    assert "short-secret" not in (result.error_message or "")
+
+
 def test_build_deployment_backend_selects_by_setting() -> None:
     assert build_deployment_backend(Settings()).name == "fixture"
     assert build_deployment_backend(Settings(deployment_backend="argocd")).name == "argocd"
@@ -453,6 +804,16 @@ def test_k8s_tool_refuses_write_operation() -> None:
     assert "read-only" in (result.error_message or "")
 
 
+def test_k8s_tool_redacts_sensitive_operation_in_refusal_summary() -> None:
+    tool = K8sDiagnosticsTool()
+    result = tool.run(K8sQuery(service="checkout", operation="scale token=op-secret"))
+
+    assert result.status == "failed"
+    assert "[REDACTED]" in result.summary
+    assert "op-secret" not in result.summary
+    assert "read-only" in (result.error_message or "")
+
+
 def test_k8s_tool_uses_backend_namespace_when_query_omits_it() -> None:
     captured: dict[str, str] = {}
 
@@ -473,6 +834,96 @@ def test_k8s_tool_uses_backend_namespace_when_query_omits_it() -> None:
     assert result.status == "succeeded"
     assert captured["namespace"] == "payments"
     assert result.data["payload"]["namespace"] == "payments"
+
+
+def test_k8s_tool_defaults_namespace_when_backend_namespace_is_blank() -> None:
+    captured: dict[str, str] = {}
+
+    class _Backend:
+        name = "live"
+        namespace = "   "
+
+        def fetch(self, query: K8sQuery) -> dict[str, object]:
+            captured["namespace"] = query.namespace
+            return {
+                "operation": query.operation,
+                "payload": {"namespace": query.namespace},
+            }
+
+    tool = K8sDiagnosticsTool(backend=_Backend())
+    result = tool.run(K8sQuery(service="checkout", operation="events"))
+
+    assert result.status == "succeeded"
+    assert captured["namespace"] == "default"
+    assert result.data["payload"]["namespace"] == "default"
+
+
+def test_k8s_tool_redacts_sensitive_service_and_namespace_before_backend() -> None:
+    captured: dict[str, str] = {}
+
+    class _Backend:
+        name = "live"
+        namespace = "payments token=namespace-secret"
+
+        def fetch(self, query: K8sQuery) -> dict[str, object]:
+            captured["service"] = query.service
+            captured["namespace"] = query.namespace
+            assert "service-secret" not in query.service
+            assert "namespace-secret" not in query.namespace
+            return {
+                "operation": query.operation,
+                "payload": {
+                    "service": query.service,
+                    "namespace": query.namespace,
+                },
+            }
+
+    tool = K8sDiagnosticsTool(backend=_Backend())
+    result = tool.run(
+        K8sQuery(service="checkout token=service-secret", operation="events")
+    )
+
+    assert result.status == "succeeded"
+    assert "[REDACTED]" in captured["service"]
+    assert "[REDACTED]" in captured["namespace"]
+    assert "service-secret" not in result.summary
+    assert "namespace-secret" not in result.summary
+    assert "service-secret" not in str(result.data)
+    assert "namespace-secret" not in str(result.data)
+    assert "service-secret" not in str(result.evidence)
+    assert "namespace-secret" not in str(result.evidence)
+
+
+def test_k8s_tool_degrades_on_backend_error_payload() -> None:
+    class _Backend:
+        name = "live"
+        namespace = "payments"
+
+        def fetch(self, query: K8sQuery) -> dict[str, object]:
+            return {"operation": query.operation, "payload": {"error": "not_found"}}
+
+    tool = K8sDiagnosticsTool(backend=_Backend())
+    result = tool.run(K8sQuery(service="checkout", operation="get_deployment"))
+
+    assert result.status == "degraded"
+    assert result.evidence == []
+    assert result.error_message == "k8s backend returned error: not_found"
+
+
+def test_k8s_tool_redacts_unhandled_backend_exception() -> None:
+    class _Backend:
+        name = "live"
+        namespace = "payments"
+
+        def fetch(self, query: K8sQuery) -> dict[str, object]:
+            raise RuntimeError("client failed token=short-secret")
+
+    tool = K8sDiagnosticsTool(backend=_Backend())
+    result = tool.run(K8sQuery(service="checkout", operation="events"))
+
+    assert result.status == "degraded"
+    assert "[REDACTED]" in (result.error_message or "")
+    assert "short-secret" not in (result.error_message or "")
 
 
 def test_k8s_tool_degrades_on_bad_fixture(tmp_path: object) -> None:
@@ -498,6 +949,16 @@ def test_build_k8s_backend_selects_by_setting() -> None:
     assert build_k8s_backend(Settings(k8s_backend="live")).name == "live"
     with pytest.raises(ValueError, match="unknown k8s_backend"):
         build_k8s_backend(Settings(k8s_backend="nope"))
+
+
+def test_build_k8s_backend_live_normalizes_namespace() -> None:
+    backend = build_k8s_backend(Settings(k8s_backend=" LIVE ", k8s_namespace=" payments "))
+    assert backend.name == "live"
+    assert backend.namespace == "payments"
+
+    blank_backend = build_k8s_backend(Settings(k8s_backend="live", k8s_namespace=" "))
+    assert blank_backend.name == "live"
+    assert blank_backend.namespace == "default"
 
 
 # --- 2.3 DB read-only diagnosis ---
@@ -535,6 +996,42 @@ def test_db_tool_degrades_when_backend_query_fails() -> None:
     assert result.status == "degraded"
     assert result.data == {}
     assert result.error_message == "pg_stat_statements missing"
+
+
+def test_db_tool_redacts_backend_exception() -> None:
+    class BrokenDbBackend:
+        name = "live"
+
+        def fetch(self, query: DbDiagnosticsQuery) -> list[dict[str, object]]:
+            raise RuntimeError("query failed password=super-secret")
+
+    tool = DbDiagnosticsTool(backend=BrokenDbBackend())
+    result = tool.run(DbDiagnosticsQuery(operation="slow_queries"))
+
+    assert result.status == "degraded"
+    assert "[REDACTED]" in (result.error_message or "")
+    assert "super-secret" not in (result.error_message or "")
+
+
+def test_db_tool_redacts_row_values_from_backend() -> None:
+    class SensitiveDbBackend:
+        name = "live"
+
+        def fetch(self, query: DbDiagnosticsQuery) -> list[dict[str, object]]:
+            return [
+                {
+                    "query": "SELECT * FROM users WHERE password='super-secret'",
+                    "calls": 1,
+                }
+            ]
+
+    tool = DbDiagnosticsTool(backend=SensitiveDbBackend())
+    result = tool.run(DbDiagnosticsQuery(operation="slow_queries"))
+
+    assert result.status == "succeeded"
+    assert "[REDACTED]" in result.data["rows"][0]["query"]
+    assert "super-secret" not in str(result.data)
+    assert "super-secret" not in str(result.evidence)
 
 
 def test_assert_read_only_rejects_writes() -> None:
@@ -616,6 +1113,145 @@ def test_live_db_backend_is_read_only_without_set_transaction(monkeypatch) -> No
     assert not any("SET TRANSACTION READ ONLY" in s for s in executed)
 
 
+def test_live_db_backend_normalizes_runtime_timeouts(monkeypatch) -> None:
+    from packages.tools.db_diagnostics import DbDiagnosticsQuery, LiveDbBackend
+
+    captured: dict[str, object] = {}
+    executed: list[str] = []
+
+    class FakeCursor:
+        description = [("state",), ("connections",)]
+
+        def __enter__(self) -> FakeCursor:
+            return self
+
+        def __exit__(self, *a: object) -> bool:
+            return False
+
+        def execute(self, sql: str, params: object = None) -> None:
+            executed.append(sql)
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [("active", 1)]
+
+    class FakeConn:
+        read_only = None
+
+        def __enter__(self) -> FakeConn:
+            return self
+
+        def __exit__(self, *a: object) -> bool:
+            return False
+
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+    def fake_connect(dsn: str, connect_timeout: int | None = None) -> FakeConn:
+        captured["connect_timeout"] = connect_timeout
+        return FakeConn()
+
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(connect=fake_connect))
+    backend = LiveDbBackend(
+        dsn="postgresql://ro@db/x",
+        statement_timeout_ms="1500",  # type: ignore[arg-type]
+        connect_timeout_seconds=0.5,
+    )
+
+    rows = backend.fetch(DbDiagnosticsQuery(operation="connection_pool"))
+
+    assert rows == [{"state": "active", "connections": 1}]
+    assert backend.statement_timeout_ms == 1500
+    assert backend.connect_timeout_seconds == 1
+    assert captured["connect_timeout"] == 1
+    assert executed == [
+        "SET statement_timeout = 1500",
+        "SELECT state, count(*) AS connections FROM pg_stat_activity "
+        "GROUP BY state ORDER BY connections DESC",
+    ]
+
+
+def test_live_db_backend_rejects_invalid_runtime_timeouts() -> None:
+    from packages.tools.db_diagnostics import LiveDbBackend
+
+    invalid_statement_timeouts = [0, -1, True, "1.5", "many"]
+    for value in invalid_statement_timeouts:
+        with pytest.raises(ValueError, match="statement_timeout_ms"):
+            LiveDbBackend(dsn="postgresql://ro@db/x", statement_timeout_ms=value)  # type: ignore[arg-type]
+
+    invalid_connect_timeouts = [0, -1, True, "many"]
+    for value in invalid_connect_timeouts:
+        with pytest.raises(ValueError, match="connect_timeout_seconds"):
+            LiveDbBackend(dsn="postgresql://ro@db/x", connect_timeout_seconds=value)  # type: ignore[arg-type]
+
+
+def test_live_db_backend_redacts_direct_query_failures(monkeypatch) -> None:
+    from packages.tools.db_diagnostics import DbDiagnosticsQuery, LiveDbBackend
+
+    def fake_connect(dsn: str, connect_timeout: int | None = None) -> object:
+        raise RuntimeError(
+            "could not connect password=super-secret "
+            "postgresql://user:super-secret@db/prod"
+        )
+
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(connect=fake_connect))
+    backend = LiveDbBackend(
+        dsn="postgresql://user:super-secret@db/prod",
+        statement_timeout_ms=1500,
+        connect_timeout_seconds=3,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        backend.fetch(DbDiagnosticsQuery(operation="connection_pool"))
+
+    message = str(exc_info.value)
+    assert "[REDACTED]" in message
+    assert "super-secret" not in message
+
+
+def test_live_db_backend_redacts_row_values(monkeypatch) -> None:
+    from packages.tools.db_diagnostics import DbDiagnosticsQuery, LiveDbBackend
+
+    class FakeCursor:
+        description = [("query",), ("calls",)]
+
+        def __enter__(self) -> FakeCursor:
+            return self
+
+        def __exit__(self, *a: object) -> bool:
+            return False
+
+        def execute(self, sql: str, params: object = None) -> None:
+            return None
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [("SELECT password='super-secret'", 12)]
+
+    class FakeConn:
+        read_only = None
+
+        def __enter__(self) -> FakeConn:
+            return self
+
+        def __exit__(self, *a: object) -> bool:
+            return False
+
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg",
+        types.SimpleNamespace(connect=lambda *a, **kw: FakeConn()),
+    )
+    backend = LiveDbBackend(
+        dsn="postgresql://ro@db/x", statement_timeout_ms=1500, connect_timeout_seconds=3
+    )
+    rows = backend.fetch(DbDiagnosticsQuery(operation="slow_queries"))
+
+    assert "[REDACTED]" in rows[0]["query"]
+    assert "super-secret" not in str(rows)
+
+
 # --- 2.2 Live K8s backend ---
 
 
@@ -626,6 +1262,89 @@ def test_live_k8s_backend_refuses_write_operation() -> None:
         LiveK8sBackend().fetch(K8sQuery(service="x", operation="scale"))
 
 
+def test_live_k8s_backend_normalizes_namespace_and_honors_query_override(
+    monkeypatch,
+) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _AppsV1Api:
+        def __init__(self) -> None:
+            self.namespaces: list[str] = []
+
+        def read_namespaced_deployment(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ):
+            self.namespaces.append(namespace)
+            return types.SimpleNamespace(
+                metadata=types.SimpleNamespace(annotations={}),
+                spec=types.SimpleNamespace(
+                    replicas=1,
+                    paused=False,
+                    template=types.SimpleNamespace(spec=types.SimpleNamespace(containers=[])),
+                ),
+                status=types.SimpleNamespace(),
+            )
+
+    apps = _AppsV1Api()
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: object(),
+        AppsV1Api=lambda: apps,
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    backend = LiveK8sBackend(namespace=" payments ")
+    first = backend.fetch(K8sQuery(service="checkout", operation="get_deployment"))
+    second = backend.fetch(
+        K8sQuery(service="checkout", operation="get_deployment", namespace=" shipping ")
+    )
+    blank = LiveK8sBackend(namespace=" ").fetch(
+        K8sQuery(service="checkout", operation="get_deployment")
+    )
+
+    assert apps.namespaces == ["payments", "shipping", "default"]
+    assert first["payload"]["namespace"] == "payments"
+    assert second["payload"]["namespace"] == "shipping"
+    assert blank["payload"]["namespace"] == "default"
+
+
+def test_live_k8s_backend_rejects_invalid_namespace_before_client_init() -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    out = LiveK8sBackend(namespace="_payments").fetch(
+        K8sQuery(service="checkout", operation="get_deployment")
+    )
+
+    assert out == {"operation": "get_deployment", "payload": {"error": "invalid_namespace"}}
+
+
+def test_live_k8s_backend_rejects_invalid_workload_name_before_client_init() -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="../checkout", operation="rollout_status")
+    )
+
+    assert out == {"operation": "rollout_status", "payload": {"error": "invalid_resource_name"}}
+
+
+def test_live_k8s_backend_rejects_invalid_explicit_pod_name_before_client_init() -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="logs", pod="../checkout")
+    )
+
+    assert out == {"operation": "logs", "payload": {"error": "invalid_pod_name"}}
+
+
 def test_live_k8s_backend_maps_events(monkeypatch) -> None:
     from packages.tools.k8s import LiveK8sBackend
 
@@ -634,15 +1353,54 @@ def test_live_k8s_backend_maps_events(monkeypatch) -> None:
             self.message = message
 
     class _Events:
-        items = [_Item("OOMKilling"), _Item("BackOff")]
+        def __init__(self, items: list[_Item]) -> None:
+            self.items = items
+
+    class _PodList:
+        def __init__(self, items: list[object]) -> None:
+            self.items = items
 
     class _CoreV1Api:
-        def list_namespaced_event(self, ns: str, _request_timeout: float | None = None) -> _Events:
-            return _Events()
+        def __init__(self) -> None:
+            self.event_selectors: list[str] = []
+            self.pod_selectors: list[str] = []
+
+        def list_namespaced_event(
+            self,
+            ns: str,
+            field_selector: str,
+            _request_timeout: float | None = None,
+        ) -> _Events:
+            self.event_selectors.append(field_selector)
+            if field_selector == "involvedObject.name=checkout":
+                return _Events([_Item("Deployment rollout started")])
+            if field_selector == "involvedObject.name=checkout-running":
+                return _Events([_Item("OOMKilling"), _Item("BackOff"), _Item("BackOff")])
+            return _Events([])
+
+        def list_namespaced_pod(
+            self,
+            namespace: str,
+            label_selector: str,
+            limit: int,
+            _request_timeout: float | None = None,
+        ) -> _PodList:
+            self.pod_selectors.append(label_selector)
+            if label_selector == "app=checkout":
+                return _PodList(
+                    [
+                        types.SimpleNamespace(
+                            metadata=types.SimpleNamespace(name="checkout-running"),
+                            status=types.SimpleNamespace(phase="Running"),
+                        )
+                    ]
+                )
+            return _PodList([])
 
     calls: list[str] = []
+    core = _CoreV1Api()
     fake_kubernetes = types.ModuleType("kubernetes")
-    fake_kubernetes.client = types.SimpleNamespace(CoreV1Api=lambda: _CoreV1Api())  # type: ignore[attr-defined]
+    fake_kubernetes.client = types.SimpleNamespace(CoreV1Api=lambda: core)  # type: ignore[attr-defined]
     fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
         load_incluster_config=lambda: calls.append("incluster"),
         load_kube_config=lambda: calls.append("kubeconfig"),
@@ -653,8 +1411,106 @@ def test_live_k8s_backend_maps_events(monkeypatch) -> None:
         K8sQuery(service="checkout", operation="events")
     )
     assert out["operation"] == "events"
+    assert "Deployment rollout started" in out["payload"]
     assert "OOMKilling" in out["payload"]
+    assert out["payload"].count("BackOff") == 1
+    assert core.event_selectors == [
+        "involvedObject.name=checkout",
+        "involvedObject.name=checkout-running",
+    ]
+    assert core.pod_selectors == ["app.kubernetes.io/name=checkout", "app=checkout"]
     assert calls == ["incluster"]
+
+
+def test_live_k8s_backend_events_redacts_sensitive_messages(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _Item:
+        def __init__(self, message: str) -> None:
+            self.message = message
+
+    class _Events:
+        def __init__(self, items: list[_Item]) -> None:
+            self.items = items
+
+    class _CoreV1Api:
+        def list_namespaced_event(
+            self,
+            ns: str,
+            field_selector: str,
+            _request_timeout: float | None = None,
+        ) -> _Events:
+            if field_selector == "involvedObject.name=checkout-pod":
+                return _Events(
+                    [
+                        _Item(
+                            "failed auth token=short-secret "
+                            "Authorization: Bearer abcdefghijklmnop"
+                        )
+                    ]
+                )
+            return _Events([])
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: _CoreV1Api(),
+        AppsV1Api=lambda: object(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="events", pod="checkout-pod")
+    )
+
+    assert out["operation"] == "events"
+    payload_text = " ".join(out["payload"])
+    assert "[REDACTED]" in payload_text
+    assert "short-secret" not in payload_text
+    assert "abcdefghijklmnop" not in payload_text
+
+
+def test_live_k8s_backend_maps_events_api_error(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _ApiError(Exception):
+        status = 429
+
+        def __str__(self) -> str:
+            return "rate limited token=short-secret"
+
+    class _CoreV1Api:
+        def list_namespaced_event(
+            self,
+            ns: str,
+            field_selector: str,
+            _request_timeout: float | None = None,
+        ) -> object:
+            raise _ApiError()
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: _CoreV1Api(),
+        AppsV1Api=lambda: object(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="events", pod="checkout-pod")
+    )
+
+    assert out == {
+        "operation": "events",
+        "payload": {"error": "rate_limited", "status_code": 429},
+    }
+    assert "short-secret" not in str(out)
 
 
 def test_live_k8s_backend_falls_back_to_kube_config(monkeypatch) -> None:
@@ -664,8 +1520,22 @@ def test_live_k8s_backend_falls_back_to_kube_config(monkeypatch) -> None:
         items: list[object] = []
 
     class _CoreV1Api:
-        def list_namespaced_event(self, ns: str, _request_timeout: float | None = None) -> _Events:
+        def list_namespaced_event(
+            self,
+            ns: str,
+            field_selector: str,
+            _request_timeout: float | None = None,
+        ) -> _Events:
             return _Events()
+
+        def list_namespaced_pod(
+            self,
+            namespace: str,
+            label_selector: str,
+            limit: int,
+            _request_timeout: float | None = None,
+        ) -> object:
+            return types.SimpleNamespace(items=[])
 
     calls: list[str] = []
 
@@ -686,6 +1556,348 @@ def test_live_k8s_backend_falls_back_to_kube_config(monkeypatch) -> None:
     )
     assert out["operation"] == "events"
     assert calls == ["incluster", "kubeconfig"]
+
+
+def test_live_k8s_backend_redacts_config_load_failures(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _CoreV1Api:
+        pass
+
+    def _raise_incluster() -> None:
+        raise RuntimeError("incluster token=short-secret")
+
+    def _raise_kubeconfig() -> None:
+        raise RuntimeError("kubeconfig token=other-secret")
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(CoreV1Api=lambda: _CoreV1Api())  # type: ignore[attr-defined]
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=_raise_incluster,
+        load_kube_config=_raise_kubeconfig,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        LiveK8sBackend(namespace="payments").fetch(
+            K8sQuery(service="checkout", operation="events")
+        )
+
+    message = str(exc_info.value)
+    assert "[REDACTED]" in message
+    assert "short-secret" not in message
+    assert "other-secret" not in message
+
+
+def test_live_k8s_backend_logs_resolves_pod_by_common_labels(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _PodList:
+        def __init__(self, items: list[object]) -> None:
+            self.items = items
+
+    class _CoreV1Api:
+        def __init__(self) -> None:
+            self.selectors: list[str] = []
+
+        def list_namespaced_pod(
+            self,
+            namespace: str,
+            label_selector: str,
+            limit: int,
+            _request_timeout: float | None = None,
+        ) -> _PodList:
+            self.selectors.append(label_selector)
+            if label_selector == "app=checkout":
+                return _PodList(
+                    [
+                        types.SimpleNamespace(
+                            metadata=types.SimpleNamespace(name="checkout-failed"),
+                            status=types.SimpleNamespace(phase="Failed"),
+                        ),
+                        types.SimpleNamespace(
+                            metadata=types.SimpleNamespace(name="checkout-running"),
+                            status=types.SimpleNamespace(phase="Running"),
+                        ),
+                    ]
+                )
+            return _PodList([])
+
+        def read_namespaced_pod_log(
+            self,
+            name: str,
+            namespace: str,
+            tail_lines: int,
+            _request_timeout: float | None = None,
+        ) -> str:
+            assert name == "checkout-running"
+            assert namespace == "payments"
+            assert tail_lines == 100
+            return "ready"
+
+    core = _CoreV1Api()
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: core,
+        AppsV1Api=lambda: object(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="logs")
+    )
+
+    assert out == {"operation": "logs", "pod": "checkout-running", "payload": "ready"}
+    assert core.selectors == ["app.kubernetes.io/name=checkout", "app=checkout"]
+
+
+def test_live_k8s_backend_logs_redacts_sensitive_text(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _CoreV1Api:
+        def list_namespaced_pod(self, *args: object, **kwargs: object) -> object:
+            raise AssertionError("explicit pod should not trigger pod listing")
+
+        def read_namespaced_pod_log(
+            self,
+            name: str,
+            namespace: str,
+            tail_lines: int,
+            _request_timeout: float | None = None,
+        ) -> str:
+            assert name == "checkout-explicit"
+            assert namespace == "payments"
+            assert tail_lines == 100
+            return (
+                "connect failed password=super-secret "
+                "api_key=abc123 token=short-secret"
+            )
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: _CoreV1Api(),
+        AppsV1Api=lambda: object(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="logs", pod="checkout-explicit")
+    )
+
+    assert out["operation"] == "logs"
+    assert out["pod"] == "checkout-explicit"
+    assert "[REDACTED]" in out["payload"]
+    assert "super-secret" not in out["payload"]
+    assert "abc123" not in out["payload"]
+    assert "short-secret" not in out["payload"]
+
+
+def test_live_k8s_backend_maps_logs_api_error(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _ApiError(Exception):
+        status = 504
+
+    class _CoreV1Api:
+        def list_namespaced_pod(self, *args: object, **kwargs: object) -> object:
+            raise AssertionError("explicit pod should not trigger pod listing")
+
+        def read_namespaced_pod_log(
+            self,
+            name: str,
+            namespace: str,
+            tail_lines: int,
+            _request_timeout: float | None = None,
+        ) -> str:
+            raise _ApiError()
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: _CoreV1Api(),
+        AppsV1Api=lambda: object(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="logs", pod="checkout-explicit")
+    )
+
+    assert out == {
+        "operation": "logs",
+        "pod": "checkout-explicit",
+        "payload": {"error": "timeout", "status_code": 504},
+    }
+
+
+def test_live_k8s_backend_describe_pod_prefers_explicit_pod(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _Pod:
+        metadata = types.SimpleNamespace(name="checkout-explicit")
+        spec = types.SimpleNamespace(
+            node_name="node-a",
+            containers=[
+                types.SimpleNamespace(
+                    name="api",
+                    image="checkout:v3",
+                    env=[types.SimpleNamespace(name="DB_PASSWORD", value="super-secret")],
+                )
+            ],
+        )
+        status = types.SimpleNamespace(
+            phase="Running",
+            container_statuses=[
+                types.SimpleNamespace(
+                    name="api",
+                    ready=False,
+                    restart_count=4,
+                    state=types.SimpleNamespace(
+                        waiting=types.SimpleNamespace(reason="CrashLoopBackOff")
+                    ),
+                )
+            ],
+            conditions=[types.SimpleNamespace(type="Ready", status="False")],
+        )
+
+    class _CoreV1Api:
+        def list_namespaced_pod(self, *args: object, **kwargs: object) -> object:
+            raise AssertionError("explicit pod should not trigger pod listing")
+
+        def read_namespaced_pod(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ) -> _Pod:
+            assert name == "checkout-explicit"
+            assert namespace == "payments"
+            return _Pod()
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: _CoreV1Api(),
+        AppsV1Api=lambda: object(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="describe_pod", pod="checkout-explicit")
+    )
+
+    assert out == {
+        "operation": "describe_pod",
+        "pod": "checkout-explicit",
+        "payload": {
+            "name": "checkout-explicit",
+            "namespace": "payments",
+            "phase": "Running",
+            "node_name": "node-a",
+            "restart_count": 4,
+            "containers": [
+                {
+                    "name": "api",
+                    "image": "checkout:v3",
+                    "ready": False,
+                    "restart_count": 4,
+                    "state": "waiting",
+                    "reason": "CrashLoopBackOff",
+                }
+            ],
+            "conditions": [{"type": "Ready", "status": "False"}],
+        },
+    }
+    assert "super-secret" not in str(out)
+    assert "DB_PASSWORD" not in str(out)
+
+
+def test_live_k8s_backend_maps_describe_pod_api_error(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _ApiError(Exception):
+        status = 401
+
+    class _CoreV1Api:
+        def list_namespaced_pod(self, *args: object, **kwargs: object) -> object:
+            raise AssertionError("explicit pod should not trigger pod listing")
+
+        def read_namespaced_pod(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ) -> object:
+            raise _ApiError()
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: _CoreV1Api(),
+        AppsV1Api=lambda: object(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="describe_pod", pod="checkout-explicit")
+    )
+
+    assert out == {
+        "operation": "describe_pod",
+        "pod": "checkout-explicit",
+        "payload": {"error": "unauthorized", "status_code": 401},
+    }
+
+
+def test_k8s_tool_degrades_when_live_pod_lookup_has_no_match(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _PodList:
+        items: list[object] = []
+
+    class _CoreV1Api:
+        def list_namespaced_pod(
+            self,
+            namespace: str,
+            label_selector: str,
+            limit: int,
+            _request_timeout: float | None = None,
+        ) -> _PodList:
+            return _PodList()
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: _CoreV1Api(),
+        AppsV1Api=lambda: object(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    tool = K8sDiagnosticsTool(backend=LiveK8sBackend(namespace="payments"))
+    result = tool.run(K8sQuery(service="checkout", operation="logs"))
+
+    assert result.status == "degraded"
+    assert result.error_message == "empty k8s result"
 
 
 def test_live_k8s_backend_get_deployment_includes_paused(monkeypatch) -> None:
@@ -741,6 +1953,195 @@ def test_live_k8s_backend_get_deployment_includes_paused(monkeypatch) -> None:
     assert out["payload"]["image"] == "checkout:v2"
 
 
+def test_live_k8s_backend_maps_deployment_api_error_to_degraded(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _ApiError(Exception):
+        status = 403
+
+        def __str__(self) -> str:
+            return "forbidden token=super-secret"
+
+    class _AppsV1Api:
+        def read_namespaced_deployment(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ):
+            raise _ApiError()
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: object(),
+        AppsV1Api=lambda: _AppsV1Api(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    backend = LiveK8sBackend(namespace="payments")
+    out = backend.fetch(K8sQuery(service="checkout", operation="get_deployment"))
+    tool = K8sDiagnosticsTool(backend=backend)
+    result = tool.run(K8sQuery(service="checkout", operation="get_deployment"))
+
+    assert out == {
+        "operation": "get_deployment",
+        "payload": {"error": "forbidden", "status_code": 403},
+    }
+    assert "super-secret" not in str(out)
+    assert result.status == "degraded"
+    assert result.evidence == []
+    assert result.error_message == "k8s backend returned error: forbidden"
+
+
+def test_live_k8s_backend_rollout_status_maps_complete_deployment(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _AppsV1Api:
+        def read_namespaced_deployment(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ):
+            return types.SimpleNamespace(
+                metadata=types.SimpleNamespace(
+                    annotations={"deployment.kubernetes.io/revision": "9"},
+                    generation=9,
+                ),
+                spec=types.SimpleNamespace(
+                    replicas=3,
+                    paused=False,
+                    template=types.SimpleNamespace(
+                        spec=types.SimpleNamespace(
+                            containers=[types.SimpleNamespace(image="checkout:v3")]
+                        )
+                    ),
+                ),
+                status=types.SimpleNamespace(
+                    ready_replicas=3,
+                    available_replicas=3,
+                    updated_replicas=3,
+                    unavailable_replicas=0,
+                    observed_generation=9,
+                    conditions=[types.SimpleNamespace(type="Progressing", status="True")],
+                ),
+            )
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: object(),
+        AppsV1Api=lambda: _AppsV1Api(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="rollout_status")
+    )
+
+    assert out["operation"] == "rollout_status"
+    assert out["payload"]["namespace"] == "payments"
+    assert out["payload"]["status"] == "complete"
+    assert out["payload"]["desired_replicas"] == 3
+    assert out["payload"]["updated_replicas"] == 3
+    assert out["payload"]["available_replicas"] == 3
+    assert out["payload"]["revision"] == "9"
+
+
+def test_live_k8s_backend_rollout_status_maps_replica_failure(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _AppsV1Api:
+        def read_namespaced_deployment(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ):
+            return types.SimpleNamespace(
+                metadata=types.SimpleNamespace(annotations={}, generation=3),
+                spec=types.SimpleNamespace(
+                    replicas=3,
+                    paused=False,
+                    template=types.SimpleNamespace(
+                        spec=types.SimpleNamespace(
+                            containers=[types.SimpleNamespace(image="checkout:v3")]
+                        )
+                    ),
+                ),
+                status=types.SimpleNamespace(
+                    ready_replicas=1,
+                    available_replicas=1,
+                    updated_replicas=1,
+                    unavailable_replicas=2,
+                    observed_generation=3,
+                    conditions=[types.SimpleNamespace(type="ReplicaFailure", status="True")],
+                ),
+            )
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: object(),
+        AppsV1Api=lambda: _AppsV1Api(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="payments").fetch(
+        K8sQuery(service="checkout", operation="rollout_status")
+    )
+
+    assert out["operation"] == "rollout_status"
+    assert out["payload"]["status"] == "failed"
+    assert out["payload"]["unavailable_replicas"] == 2
+
+
+def test_live_k8s_backend_maps_statefulset_api_error(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _ApiError(Exception):
+        status = 500
+
+    class _AppsV1Api:
+        def read_namespaced_stateful_set(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ):
+            raise _ApiError()
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: object(),
+        AppsV1Api=lambda: _AppsV1Api(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="data").fetch(
+        K8sQuery(service="postgres", operation="get_statefulset")
+    )
+
+    assert out == {
+        "operation": "get_statefulset",
+        "payload": {"error": "api_error", "status_code": 500},
+    }
+
+
 def test_live_k8s_backend_get_statefulset_maps_status(monkeypatch) -> None:
     from packages.tools.k8s import LiveK8sBackend
 
@@ -764,7 +2165,7 @@ def test_live_k8s_backend_get_statefulset_maps_status(monkeypatch) -> None:
                     ready_replicas=3,
                     current_replicas=3,
                     updated_replicas=3,
-                    current_revision="postgres-7",
+                    current_revision="postgres-8",
                     update_revision="postgres-8",
                     conditions=[types.SimpleNamespace(type="Ready", status="True")],
                 ),
@@ -789,11 +2190,68 @@ def test_live_k8s_backend_get_statefulset_maps_status(monkeypatch) -> None:
     assert out["payload"]["kind"] == "StatefulSet"
     assert out["payload"]["namespace"] == "data"
     assert out["payload"]["replicas"] == 3
+    assert out["payload"]["desired_replicas"] == 3
+    assert out["payload"]["ready_replicas"] == 3
+    assert out["payload"]["updated_replicas"] == 3
+    assert out["payload"]["current_revision"] == "postgres-8"
+    assert out["payload"]["update_revision"] == "postgres-8"
+    assert out["payload"]["image"] == "postgres:16"
+    assert out["payload"]["status"] == "complete"
+
+
+def test_live_k8s_backend_get_statefulset_maps_revision_progressing(monkeypatch) -> None:
+    from packages.tools.k8s import LiveK8sBackend
+
+    class _AppsV1Api:
+        def read_namespaced_stateful_set(
+            self,
+            name: str,
+            namespace: str,
+            _request_timeout: float | None = None,
+        ):
+            return types.SimpleNamespace(
+                metadata=types.SimpleNamespace(generation=8),
+                spec=types.SimpleNamespace(
+                    replicas=3,
+                    template=types.SimpleNamespace(
+                        spec=types.SimpleNamespace(
+                            containers=[types.SimpleNamespace(image="postgres:16")]
+                        )
+                    ),
+                ),
+                status=types.SimpleNamespace(
+                    ready_replicas=3,
+                    current_replicas=3,
+                    updated_replicas=3,
+                    current_revision="postgres-7",
+                    update_revision="postgres-8",
+                    observed_generation=8,
+                    conditions=[types.SimpleNamespace(type="Ready", status="True")],
+                ),
+            )
+
+    fake_kubernetes = types.ModuleType("kubernetes")
+    fake_kubernetes.client = types.SimpleNamespace(  # type: ignore[attr-defined]
+        CoreV1Api=lambda: object(),
+        AppsV1Api=lambda: _AppsV1Api(),
+    )
+    fake_kubernetes.config = types.SimpleNamespace(  # type: ignore[attr-defined]
+        load_incluster_config=lambda: None,
+        load_kube_config=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+
+    out = LiveK8sBackend(namespace="data").fetch(
+        K8sQuery(service="postgres", operation="get_statefulset")
+    )
+
+    assert out["operation"] == "get_statefulset"
+    assert out["payload"]["namespace"] == "data"
     assert out["payload"]["ready_replicas"] == 3
     assert out["payload"]["updated_replicas"] == 3
     assert out["payload"]["current_revision"] == "postgres-7"
     assert out["payload"]["update_revision"] == "postgres-8"
-    assert out["payload"]["image"] == "postgres:16"
+    assert out["payload"]["status"] == "progressing"
 
 
 # --- 2.2/2.3 cross-validation participation ---

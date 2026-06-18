@@ -160,8 +160,11 @@ class IncidentService:
             evidence_id=item.evidence_id,
             type=item.type,
             source=item.source,
+            source_id=item.source_id,
+            source_path=_source_path(item.payload),
             title=item.title,
             excerpt=item.excerpt,
+            metadata=_metadata(item.payload),
             confidence=item.confidence,
             timestamp=item.timestamp,
         )
@@ -175,3 +178,19 @@ class IncidentService:
             reason=action.reason,
             rollback_plan=action.rollback_plan,
         )
+
+
+def _source_path(payload: dict[str, object]) -> str | None:
+    nested = payload.get("payload")
+    if isinstance(nested, dict) and nested.get("source_path"):
+        return str(nested["source_path"])
+    value = payload.get("source_path")
+    return str(value) if value else None
+
+
+def _metadata(payload: dict[str, object]) -> dict[str, object]:
+    nested = payload.get("payload")
+    if isinstance(nested, dict) and isinstance(nested.get("metadata"), dict):
+        return dict(nested["metadata"])
+    metadata = payload.get("metadata")
+    return dict(metadata) if isinstance(metadata, dict) else {}

@@ -83,6 +83,35 @@ def test_list_and_get_incident(client, alert_payload) -> None:
     assert detail["recommended_actions"] == []
 
 
+def test_incident_detail_exposes_evidence_source_metadata(
+    client, db_session, alert_payload
+) -> None:
+    from packages.db.repositories.evidence_items import EvidenceItemRepository
+
+    created = client.post("/api/alerts", json=alert_payload).json()
+    EvidenceItemRepository(db_session).create(
+        incident_id=created["incident_id"],
+        agent_run_id=created["agent_run_id"],
+        type="runbook",
+        source="runbook",
+        source_id="chk_high_5xx",
+        title="High 5xx rollback",
+        excerpt="Rollback checks for high 5xx after deploy.",
+        payload={
+            "chunk_id": "chk_high_5xx",
+            "source_path": "runbooks/high-5xx.md",
+        },
+        confidence=0.93,
+    )
+    db_session.commit()
+
+    detail = client.get(f"/api/incidents/{created['incident_id']}").json()
+
+    evidence = detail["evidence"][0]
+    assert evidence["source_id"] == "chk_high_5xx"
+    assert evidence["source_path"] == "runbooks/high-5xx.md"
+
+
 def test_diagnose_rejects_active_run_unless_forced(client, fake_enqueue, alert_payload) -> None:
     created = client.post("/api/alerts", json=alert_payload).json()
 

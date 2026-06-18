@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.common import AgentRunStatus, IncidentStatus
@@ -396,6 +397,7 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
     tool_calls_repo = ToolCallRepository(db)
 
     def node_tracer(**kwargs: Any) -> None:
+        _recover_inactive_session(db)
         started = kwargs.get("started_at")
         finished = kwargs.get("finished_at")
         duration_ms = (
@@ -436,14 +438,16 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
             )
 
     def tool_call_recorder(**kwargs: Any) -> None:
+        result = kwargs.get(
+            "result", ToolResult(status="degraded", data={}, summary="", duration_ms=0)
+        )
+        _recover_inactive_session(db, probe=getattr(result, "status", "") == "degraded")
         tool_calls_repo.create(
             agent_run_id=kwargs.get("agent_run_id", agent_run_id),
             node_name=kwargs.get("node_name", "unknown"),
             tool_name=kwargs.get("tool_name", "unknown"),
             query=kwargs.get("query", {}),
-            result=kwargs.get(
-                "result", ToolResult(status="degraded", data={}, summary="", duration_ms=0)
-            ),
+            result=result,
             input_summary=kwargs.get("input_summary", ""),
         )
         db.flush()
@@ -468,6 +472,19 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
         effective_config=effective_config,
         config_version_id=config_version_id,
     )
+
+
+def _recover_inactive_session(db: Session, *, probe: bool = False) -> None:
+    """Recover after a tool degrades from a DB error that aborted the session."""
+    if getattr(db, "is_active", True) is False:
+        db.rollback()
+        return
+    if not probe:
+        return
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        db.rollback()
 
 
 def _active_overrides_for_effective_config(db: Session) -> list[dict[str, Any]]:

@@ -11,9 +11,9 @@ data:
   APPROVAL_AUTO_APPROVE_MAX_RISK: "L1"
 
   # === Observability Backends ===
-  PROMETHEUS_URL: "http://prometheus.task-platform.svc.cluster.local:9090"
-  LOKI_URL: "http://loki.task-platform.svc.cluster.local:3100"
-  OTEL_COLLECTOR_URL: "http://otel-collector.task-platform.svc.cluster.local:4318"
+  PROMETHEUS_URL: "http://prometheus.target-namespace.svc.cluster.local:9090"
+  LOKI_URL: "http://loki.target-namespace.svc.cluster.local:3100"
+  OTEL_COLLECTOR_URL: "http://otel-collector.target-namespace.svc.cluster.local:4318"
   METRICS_SERVICE_LABEL: "job"
   LOGS_SERVICE_LABEL: "service"
 
@@ -39,8 +39,8 @@ data:
   TRACE_ENABLED: "true"
   TRACE_BACKEND: "fixture"
   TRACE_FIXTURE_PATH: "demo/faults/traces.json"
-  JAEGER_URL: "http://jaeger.task-platform.svc.cluster.local:16686"
-  TEMPO_URL: "http://tempo.task-platform.svc.cluster.local:3200"
+  JAEGER_URL: "http://jaeger.target-namespace.svc.cluster.local:16686"
+  TEMPO_URL: "http://tempo.target-namespace.svc.cluster.local:3200"
   DEPLOYMENT_BACKEND: "fixture"
   GIT_CHANGES_FIXTURE_PATH: "demo/faults/git_changes.json"
   GITHUB_API_URL: "https://api.github.com"
@@ -62,20 +62,20 @@ data:
   TEMPO_DISCOVERY_ENABLED: "false"
 
   # === K8s (comma-separated for multi-namespace) ===
-  K8S_NAMESPACE: "task-platform"
+  K8S_NAMESPACE: "target-namespace"
   K8S_FIXTURE_PATH: "demo/faults/k8s.json"
-  EXECUTOR_K8S_NAMESPACE: "task-platform"
+  EXECUTOR_K8S_NAMESPACE: "target-namespace"
 
   # === Alerts: webhook by default, polling is explicit opt-in ===
   ALERT_SOURCE: "webhook"
-  ALERTMANAGER_URL: "http://alertmanager.task-platform.svc.cluster.local:9093"
+  ALERTMANAGER_URL: "http://alertmanager.target-namespace.svc.cluster.local:9093"
   ALERT_POLL_INTERVAL_SECONDS: "15"
   ALERT_POLL_LOCK_TTL_SECONDS: "60"
   ALERT_POLL_TIMEOUT_SECONDS: "20"
   ALERT_POLL_RESOLVED_GRACE_PERIOD_SECONDS: "120"
   ALERT_POLL_RESOLVED_MISSING_ROUNDS: "3"
   ALERT_POLL_RECEIVER_FILTER: ""
-  ALERT_POLL_FILTER_MATCHERS: 'job=~"api-gateway|task-service-admin|user-service-admin"'
+  ALERT_POLL_FILTER_MATCHERS: 'job=~"checkout|payments|orders"'
 
   # === Runbook ===
   RUNBOOK_TEMPLATE_GENERATION_ENABLED: "true"

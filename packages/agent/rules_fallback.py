@@ -264,7 +264,7 @@ _ACTIONS_MAP: dict[str, list[dict[str, Any]]] = {
         _action(
             "rollback_deployment",
             "checkout",
-            {"revision": "previous"},
+            {},
             "Rollback to last known good revision",
             "L3",
         ),
@@ -298,7 +298,7 @@ _ACTIONS_MAP: dict[str, list[dict[str, Any]]] = {
         _action(
             "rollback_deployment",
             "checkout",
-            {"revision": "previous"},
+            {},
             "Revert to known stable version",
             "L3",
         ),

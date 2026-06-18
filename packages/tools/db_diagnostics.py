@@ -17,10 +17,12 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
+from packages.common.redaction import redact_dict_values, redact_text
 from packages.common.settings import Settings
 from packages.tools.base import ToolResult, ToolStatus, compact_summary, elapsed_ms, start_timer
 
 DbOperation = Literal["connection_pool", "locks", "slow_queries"]
+_MIN_DB_TIMEOUT = 1
 
 # Predefined, read-only SELECT statements keyed by operation. User input never
 # reaches the SQL text — only the operation name selects a fixed statement.
@@ -84,8 +86,11 @@ class LiveDbBackend:
         connect_timeout_seconds: float = 2.0,
     ) -> None:
         self.dsn = dsn
-        self.statement_timeout_ms = statement_timeout_ms
-        self.connect_timeout_seconds = connect_timeout_seconds
+        self.statement_timeout_ms = _coerce_positive_int(
+            statement_timeout_ms,
+            field_name="statement_timeout_ms",
+        )
+        self.connect_timeout_seconds = _coerce_connect_timeout_seconds(connect_timeout_seconds)
 
     def fetch(self, query: DbDiagnosticsQuery) -> list[dict[str, Any]]:
         sql = _QUERIES[query.operation]
@@ -96,18 +101,24 @@ class LiveDbBackend:
             msg = "psycopg not installed; use db_diagnostics_backend=fixture"
             raise RuntimeError(msg) from exc
 
-        with psycopg.connect(
-            self.dsn, connect_timeout=int(max(1, self.connect_timeout_seconds))
-        ) as conn:
-            # read_only=True makes every transaction on this connection read-only,
-            # so we never issue a separate (and order-sensitive) SET TRANSACTION
-            # READ ONLY. statement_timeout is a literal int (no SQL params on SET).
-            conn.read_only = True
-            with conn.cursor() as cur:
-                cur.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
-                cur.execute(sql, {"limit": query.limit})
-                columns = [desc[0] for desc in cur.description or []]
-                return [dict(zip(columns, row, strict=False)) for row in cur.fetchall()]
+        try:
+            with psycopg.connect(
+                self.dsn,
+                connect_timeout=self.connect_timeout_seconds,
+            ) as conn:
+                # read_only=True makes every transaction on this connection read-only,
+                # so we never issue a separate (and order-sensitive) SET TRANSACTION
+                # READ ONLY. statement_timeout is a literal int (no SQL params on SET).
+                conn.read_only = True
+                with conn.cursor() as cur:
+                    cur.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
+                    cur.execute(sql, {"limit": query.limit})
+                    columns = [desc[0] for desc in cur.description or []]
+                    rows = [dict(zip(columns, row, strict=False)) for row in cur.fetchall()]
+                    return _redact_rows(rows)
+        except Exception as exc:
+            error = redact_text(str(exc)).redacted_text
+            raise RuntimeError(f"live db diagnostics query failed: {error}") from None
 
 
 def _assert_read_only(sql: str) -> None:
@@ -144,7 +155,7 @@ class DbDiagnosticsTool:
         db_query = DbDiagnosticsQuery.model_validate(query)
         started_at = start_timer()
         try:
-            rows = self.backend.fetch(db_query)
+            rows = _redact_rows(self.backend.fetch(db_query))
             has_data = bool(rows)
             status: ToolStatus = "succeeded" if has_data else "degraded"
             data = {"operation": db_query.operation, "rows": rows}
@@ -176,8 +187,42 @@ class DbDiagnosticsTool:
                 data={},
                 summary=f"db diagnostics unavailable for {db_query.operation}",
                 duration_ms=elapsed_ms(started_at),
-                error_message=str(exc),
+                error_message=redact_text(str(exc)).redacted_text,
             )
+
+
+def _redact_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    redacted_rows: list[dict[str, Any]] = []
+    for row in rows:
+        redacted, _ = redact_dict_values(row)
+        redacted_rows.append(redacted)
+    return redacted_rows
+
+
+def _coerce_positive_int(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a positive integer")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        raise ValueError(f"{field_name} must be a positive integer")
+    if parsed < _MIN_DB_TIMEOUT:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return parsed
+
+
+def _coerce_connect_timeout_seconds(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError("connect_timeout_seconds must be a positive number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("connect_timeout_seconds must be a positive number") from exc
+    if parsed <= 0:
+        raise ValueError("connect_timeout_seconds must be a positive number")
+    return int(max(_MIN_DB_TIMEOUT, parsed))
 
 
 def build_db_diagnostics_backend(settings: Settings) -> DbBackend:

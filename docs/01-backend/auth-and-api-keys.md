@@ -1,6 +1,8 @@
 # API Key 鉴权
 
-**最后更新：** 2026-06-14
+**最后更新：** 2026-06-17
+
+需要沿代码路径理解 API key middleware、scope 语义、bootstrap seed、WebSocket ticket、alert rate limit、audit log、secret redaction 和生产启用检查时，见 [认证、API Key、审计与安全边界技术深挖](../00-overview/auth-api-key-audit-security-deep-dive.md)。
 
 ## 默认行为
 

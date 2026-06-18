@@ -2,7 +2,7 @@
 
 **最后更新：** 2026-06-15
 
-本文按当前代码路径解释一条告警如何从 HTTP 请求变成 incident report。它不是 API 字段全集；字段契约见 [API 参考](../01-backend/api-reference.md)，节点细节见 [Agent 工作流](../02-agent/workflow.md)。
+本文按当前代码路径解释一条告警如何从 HTTP 请求变成 incident report。它不是 API 字段全集；字段契约见 [API 参考](../01-backend/api-reference.md)，节点细节见 [Agent 工作流](../02-agent/workflow.md)。告警来源归一化、Grafana-shaped payload、Alertmanager poll、poll cursor 和 resolved inference 见 [Alertmanager Poll、Grafana 与告警来源归一化技术深挖](alert-source-normalization-poll-grafana-deep-dive.md)。
 
 ## 阅读目标
 
@@ -197,6 +197,8 @@ take_snapshot -> execute_action -> verify
 - 调用 `IncidentReportRepository.next_version()` 和 `create()` 写入 `incident_reports`。
 
 `incident_reports` 对 `(incident_id, version)` 有唯一约束。`POST /api/incidents/{incident_id}/report/regenerate` 不覆盖旧报告，而是基于最新 run state、evidence 和 actions 生成新版本。
+
+报告节点字段、API 再生成回退顺序、latest-only 读取、通知去重和 incident/run lifecycle 细节见 [报告生成、版本与事件生命周期技术深挖](report-generation-incident-lifecycle-deep-dive.md)。
 
 ## 9. Run 结束后的状态同步
 

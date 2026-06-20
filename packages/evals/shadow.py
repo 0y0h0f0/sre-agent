@@ -30,6 +30,9 @@ def run_shadow_diagnosis(
     incident_repo = IncidentRepository(db)
     incident = incident_repo.get_by_public_id(incident_id)
 
+    # Shadow mode currently persists only an EvalRun envelope. It deliberately
+    # does not create AgentRun, Action, Approval, or Report rows for the source
+    # incident until a full side-effect-free implementation exists.
     eval_run = EvalRun(
         eval_run_id=new_id("eval_"),
         status="shadow_started",
@@ -42,15 +45,17 @@ def run_shadow_diagnosis(
     db.flush()
 
     if incident is None:
+        # Not-found is recorded as an eval outcome rather than raised so callers
+        # can inspect the queued EvalRun uniformly through the API.
         eval_run.status = "shadow_failed"
         eval_run.metrics = {"error": "incident not found"}
         eval_run.finished_at = utc_now()
         db.commit()
         return eval_run
 
-    # Placeholder: full shadow mode would clone the agent deps with the
-    # shadow model/prompt, run the diagnosis graph, and compare outputs
-    # without touching real incident/agent_run/approval/action tables.
+    # Placeholder: full shadow mode would clone the agent deps with the shadow
+    # model/prompt, run the diagnosis graph, and compare outputs without touching
+    # real incident/agent_run/approval/action tables.
     eval_run.status = "shadow_completed"
     eval_run.finished_at = utc_now()
     eval_run.metrics = {

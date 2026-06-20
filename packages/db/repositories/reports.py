@@ -13,6 +13,8 @@ from packages.db.models import IncidentReport
 
 
 class IncidentReportRepository:
+    """Data access for append-only incident report versions."""
+
     def __init__(self, db: Session) -> None:
         self.db = db
 
@@ -29,6 +31,12 @@ class IncidentReportRepository:
         follow_ups: list[dict[str, Any] | str],
         body_markdown: str,
     ) -> IncidentReport:
+        """Create a report version row.
+
+        Callers compute ``version`` with ``next_version`` and commit the
+        transaction. The database unique constraint protects against duplicate
+        versions for the same incident.
+        """
         report = IncidentReport(
             report_id=new_id("rpt_"),
             incident_id=incident_id,
@@ -45,6 +53,7 @@ class IncidentReportRepository:
         return report
 
     def get_latest_for_incident(self, incident_id: str) -> IncidentReport | None:
+        """Return the highest report version for an incident."""
         stmt = (
             select(IncidentReport)
             .where(IncidentReport.incident_id == incident_id)
@@ -58,12 +67,14 @@ class IncidentReportRepository:
         return self.db.scalar(stmt)
 
     def next_version(self, incident_id: str) -> int:
+        """Compute the next report version number for append-only regeneration."""
         latest = self.get_latest_for_incident(incident_id)
         if latest is None:
             return 1
         return latest.version + 1
 
     def list_for_incident(self, incident_id: str) -> Sequence[IncidentReport]:
+        """Return report versions newest first."""
         stmt = (
             select(IncidentReport)
             .where(IncidentReport.incident_id == incident_id)

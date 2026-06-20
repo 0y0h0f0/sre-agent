@@ -39,6 +39,9 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
             and _has_rollback_action(actions)
             and _usable_snapshot(existing_snapshot)
         ):
+            # During degraded recovery, the old snapshot is more valuable than a
+            # fresh one: rollback/scale_back needs the pre-remediation revision
+            # and replica count, not the already-degraded current state.
             deps.node_tracer(
                 node_id=node_id,
                 agent_run_id=state["agent_run_id"],
@@ -82,11 +85,15 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
         k8s_actions = [a for a in actions if str(a.get("type", "")).lower() in k8s_action_types]
         if k8s_actions and deps.k8s_tool:
             k8s_targets: dict[str, Any] = {}
+            # A single graph batch can contain multiple K8s targets. Store both
+            # a per-target map and a legacy ``k8s`` shortcut for existing code.
             ordered_targets = _k8s_snapshot_targets(k8s_actions, state)
             namespace = effective_executor_k8s_namespace(deps.settings)
             try:
                 for target in ordered_targets:
                     operation = _k8s_snapshot_operation(k8s_actions, target)
+                    # This uses the diagnostics tool only; snapshot collection
+                    # must remain read-only even when the executor backend is live.
                     result = deps.k8s_tool.run(
                         K8sQuery(
                             service=target,
@@ -152,6 +159,7 @@ def take_snapshot(state: IncidentState, deps: AgentDeps) -> IncidentState:
 
 
 def _has_rollback_action(actions: list[dict[str, Any]]) -> bool:
+    """Return true if any planned action can use a previous snapshot."""
     return any(str(action.get("type", "")).lower() in ROLLBACK_ACTION_TYPES for action in actions)
 
 
@@ -173,6 +181,7 @@ def _k8s_snapshot_targets(
 
 
 def _k8s_snapshot_operation(actions: list[dict[str, Any]], target: str) -> str:
+    """Choose the read-only diagnostics operation for a K8s target."""
     for action in actions:
         action_target = str(action.get("target") or target)
         if action_target != target:
@@ -184,6 +193,7 @@ def _k8s_snapshot_operation(actions: list[dict[str, Any]], target: str) -> str:
 
 
 def _usable_snapshot(snapshot: object) -> bool:
+    """Return whether an existing snapshot can safely guide rollback."""
     if not isinstance(snapshot, dict) or not snapshot:
         return False
     if "error" in snapshot:

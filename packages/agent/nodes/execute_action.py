@@ -35,14 +35,24 @@ logger = logging.getLogger(__name__)
 
 
 def execute_action(state: IncidentState, deps: AgentDeps) -> IncidentState:
+    """Execute actions that are already allowed and no longer need approval.
+
+    Safety comes from earlier guardrail/approval nodes plus the local filters in
+    this node. Anything still marked ``requires_approval`` is ignored even if it
+    appears in ``recommended_actions``.
+    """
     node_id = new_id("nd_")
     started_at = utc_now()
     try:
         actions = state.get("recommended_actions", [])
+        # This is the executor's final gate. It intentionally repeats the
+        # guardrail decision in simple boolean form so stale or waiting approval
+        # actions cannot reach a backend call.
         executable = [a for a in actions if a.get("allowed") and not a.get("requires_approval")]
         action_repo = ActionRepository(deps.db)
         backend = deps.executor_backend
         if backend is None:
+            # Fixture remains the safe default for local demo, tests, and CI.
             backend = FixtureExecutorBackend()
         _persist_missing_executable_actions(
             executable,
@@ -62,13 +72,21 @@ def execute_action(state: IncidentState, deps: AgentDeps) -> IncidentState:
 
         for action in executable:
             atype = canonical_action_type(action.get("type"))
+            # Capability metadata travels with the execution result so verify
+            # can build deterministic read-only gates without reinterpreting
+            # model text.
             _attach_capability_metadata(action, atype)
             execution_backend = _execution_backend_for_action(backend, atype)
             try:
+                # Live K8s actions must pass snapshot, namespace, target, params,
+                # and capability-contract checks before any mutation call.
                 preflight_block = _live_preflight_block(action, state, context, execution_backend)
                 if preflight_block is not None:
                     result = preflight_block
                 elif state.get("verify_result") == "degraded" and atype in ROLLBACK_ACTION_TYPES:
+                    # After a failed/degraded remediation, only registered
+                    # rollback actions may use backend rollback semantics, and
+                    # they receive the original pre-action snapshot.
                     result = execution_backend.rollback(
                         action,
                         state.get("pre_action_snapshot", {}),
@@ -149,6 +167,7 @@ def execute_action(state: IncidentState, deps: AgentDeps) -> IncidentState:
 
 
 def _attach_capability_metadata(action: dict[str, Any], action_type: str) -> None:
+    """Copy static capability metadata onto the action for audit/verify."""
     capability = get_action_capability(action_type)
     if capability is None:
         return
@@ -171,6 +190,8 @@ def _execution_backend_for_action(backend: Any, action_type: str) -> Any:
         return backend
     if capability.live_backend == "k8s":
         return backend
+    # Non-K8s actions are still represented in reports/action history, but they
+    # should not be sent to LiveK8sExecutorBackend just because live mode is on.
     return FixtureExecutorBackend()
 
 
@@ -180,7 +201,11 @@ def _live_preflight_block(
     context: ExecutionContext,
     backend: Any,
 ) -> ExecutionResult | None:
-    """Return a blocked result when a live action fails capability preflight."""
+    """Return a blocked result when a live action fails capability preflight.
+
+    Returning a normal ExecutionResult instead of raising keeps the incident run
+    auditable: the report can show which deterministic check blocked the action.
+    """
     if getattr(backend, "name", "") != "live":
         return None
 
@@ -196,6 +221,7 @@ def _live_preflight_block(
     if capability.category in {"read_only", "record_only"}:
         return None
 
+    # Live mode is intentionally narrow: only K8s-backed capabilities may pass.
     if capability.live_backend != "k8s":
         return _blocked_result(
             atype,
@@ -247,6 +273,7 @@ def _live_preflight_block(
 
 
 def _snapshot_for_action(snapshot: object, action: dict[str, Any]) -> object:
+    """Return the per-target K8s snapshot when multiple actions were snapshotted."""
     if not isinstance(snapshot, dict):
         return snapshot
     k8s_targets = snapshot.get("k8s_targets")
@@ -259,6 +286,7 @@ def _snapshot_for_action(snapshot: object, action: dict[str, Any]) -> object:
 
 
 def _capability_contract_error(capability: ActionCapability) -> str:
+    """Validate static metadata before trusting it for live execution."""
     if not (capability.reversible or capability.bounded_irreversible):
         return "live mutation is neither reversible nor bounded irreversible"
     if not capability.verify_gates:
@@ -280,6 +308,7 @@ def _common_k8s_preflight_errors(
     action: dict[str, Any],
     context: ExecutionContext,
 ) -> list[str]:
+    """Validate path-sensitive K8s identifiers before building API calls."""
     errors: list[str] = []
     target = str(action.get("target", "") or "")
     namespace = context.namespace or ""
@@ -291,6 +320,7 @@ def _common_k8s_preflight_errors(
 
 
 def _missing_snapshot_paths(snapshot: object, paths: tuple[str, ...]) -> list[str]:
+    """Return required snapshot paths that are absent or empty."""
     return [path for path in paths if not _snapshot_path_exists(snapshot, path)]
 
 
@@ -311,6 +341,7 @@ def _failed_preflight_checks(
     *,
     degraded_rollback: bool = False,
 ) -> list[str]:
+    """Run action-specific live preflight checks from the capability registry."""
     failed: list[str] = []
     k8s_snapshot = snapshot.get("k8s") if isinstance(snapshot, dict) else None
     if not isinstance(k8s_snapshot, dict):
@@ -407,6 +438,7 @@ def _failed_preflight_checks(
 
 
 def _scale_params_are_replica_only(action: dict[str, Any]) -> bool:
+    """Live scale actions may only carry replica count parameters."""
     params = action.get("params", {})
     if params is None:
         return True
@@ -432,6 +464,7 @@ def _scale_replicas_for_preflight(
 
 
 def _rollback_params_are_revision_only(action: dict[str, Any]) -> bool:
+    """Live rollback actions may only carry an optional target revision."""
     params = action.get("params", {})
     if params is None:
         return True
@@ -461,6 +494,7 @@ def _snapshot_identity_errors(
     action: dict[str, Any],
     context: ExecutionContext,
 ) -> list[str]:
+    """Ensure the snapshot belongs to the action target and executor namespace."""
     k8s_snapshot = snapshot.get("k8s") if isinstance(snapshot, dict) else None
     if not isinstance(k8s_snapshot, dict):
         return []
@@ -479,6 +513,7 @@ def _snapshot_identity_errors(
 
 
 def _rollout_failed(k8s_snapshot: dict[str, Any]) -> bool:
+    """Detect failed rollout conditions from a read-only deployment snapshot."""
     for condition in k8s_snapshot.get("conditions", []) or []:
         if not isinstance(condition, dict):
             continue
@@ -496,6 +531,7 @@ def _blocked_result(
     reason: str,
     details: dict[str, Any],
 ) -> ExecutionResult:
+    """Build a uniform blocked result for live preflight failures."""
     return ExecutionResult(
         status="blocked",
         message=f"live action '{action_type}' blocked: {reason}",
@@ -553,7 +589,12 @@ def _validate_existing_action_ids(
     state: IncidentState,
     action_repo: ActionRepository,
 ) -> set[str]:
-    """Fail closed before creating rows if an approval-gated ID is stale."""
+    """Fail closed before creating rows if an approval-gated ID is stale.
+
+    A stale action_id on L2/L3 would mean the approval no longer proves this
+    exact run authorized execution. L0/L1 can be recreated because they do not
+    rely on a human decision.
+    """
     current_run_action_ids: set[str] = set()
     for action in actions:
         existing_id = str(action.get("action_id", ""))

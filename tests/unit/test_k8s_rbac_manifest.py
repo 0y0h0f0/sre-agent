@@ -17,6 +17,25 @@ def test_base_configmap_keeps_safe_defaults() -> None:
     assert 'CORS_ALLOW_ORIGINS: "*"' not in manifest
 
 
+def test_k8s_secret_example_documents_smtp_delivery_settings() -> None:
+    example = Path("deploy/k8s/base/.env.secret.example").read_text(encoding="utf-8")
+
+    assert "SMTP_HOST 为空时系统会把邮件记录为 skipped" in example
+    assert "# SMTP_HOST=smtp.example.com" in example
+    assert "# SMTP_FROM=sre-agent@example.com" in example
+    assert "# SRE_EMAIL_LIST=sre@example.com,oncall@example.com" in example
+    assert "# WEB_BASE_URL=https://sre-agent.example.com" in example
+
+
+def test_k8s_readme_points_secret_configuration_at_env_secret() -> None:
+    readme = Path("deploy/k8s/README.md").read_text(encoding="utf-8")
+
+    assert "Kustomize 通过 `secretGenerator` 读取 `base/.env.secret`" in readme
+    assert "`base/secret.yaml` 只是字段参考" in readme
+    assert "cp deploy/k8s/base/.env.secret.example deploy/k8s/base/.env.secret" in readme
+    assert "SMTP_HOST=smtp.example.com" in readme
+
+
 def test_discovery_rbac_includes_ingresses_and_configmaps() -> None:
     manifest = Path("deploy/k8s/base/rbac.yaml").read_text(encoding="utf-8")
 

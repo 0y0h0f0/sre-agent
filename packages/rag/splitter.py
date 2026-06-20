@@ -15,6 +15,8 @@ HEADING_RE = re.compile(r"^#{1,6}\s+(?P<title>.+?)\s*$")
 
 @dataclass(frozen=True)
 class RunbookChunkDraft:
+    """In-memory chunk ready for embedding and repository insertion."""
+
     document_id: str
     source_path: str
     title: str
@@ -31,6 +33,7 @@ class _Section:
 
 
 def estimate_tokens(text: str) -> int:
+    """Use the shared deterministic token estimate for chunk sizing."""
     from packages.memory.token_counter import TokenCounter
     return TokenCounter().count_tokens(text)
 
@@ -42,6 +45,12 @@ def split_markdown_document(
     max_tokens: int = 900,
     overlap_tokens: int = 80,
 ) -> list[RunbookChunkDraft]:
+    """Split one parsed Markdown runbook into stable chunk drafts.
+
+    H2 sections are the primary boundary because runbooks usually group triage,
+    checks, and remediation steps there. Oversized sections are split further
+    with overlap so retrieval can still match context across paragraph edges.
+    """
     if target_tokens <= 0 or max_tokens <= 0:
         msg = "target_tokens and max_tokens must be positive"
         raise ValueError(msg)
@@ -61,6 +70,8 @@ def split_markdown_document(
         if estimate_tokens(normalized) <= max_tokens:
             drafts.append(_draft(document, section.title, document.title, normalized, len(drafts)))
             continue
+        # Cap overlap to one third of the chunk to avoid duplicated context
+        # dominating the stored token count for very small max_tokens values.
         for part in _split_long_section(
             section,
             max_tokens=max_tokens,
@@ -71,6 +82,7 @@ def split_markdown_document(
 
 
 def _split_h2_sections(body: str, *, fallback_title: str) -> list[_Section]:
+    """Split markdown at H2 headings, preserving each heading line in content."""
     sections: list[_Section] = []
     current_title = fallback_title
     current_lines: list[str] = []
@@ -92,6 +104,7 @@ def _split_h2_sections(body: str, *, fallback_title: str) -> list[_Section]:
 def _split_long_section(
     section: _Section, *, max_tokens: int, overlap_tokens: int
 ) -> list[_Section]:
+    """Split a large section by paragraph while carrying a tail overlap."""
     lines = section.content.splitlines()
     heading_lines: list[str] = []
     body_lines = lines
@@ -113,6 +126,8 @@ def _split_long_section(
                     content=_normalize_content("\n\n".join([*heading_lines, *current])),
                 )
             )
+            # Carry only the tail tokens, not the whole previous chunk. This
+            # keeps neighboring chunks connected without duplicating large logs.
             current = [_tail_tokens("\n\n".join(current), overlap_tokens)] if overlap_tokens else []
             current = [item for item in current if item]
             current_tokens = estimate_tokens("\n\n".join([*heading_lines, *current]))
@@ -130,10 +145,12 @@ def _split_long_section(
 
 
 def _paragraphs(text: str) -> list[str]:
+    """Return non-empty markdown paragraphs."""
     return [part.strip() for part in re.split(r"\n\s*\n", text.strip()) if part.strip()]
 
 
 def _tail_tokens(text: str, count: int) -> str:
+    """Return the last ``count`` whitespace tokens for chunk overlap."""
     tokens = TOKEN_RE.findall(text)
     return " ".join(tokens[-count:])
 
@@ -149,6 +166,7 @@ def _draft(
     content: str,
     chunk_index: int,
 ) -> RunbookChunkDraft:
+    """Build a chunk draft with stable metadata and content hash."""
     metadata = document.metadata.storage_dict()
     token_count = estimate_tokens(content)
     content_hash = _content_hash(document.source_path, title, content)
@@ -173,10 +191,12 @@ def _draft(
 
 
 def _content_hash(source_path: str, title: str, content: str) -> str:
+    """Hash source/title/content so changed runbook text gets a new identity."""
     normalized = f"{source_path}\n{title}\n{_normalize_content(content)}"
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _normalize_content(text: str) -> str:
+    """Trim trailing whitespace while preserving markdown line structure."""
     lines = [line.rstrip() for line in text.strip().splitlines()]
     return "\n".join(lines).strip()

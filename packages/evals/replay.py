@@ -64,6 +64,8 @@ _SUMMARY_SIMILARITY_THRESHOLD = 0.6
 
 @dataclass(slots=True)
 class ReplayTarget:
+    # Snapshot just enough historical incident/run data to replay in a detached
+    # SQLite database. The source DB remains the read-only reference.
     incident_id: str
     original_agent_run_id: str
     original_summary: str
@@ -112,6 +114,8 @@ def run_replay_suite(
     in-memory clone with a forced fixture executor, so replay can be used safely
     against production data without creating real remediation side effects.
     """
+    # Bound user-controlled limits before querying history so the API path cannot
+    # accidentally trigger a very large replay job.
     bounded_limit = min(max(limit, 1), 100)
     started_at = utc_now()
     targets, skipped = select_replay_targets(
@@ -167,6 +171,8 @@ def select_replay_targets(
     """Return replayable historical incidents and skipped reasons."""
     skipped: list[dict[str, str]] = []
     if incident_ids:
+        # Explicit IDs preserve request order and report not-found entries
+        # instead of silently substituting other recent incidents.
         incident_map = {
             item.incident_id: item
             for item in db.scalars(
@@ -181,6 +187,8 @@ def select_replay_targets(
                 continue
             candidates.append(incident)
     else:
+        # Look ahead beyond the requested limit because some terminal incidents
+        # may lack a usable original diagnosis and will be skipped.
         stmt = (
             select(Incident)
             .where(Incident.status.in_(sorted(_REPLAY_TERMINAL_STATUSES)))
@@ -223,6 +231,8 @@ def _target_from_incident(
         return None, "agent_run_not_found"
     original_summary = _root_cause_summary(original_run.state or {})
     if not original_summary:
+        # Replay drift only has meaning when there is an original diagnosis to
+        # compare against, so skip incidents without a persisted root cause.
         return None, "original_root_cause_missing"
     return (
         ReplayTarget(
@@ -255,6 +265,8 @@ def _run_replay_target(
     prompt_version: str,
     model: str | None,
 ) -> EvalCaseResult:
+    # All replay writes happen inside this throwaway SQLite database. The source
+    # session is only used to read runbooks and historical incident snapshots.
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -279,6 +291,8 @@ def _run_replay_target(
             replay_db.commit()
 
             cache = RequestLocalToolCache()
+            # Build fresh deps per replay case so tool cache, memory, and node
+            # traces cannot leak between historical incidents.
             deps = _build_replay_deps(
                 replay_db,
                 effective_settings,
@@ -301,6 +315,8 @@ def _run_replay_target(
 
             state = dict(result.get("state", {}))
             summary = _root_cause_summary(state)
+            # Replay uses similarity, not exact string matching, because the goal
+            # is to detect diagnosis drift while allowing prompt wording changes.
             root_cause_hit = _summary_similarity(summary, target.original_summary) >= (
                 _SUMMARY_SIMILARITY_THRESHOLD
             )
@@ -343,6 +359,8 @@ def _run_replay_target(
 
 def _settings_for_replay(settings: Settings, *, model: str | None) -> Settings:
     updates: dict[str, Any] = {
+        # Even when replay reads live diagnostic backends, execution and semantic
+        # retrieval stay deterministic and non-mutating.
         "executor_backend": "fixture",
         "embedding_provider": "fake",
         "reranker_provider": "fake",
@@ -358,6 +376,8 @@ def _build_replay_deps(
     agent_run_id: str,
     cache: RequestLocalToolCache,
 ) -> AgentDeps:
+    # Replay intentionally uses the configured read adapters for metrics/logs/
+    # traces/K8s/DB, but forces remediation through FixtureExecutorBackend below.
     retriever = RunbookRetriever(
         RunbookChunkRepository(db),
         embedding_provider=FakeEmbeddingProvider(),
@@ -416,6 +436,8 @@ def _build_replay_deps(
 
 
 def _clone_incident(db: Session, target: ReplayTarget) -> None:
+    # Reuse the public incident ID in the clone so agent state and reports remain
+    # comparable to the source incident, while the row lives only in replay_db.
     db.add(
         Incident(
             incident_id=target.incident_id,
@@ -444,6 +466,8 @@ def _create_replay_agent_run(
     prompt_version: str,
 ) -> AgentRun:
     agent_run_id = new_id("run_")
+    # Replay runs use a normal checkpoint identity, but the InMemorySaver in the
+    # caller keeps checkpoint writes inside the temporary process.
     run = AgentRun(
         agent_run_id=agent_run_id,
         incident_id=target.incident_id,
@@ -461,6 +485,8 @@ def _create_replay_agent_run(
 def _seed_replay_runbooks(source_db: Session, replay_db: Session) -> None:
     chunks = list(RunbookChunkRepository(source_db).list_chunks())
     if chunks:
+        # Prefer copying source runbooks so replay evaluates against knowledge
+        # that was actually available in the application database.
         for chunk in chunks:
             replay_db.add(
                 RunbookChunk(
@@ -484,6 +510,8 @@ def _seed_replay_runbooks(source_db: Session, replay_db: Session) -> None:
 
     demo_runbooks = Path("demo/runbooks")
     if demo_runbooks.exists():
+        # Empty source DBs still get deterministic demo runbooks, which keeps
+        # local replay usable immediately after bootstrapping.
         RunbookIngestor(
             RunbookChunkRepository(replay_db),
             embedding_provider=FakeEmbeddingProvider(),
@@ -492,6 +520,8 @@ def _seed_replay_runbooks(source_db: Session, replay_db: Session) -> None:
 
 
 def _safe_embedding(value: Any) -> list[float]:
+    # SQLite replay does not enforce pgvector, but downstream code expects the
+    # current 512-dimensional embedding shape.
     if isinstance(value, list) and len(value) == 512:
         return [float(item) for item in value]
     return [0.0] * 512
@@ -542,6 +572,8 @@ def _summary_similarity(left: str, right: str) -> float:
         return 1.0
     left_tokens = _summary_tokens(left_norm)
     right_tokens = _summary_tokens(right_norm)
+    # Token Jaccard is useful for longer English-style summaries; character
+    # bigrams give a fallback for short labels or mixed-language root causes.
     if len(left_tokens) >= 3 and len(right_tokens) >= 3:
         return _jaccard(left_tokens, right_tokens)
     return _jaccard(_char_bigrams(left_norm), _char_bigrams(right_norm))
@@ -681,6 +713,8 @@ def _replay_metrics(
                 4,
             ),
             "fixture_executor_forced": True,
+            # Surface the safety boundary in the persisted metrics so API callers
+            # can audit that replay did not write production incident artifacts.
             "write_scope": (
                 "source_db_read_only; replay_writes_temp_db; "
                 "api_persists_eval_run_metrics"

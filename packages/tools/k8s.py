@@ -42,6 +42,12 @@ _DEFAULT_K8S_NAMESPACE = "default"
 
 
 class K8sQuery(BaseModel):
+    """Read-only Kubernetes diagnostics query.
+
+    ``operation`` remains a plain string so tests can verify unsupported write
+    verbs are rejected by the tool, not by Pydantic before reaching the boundary.
+    """
+
     service: str = Field(min_length=1)
     operation: str = "describe_pod"
     namespace: str = ""
@@ -69,6 +75,8 @@ class FixtureK8sBackend:
         self.fixture_path = Path(fixture_path)
 
     def fetch(self, query: K8sQuery) -> dict[str, Any]:
+        # Fixture payloads mirror the live backend's operation/payload shape so
+        # agent nodes do not need separate code paths for local demo and live.
         payload = json.loads(self.fixture_path.read_text(encoding="utf-8"))
         service_block = payload.get(query.service, {})
         if not isinstance(service_block, dict):
@@ -98,6 +106,8 @@ class LiveK8sBackend:
         ns = _effective_k8s_namespace(query.namespace, self.namespace)
         validation_error = _live_query_validation_error(query, namespace=ns)
         if validation_error:
+            # Return a structured payload instead of raising so K8sDiagnosticsTool
+            # can mark the result degraded and avoid creating misleading evidence.
             return {
                 "operation": query.operation,
                 "payload": {
@@ -124,6 +134,8 @@ class LiveK8sBackend:
             }
         if query.operation == "logs":  # pragma: no cover
             try:
+                # Missing explicit pod names are resolved with read-only label
+                # selectors scoped to the namespace; no namespace-wide log scan.
                 pod_name = _resolve_pod_name(core, query=query, namespace=ns, timeout=timeout)
                 if not pod_name:
                     return {"operation": "logs", "payload": {}}
@@ -143,6 +155,8 @@ class LiveK8sBackend:
                 return result
         if query.operation == "describe_pod":  # pragma: no cover
             try:
+                # describe_pod returns a curated summary only, never raw Pod spec
+                # fields such as env, args, annotations, or mounted secrets.
                 pod_name = _resolve_pod_name(core, query=query, namespace=ns, timeout=timeout)
                 if not pod_name:
                     return {"operation": "describe_pod", "payload": {}}
@@ -190,6 +204,7 @@ class LiveK8sBackend:
 
 
 def _deployment_payload(deploy: Any, *, name: str, namespace: str) -> dict[str, Any]:
+    """Return a safe Deployment summary for snapshots and rollout verify."""
     metadata = getattr(deploy, "metadata", None)
     spec = getattr(deploy, "spec", None)
     status = getattr(deploy, "status", None)
@@ -214,6 +229,7 @@ def _deployment_payload(deploy: Any, *, name: str, namespace: str) -> dict[str, 
 
 
 def _statefulset_payload(statefulset: Any, *, name: str, namespace: str) -> dict[str, Any]:
+    """Return a safe StatefulSet summary for snapshot/verify flows."""
     metadata = getattr(statefulset, "metadata", None)
     spec = getattr(statefulset, "spec", None)
     status = getattr(statefulset, "status", None)
@@ -238,6 +254,7 @@ def _statefulset_payload(statefulset: Any, *, name: str, namespace: str) -> dict
 
 
 def _event_messages(core: Any, *, query: K8sQuery, namespace: str, timeout: float) -> list[str]:
+    """Read event messages for the workload/pod only, with redaction."""
     names = _event_target_names(core, query=query, namespace=namespace, timeout=timeout)
     messages: list[str] = []
     seen: set[str] = set()
@@ -265,6 +282,7 @@ def _event_target_names(
     namespace: str,
     timeout: float,
 ) -> list[str]:
+    """Build a small ordered list of workload and resolved pod names."""
     names: list[str] = []
     for candidate in (query.pod, query.service):
         if candidate and _K8S_LABEL_VALUE_RE.match(candidate) and candidate not in names:
@@ -276,6 +294,7 @@ def _event_target_names(
 
 
 def _pod_describe_payload(pod: Any, *, name: str, namespace: str) -> dict[str, Any]:
+    """Extract non-secret Pod status fields for diagnostics evidence."""
     spec = getattr(pod, "spec", None)
     status = getattr(pod, "status", None)
     return {
@@ -297,6 +316,7 @@ def _pod_restart_count(status: Any) -> int:
 
 
 def _pod_container_summaries(pod: Any) -> list[dict[str, Any]]:
+    """Return container status summaries without env/args/raw spec data."""
     spec = getattr(pod, "spec", None)
     status = getattr(pod, "status", None)
     spec_by_name = {
@@ -337,6 +357,7 @@ def _container_state_reason(state: Any) -> str:
 
 
 def _resolve_pod_name(core: Any, *, query: K8sQuery, namespace: str, timeout: float) -> str:
+    """Resolve one non-terminal pod in the target namespace using common labels."""
     if query.pod:
         return query.pod
     if not _K8S_LABEL_VALUE_RE.match(query.service):
@@ -357,6 +378,7 @@ def _resolve_pod_name(core: Any, *, query: K8sQuery, namespace: str, timeout: fl
 
 
 def _first_running_pod_name(pods: list[Any]) -> str:
+    """Prefer running pods, but allow pending pods over terminal ones."""
     ordered = sorted(pods, key=lambda pod: (_pod_phase(pod) != "Running", _pod_name(pod)))
     for pod in ordered:
         name = _pod_name(pod)
@@ -396,6 +418,7 @@ def _conditions_payload(status: Any) -> list[dict[str, str]]:
 
 
 def _deployment_rollout_status(payload: dict[str, Any]) -> str:
+    """Map Deployment status fields into verify-friendly rollout states."""
     for condition in payload.get("conditions", []) or []:
         ctype = str(condition.get("type", ""))
         cstatus = str(condition.get("status", "")).lower()
@@ -437,6 +460,7 @@ def _deployment_rollout_status(payload: dict[str, Any]) -> str:
 
 
 def _statefulset_rollout_status(payload: dict[str, Any]) -> str:
+    """Map StatefulSet status fields into verify-friendly rollout states."""
     for condition in payload.get("conditions", []) or []:
         ctype = str(condition.get("type", ""))
         cstatus = str(condition.get("status", "")).lower()
@@ -453,6 +477,8 @@ def _statefulset_rollout_status(payload: dict[str, Any]) -> str:
     generation = _coerce_int(payload.get("generation"))
     current_revision = str(payload.get("current_revision") or "")
     update_revision = str(payload.get("update_revision") or "")
+    # StatefulSet readiness alone is not enough: if current_revision has not
+    # caught up to update_revision, the restart/update is still progressing.
     revisions_match = (
         not current_revision
         or not update_revision
@@ -479,6 +505,7 @@ def _statefulset_rollout_status(payload: dict[str, Any]) -> str:
 
 
 def _coerce_int(value: object) -> int | None:
+    """Coerce Kubernetes numeric fields while rejecting bools."""
     if isinstance(value, bool) or value is None:
         return None
     try:
@@ -498,6 +525,7 @@ def _is_k8s_resource_name(value: str) -> bool:
 
 
 def _live_query_validation_error(query: K8sQuery, *, namespace: str) -> str:
+    """Validate live-read names before calling the Kubernetes API."""
     if not _is_k8s_dns_label(namespace):
         return "invalid_namespace"
     if query.pod and not _is_k8s_resource_name(query.pod):
@@ -509,6 +537,7 @@ def _live_query_validation_error(query: K8sQuery, *, namespace: str) -> str:
 
 
 def _live_k8s_error_payload(exc: Exception) -> dict[str, str | int]:
+    """Convert Kubernetes client exceptions into safe structured payloads."""
     error = _live_k8s_error_code(exc)
     status_code = _coerce_int(getattr(exc, "status", None))
     payload: dict[str, str | int] = {"error": error}
@@ -518,6 +547,7 @@ def _live_k8s_error_payload(exc: Exception) -> dict[str, str | int]:
 
 
 def _live_k8s_error_code(exc: Exception) -> str:
+    """Classify Kubernetes read failures without exposing raw exception text."""
     status_code = _coerce_int(getattr(exc, "status", None))
     if status_code == 404:
         return "not_found"
@@ -541,6 +571,7 @@ def _live_k8s_error_code(exc: Exception) -> str:
 
 
 def _effective_k8s_namespace(*candidates: object) -> str:
+    """Choose the first configured namespace or the project default."""
     for candidate in candidates:
         namespace = str(candidate or "").strip()
         if namespace:
@@ -549,6 +580,8 @@ def _effective_k8s_namespace(*candidates: object) -> str:
 
 
 class K8sDiagnosticsTool:
+    """BaseTool wrapper around fixture/live read-only Kubernetes backends."""
+
     name = "k8s"
 
     def __init__(
@@ -566,6 +599,8 @@ class K8sDiagnosticsTool:
 
     def run(self, query: BaseModel) -> ToolResult:
         k8s_query = K8sQuery.model_validate(query)
+        # Redact before building the backend query. A malformed alert field must
+        # not leak secrets into live API params, summaries, evidence, or errors.
         public_service = _redact_query_text(k8s_query.service)
         public_operation = _redact_query_text(k8s_query.operation)
         public_namespace = _redact_query_text(
@@ -583,6 +618,8 @@ class K8sDiagnosticsTool:
         )
         started_at = start_timer()
         if k8s_query.operation not in _READ_ONLY_OPERATIONS:
+            # Unsupported operations fail explicitly. They are not "degraded"
+            # because the tool itself is healthy; the request violated policy.
             return ToolResult(
                 status="failed",
                 data={},
@@ -594,6 +631,8 @@ class K8sDiagnosticsTool:
             result_data = self.backend.fetch(public_query)
             payload = result_data.get("payload")
             payload_error = _payload_error(payload)
+            # Error payloads from live validation/API reads are intentionally not
+            # emitted as evidence. They are useful status, not positive facts.
             has_data = bool(payload) and payload_error is None
             status: ToolStatus = "succeeded" if has_data else "degraded"
             return ToolResult(
@@ -633,6 +672,7 @@ class K8sDiagnosticsTool:
 
 
 def _payload_error(payload: object) -> str | None:
+    """Extract backend error marker from a structured payload."""
     if isinstance(payload, dict):
         error = payload.get("error")
         if error:
@@ -641,12 +681,14 @@ def _payload_error(payload: object) -> str | None:
 
 
 def _k8s_error_message(payload_error: str | None) -> str:
+    """Return the ToolResult error message for empty/degraded payloads."""
     if payload_error:
         return f"k8s backend returned error: {payload_error}"
     return "empty k8s result"
 
 
 def _redact_query_text(value: str) -> str:
+    """Redact user/alert-derived query text before public output or live calls."""
     return redact_text(value).redacted_text
 
 

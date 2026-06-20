@@ -17,7 +17,12 @@ from packages.memory.token_counter import TokenCounter
 
 
 class Compressor:
-    """Deterministic, rules-based evidence compression."""
+    """Deterministic, rules-based evidence compression.
+
+    Compression must be repeatable for CI/evals and must preserve evidence
+    lineage. If a future path wants LLM summaries, that belongs in the agent
+    layer through an injected summarizer, not inside this package.
+    """
 
     MAX_LOG_SAMPLES: int = 3
     MAX_TRACE_SPANS: int = 10
@@ -28,7 +33,10 @@ class Compressor:
     def generate_compression_plan(
         self, evidence: list[dict[str, Any]], budget: ContextBudget
     ) -> list[CompressedContext]:
+        """Return compression events without mutating the evidence list."""
         plans: list[CompressedContext] = []
+        # Compress by evidence type so metrics/logs/traces retain their own
+        # domain-specific summary shape and omitted IDs remain meaningful.
         grouped = self._group_by_type(evidence)
         for etype, items in grouped.items():
             before = self._estimate_tokens(items)
@@ -42,6 +50,7 @@ class Compressor:
     def compress_evidence(
         self, evidence: list[dict[str, Any]], budget: ContextBudget
     ) -> tuple[list[dict[str, Any]], CompressedContext]:
+        """Compress evidence and return the new list plus aggregate metadata."""
         before = self._estimate_tokens(evidence)
         plans = self.generate_compression_plan(evidence, budget)
         if not plans:
@@ -58,6 +67,8 @@ class Compressor:
         for etype, items in grouped.items():
             plan = next((p for p in plans if p.summary.startswith(f"[{etype}]")), None)
             if plan is None:
+                # Groups below threshold pass through unchanged; they still
+                # contribute to final after_tokens and summary.
                 compressed.extend(items)
                 continue
             comp_items = self._compress_by_type_to_items(etype, items)
@@ -82,6 +93,7 @@ class Compressor:
     def _needs_compression(
         self, items: list[dict[str, Any]], token_estimate: int, budget: ContextBudget
     ) -> bool:
+        """Return whether an evidence group should be summarized."""
         etype = self._type_of(items)
         if etype == "log" and len(items) > 20:
             return True
@@ -92,8 +104,11 @@ class Compressor:
     def _compress_by_type(
         self, etype: str, items: list[dict[str, Any]], before: int
     ) -> CompressedContext:
+        """Build one compression event for a single evidence type."""
         comp = self._compress_by_type_to_items(etype, items)
         after = self._estimate_tokens(comp)
+        # retained/omitted IDs are the audit hook that lets reports explain
+        # which raw evidence was summarized away.
         retained = [i.get("evidence_id", "") for i in comp if i.get("evidence_id")]
         omitted = [
             i.get("evidence_id", "")
@@ -113,6 +128,7 @@ class Compressor:
     def _compress_by_type_to_items(
         self, etype: str, items: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
+        """Apply the type-specific deterministic compression strategy."""
         if etype == "log":
             return self._compress_logs(items)
         if etype == "metric":
@@ -122,6 +138,7 @@ class Compressor:
         return self._compress_generic(items)
 
     def _compress_logs(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Collapse many log samples into error counts, signature, and samples."""
         item = items[0] if items else {}
         data = self._payload(item)
         raw_samples = data.get("samples") or data.get("log_samples") or []
@@ -142,6 +159,7 @@ class Compressor:
         return [out]
 
     def _compress_metrics(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop raw metric points while preserving aggregate statistics."""
         result: list[dict[str, Any]] = []
         for item in items:
             data = self._payload(item)
@@ -162,6 +180,7 @@ class Compressor:
         return result
 
     def _compress_traces(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep representative slow/error spans and downstream services."""
         item = items[0] if items else {}
         data = self._payload(item)
         raw_slow = data.get("slow_spans") or []
@@ -189,15 +208,18 @@ class Compressor:
         return [out]
 
     def _compress_generic(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Fallback for unknown evidence types: keep a small deterministic prefix."""
         return items[:3]
 
     @staticmethod
     def _payload(item: dict[str, Any]) -> dict[str, Any]:
+        """Return payload dict when present, otherwise the item itself."""
         payload = item.get("payload")
         return payload if isinstance(payload, dict) else item
 
     @staticmethod
     def _base_item(item: dict[str, Any] | None, etype: str) -> dict[str, Any]:
+        """Create a compact item while preserving traceability fields."""
         if item is None:
             return {"type": etype, "source": "unknown"}
         payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
@@ -216,6 +238,7 @@ class Compressor:
 
     @staticmethod
     def _group_by_type(evidence: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        """Group evidence by its public ``type`` field."""
         grouped: dict[str, list[dict[str, Any]]] = {}
         for item in evidence:
             etype = item.get("type", "unknown")
@@ -227,6 +250,7 @@ class Compressor:
         return items[0].get("type", "unknown") if items else "unknown"
 
     def _estimate_tokens(self, items: list[dict[str, Any]]) -> int:
+        """Estimate serialized token usage for a list of evidence items."""
         try:
             text = json.dumps(items, default=str)
         except (TypeError, ValueError):
@@ -251,6 +275,7 @@ class Compressor:
 
 
 def _downstream_from_spans(spans: list[dict[str, Any]]) -> list[str]:
+    """Derive a stable downstream service list from span summaries."""
     services: list[str] = []
     for span in spans:
         if not isinstance(span, dict):

@@ -35,6 +35,8 @@ TaskEnqueue = Callable[[str, str], str]
 
 
 class ApprovalService:
+    """Owns approval decisions and LangGraph resume enqueue boundaries."""
+
     def __init__(
         self,
         db: Session,
@@ -101,6 +103,7 @@ class ApprovalService:
         )
 
     def approve(self, approval_id: str, request: ApproveRequest) -> ApprovalDecisionResponse:
+        """Approve one waiting approval and enqueue resume when the batch is done."""
         approval = self._require_approval(approval_id)
         if approval.status != ApprovalStatus.WAITING.value:
             raise ConflictError(
@@ -110,7 +113,9 @@ class ApprovalService:
 
         action = self._require_action(approval.action_id)
 
-        # L3 validation: must provide secondary confirmation
+        # L3 validation: must provide secondary confirmation. This duplicates
+        # the UI requirement at the service boundary so API clients cannot
+        # bypass the second-confirm contract.
         if action.risk_level == "L3":
             if not request.risk_ack:
                 raise ValidationAppError(
@@ -146,7 +151,8 @@ class ApprovalService:
                     },
                 )
 
-            # Persist L3 confirmation fields
+            # Persist L3 confirmation fields alongside the approval row so later
+            # manual action execution can re-check exactly what was confirmed.
             self.approvals.update_l3_confirmation(
                 approval,
                 risk_ack=request.risk_ack,
@@ -154,7 +160,8 @@ class ApprovalService:
                 confirm_target=request.confirm_target,
             )
 
-        # Update approval and action statuses
+        # Update approval and action statuses in the same transaction as audit
+        # creation, then commit before resume enqueue.
         self.approvals.update_decision(
             approval_id,
             status=ApprovalStatus.APPROVED.value,
@@ -191,6 +198,7 @@ class ApprovalService:
         )
 
     def reject(self, approval_id: str, request: RejectRequest) -> ApprovalDecisionResponse:
+        """Reject one waiting approval and enqueue resume when the batch is done."""
         approval = self._require_approval(approval_id)
         if approval.status != ApprovalStatus.WAITING.value:
             raise ConflictError(
@@ -273,6 +281,8 @@ class ApprovalService:
                 resource_id=approval.approval_id,
                 details={"action_id": action.action_id, "risk_level": action.risk_level},
             )
+            # A batch can span multiple runs. Resume each impacted run once all
+            # DB rows are committed and no approvals remain waiting for that run.
             impacted_runs[approval.agent_run_id] = resume_decision
             results.append(
                 ApprovalDecisionResponse(
@@ -292,6 +302,7 @@ class ApprovalService:
         return results
 
     def _preflight_batch(self, request: BatchApprovalRequest) -> list[tuple[Approval, Action]]:
+        """Validate a batch completely before mutating any approval rows."""
         seen: set[str] = set()
         duplicates: list[str] = []
         for approval_id in request.approval_ids:
@@ -350,6 +361,8 @@ class ApprovalService:
             pairs.append((approval, action))
 
         if request.decision == "approve" and len(l3_approval_ids) > 1:
+            # One request body has one confirm_action_type/confirm_target pair,
+            # so it cannot safely confirm multiple distinct L3 actions.
             errors.append(
                 {
                     "approval_ids": l3_approval_ids,
@@ -407,6 +420,8 @@ class ApprovalService:
         from packages.common.time import utc_now
 
         approval = self._require_approval(approval_id)
+        # Store only the generated token on the approval row; callers receive it
+        # once for email link construction.
         token = secrets.token_urlsafe(24)
         approval.email_token = token
         approval.email_token_expires_at = utc_now() + timedelta(hours=24)
@@ -431,7 +446,8 @@ class ApprovalService:
         approval = self._get_approval_by_token(token)
         action = self._require_action(approval.action_id)
 
-        # L3 requires full confirmation in web UI — not available via email
+        # L3 requires full confirmation in web UI — not available via email.
+        # Rejecting via token is allowed because it never increases risk.
         if action.risk_level == "L3":
             raise ValidationAppError(
                 "L3 actions require web UI confirmation and cannot be approved via email link. "
@@ -467,6 +483,7 @@ class ApprovalService:
         return result
 
     def _get_approval_by_token(self, token: str) -> Approval:
+        """Load a non-expired email-token approval or clear expired tokens."""
         from sqlalchemy import select
 
         from packages.common.time import utc_now
@@ -481,7 +498,8 @@ class ApprovalService:
             approval.email_token_expires_at is not None
             and approval.email_token_expires_at < utc_now()
         ):
-            # Clear expired token
+            # Clear expired token so repeated use fails consistently and old
+            # links cannot later become valid again.
             approval.email_token = None
             approval.email_token_expires_at = None
             self.db.flush()
@@ -501,6 +519,8 @@ class ApprovalService:
             )
             return
         if self.approvals.has_waiting_for_run(agent_run_id):
+            # LangGraph resume should see a complete batch decision; otherwise
+            # it could execute approved siblings while waiting siblings remain.
             return
         self.enqueue_resume(agent_run_id, decision)
 

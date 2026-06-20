@@ -11,7 +11,12 @@ from pydantic import BaseModel, Field
 
 
 class ContextBudget(BaseModel):
-    """Token budget allocation across prompt segments."""
+    """Token budget allocation across prompt segments.
+
+    The field defaults are the raw schema defaults used by BuildContextInput.
+    ``with_defaults()`` below provides the percentage allocation path used by
+    ContextBudgeter. Keep both semantics in mind when changing budgets.
+    """
 
     total_limit: int = 32_000
     reserved_for_completion: int = 8_000
@@ -26,6 +31,7 @@ class ContextBudget(BaseModel):
 
     @property
     def prompt_limit(self) -> int:
+        """Return the prompt-side budget after reserving completion tokens."""
         return self.total_limit - self.reserved_for_completion
 
     @classmethod
@@ -53,7 +59,11 @@ class ContextBudget(BaseModel):
 
 
 class CompressedContext(BaseModel):
-    """Result of compressing one category of evidence."""
+    """Result of compressing one category of evidence.
+
+    retained/omitted evidence IDs are part of the audit contract: downstream
+    reports can say which facts were preserved and which were summarized away.
+    """
 
     summary: str = ""
     retained_evidence_ids: list[str] = Field(default_factory=list)
@@ -65,7 +75,11 @@ class CompressedContext(BaseModel):
 
 
 class BuildContextInput(BaseModel):
-    """Input for ContextBuilder.build()."""
+    """Input for ContextBuilder.build().
+
+    All fields are already sanitized/collected by agent nodes. This schema does
+    not fetch tools, query memory, or call an LLM.
+    """
 
     incident: dict[str, Any] = Field(default_factory=dict)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
@@ -77,7 +91,11 @@ class BuildContextInput(BaseModel):
 
 
 class BuiltContext(BaseModel):
-    """Output from ContextBuilder.build()."""
+    """Output from ContextBuilder.build().
+
+    ``segment_cache_keys`` are app prompt-segment metadata, not provider cache
+    hit/miss counters.
+    """
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     token_usage_estimate: dict[str, int] = Field(default_factory=dict)
@@ -86,7 +104,11 @@ class BuiltContext(BaseModel):
 
 
 class MemoryItemCreate(BaseModel):
-    """Schema for creating a memory item."""
+    """Schema for creating a memory item.
+
+    ``content_json`` may carry structured incident/action metadata while
+    ``content`` remains available for lexical fallback search.
+    """
 
     scope: str
     scope_key: str
@@ -100,7 +122,7 @@ class MemoryItemCreate(BaseModel):
 
 
 class MemoryFilters(BaseModel):
-    """Filters for memory search."""
+    """Filters for memory search across L0-L3 scopes."""
 
     scope: str | None = None
     scope_key: str | None = None

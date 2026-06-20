@@ -12,12 +12,18 @@ from math import sqrt
 
 
 class FakeEmbedding:
-    """Generate deterministic normalized vectors without external services."""
+    """Generate deterministic normalized vectors without external services.
+
+    Legacy compatibility shim. Keep the algorithm aligned with
+    FakeEmbeddingProvider so old imports and new factory-built providers produce
+    identical vectors in tests.
+    """
 
     dimension = 512
     model_name = "fake-512"
 
     def embed_text(self, text: str) -> list[float]:
+        """Return a stable 512-dim normalized pseudo-vector."""
         values: list[float] = []
         counter = 0
         normalized = " ".join(text.strip().lower().split())
@@ -34,4 +40,5 @@ class FakeEmbedding:
         return [round(value / norm, 12) for value in values]
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
+        """Embed multiple texts without batching side effects."""
         return [self.embed_text(text) for text in texts]

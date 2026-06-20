@@ -1,4 +1,9 @@
-"""Celery tasks for evaluation runs."""
+"""Celery tasks for evaluation runs.
+
+Eval tasks persist their own status/metrics and do not run remediation paths.
+CI smoke evals should remain FakeLLM/deterministic; manual replay/full evals can
+be triggered separately without becoming stable CI gates.
+"""
 
 from __future__ import annotations
 
@@ -32,12 +37,16 @@ def run_eval_suite_task(
             return {"error": "eval run not found", "eval_run_id": eval_run_id}
 
         try:
+            # Mark running before executing the suite so API clients can see
+            # progress even if the worker later fails.
             eval_run.status = "running"
             eval_run.started_at = utc_now()
             db.commit()
 
             from packages.evals.datasets.harness import run_suite
 
+            # run_suite is deterministic for smoke datasets; model/prompt fields
+            # are tracked on the EvalRun row created by the API.
             report = run_suite(suite)
 
             eval_run.status = "succeeded"
@@ -51,6 +60,8 @@ def run_eval_suite_task(
                 "metrics": report.metrics,
             }
         except Exception as exc:
+            # Persist the error into metrics and return a failed result instead
+            # of letting the task disappear as an unstructured worker exception.
             eval_run.status = "failed"
             eval_run.metrics = {"error": str(exc)}
             eval_run.finished_at = utc_now()
@@ -89,6 +100,8 @@ def run_replay_eval_task(
             from packages.evals.datasets.harness import asdict_case
             from packages.evals.replay import run_replay_suite
 
+            # Replay reads historical incident data and produces evaluation
+            # metrics/cases. It must not execute remediation or mutate incidents.
             report = run_replay_suite(
                 db,
                 get_settings(),
@@ -115,6 +128,7 @@ def run_replay_eval_task(
                 "metrics": metrics,
             }
         except Exception as exc:
+            # Keep failure visible through the eval API with suite_type context.
             eval_run.status = "failed"
             eval_run.metrics = {"error": str(exc), "suite_type": "historical_replay"}
             eval_run.finished_at = utc_now()

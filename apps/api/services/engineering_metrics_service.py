@@ -31,6 +31,8 @@ _CATEGORY_WEIGHTS = {
     "delivery": 0.10,
     "efficiency": 0.05,
 }
+# Hard gates are safety properties that should fail the whole scorecard even if
+# weighted averages look healthy.
 _HARD_GATE_KEYS = {
     "high_risk_interception_rate",
     "unapproved_high_risk_execution_count",
@@ -96,6 +98,9 @@ class EngineeringMetricsService:
     def get_summary(self, *, window_days: int = 30) -> EngineeringMetricsResponse:
         generated_at = utc_now()
         window_started_at = generated_at - timedelta(days=window_days)
+        # Pull each source table once for a consistent in-memory scorecard. This
+        # endpoint is aggregation-only and must not enqueue evals or call external
+        # monitoring/CI systems.
         incidents = self._repo.list_incidents(since=window_started_at)
         runs = self._repo.list_agent_runs(since=window_started_at)
         tool_calls = self._repo.list_tool_calls(since=window_started_at)
@@ -118,9 +123,14 @@ class EngineeringMetricsService:
         reports_by_run = {report.agent_run_id for report in reports}
         evidence_by_run = {item.agent_run_id for item in evidence_items}
         evidence_ids_by_run = _evidence_ids_by_run(evidence_items)
+        # The latest succeeded smoke run supplies deterministic quality gates.
+        # Missing smoke data becomes unknown/failing per metric instead of
+        # launching a new eval from this read endpoint.
         latest_eval_metrics = latest_smoke_eval.metrics if latest_smoke_eval else {}
 
         metrics: list[EngineeringMetric] = []
+        # Metric groups are split by ownership so future data sources can be
+        # added without changing scorecard math.
         metrics.extend(self._eval_metrics(latest_eval_metrics, bool(latest_smoke_eval)))
         metrics.extend(
             self._runtime_quality_metrics(
@@ -227,6 +237,8 @@ class EngineeringMetricsService:
                 return None
             return latest_eval_metrics.get(key)
 
+        # These are the CI-smoke style gates. They depend only on stored eval
+        # metrics, not on a live model provider or external test runner.
         return [
             _metric(
                 key="smoke_eval_case_count",
@@ -440,6 +452,8 @@ class EngineeringMetricsService:
             sum(run.app_cache_hit_count + run.app_cache_miss_count for run in runs),
         )
 
+        # Runtime quality uses persisted production/demo run records. Provider
+        # cache and app segment cache are intentionally kept as separate metrics.
         return [
             _metric(
                 key="agent_run_success_rate",
@@ -539,6 +553,8 @@ class EngineeringMetricsService:
         )
         resolution_rate = _rate(resolved_count, len(incidents))
 
+        # Backlog metrics are warnings for a local demo, not hard safety gates.
+        # They help distinguish "system broken" from "work still pending".
         return [
             _metric(
                 key="active_incident_backlog_count",
@@ -620,6 +636,9 @@ class EngineeringMetricsService:
             1 for action in actions if action.executor not in _SAFE_LOCAL_EXECUTORS
         )
 
+        # Safety metrics are intentionally count-based and conservative: any
+        # L4 approval, missing L3 confirmation, or unapproved L2/L3 execution is
+        # more actionable than an averaged ratio.
         return [
             _metric(
                 key="unapproved_high_risk_execution_count",
@@ -754,6 +773,8 @@ class EngineeringMetricsService:
         )
         report_version_issue_count = _report_version_issue_count(reports)
 
+        # Workflow integrity checks the persisted audit trail: approvals, node
+        # traces, checkpoint pointers, action outcomes, and report versions.
         return [
             _metric(
                 key="waiting_approval_backlog_count",
@@ -927,6 +948,8 @@ class EngineeringMetricsService:
         tool_call_duration_p95_ms = _p95(call.duration_ms for call in tool_calls)
         node_duration_p95_ms = _p95(node.duration_ms for node in nodes)
 
+        # Tool/performance metrics use only recorded tool-call and node timings.
+        # HTTP API latency is external and remains an unknown metric below.
         return [
             _metric(
                 key="runtime_tool_success_rate",
@@ -1018,6 +1041,9 @@ class EngineeringMetricsService:
         ]
 
     def _external_metrics(self) -> list[EngineeringMetric]:
+        # These sources do not live in the application database. Marking them
+        # unknown makes missing CI/Prometheus/VCS integrations visible without
+        # pretending the API can measure them.
         return [
             _unknown_metric(
                 key="backend_test_coverage",
@@ -1156,6 +1182,8 @@ def _metric(
     description: str,
     reproduction: list[str] | None = None,
 ) -> EngineeringMetric:
+    # Centralize reproduction commands and default score mapping so every metric
+    # response has the same operational shape.
     return EngineeringMetric(
         key=key,
         category=category,
@@ -1181,6 +1209,8 @@ def _unknown_metric(
     source: str,
     description: str,
 ) -> EngineeringMetric:
+    # Unknown metrics count against completeness but are excluded from weighted
+    # score math by using score=None.
     return _metric(
         key=key,
         category=category,
@@ -1204,6 +1234,8 @@ def _build_scorecard(metrics: list[EngineeringMetric]) -> EngineeringScorecard:
     fail_count = sum(1 for metric in metrics if metric.status == "fail")
     completeness_rate = _round_rate(len(scored_metrics), metric_count)
 
+    # Category scores are weighted averages within each category. The top-level
+    # score then applies the category weights defined near the top of the file.
     category_scores = [
         _build_category_score(category, weight, metrics)
         for category, weight in _CATEGORY_WEIGHTS.items()
@@ -1313,6 +1345,8 @@ def _scorecard_status(
 ) -> MetricStatus:
     if overall_score is None:
         return "unknown"
+    # Safety hard gates override aggregate scoring. Averages should never hide a
+    # high-risk execution or approval-boundary violation.
     hard_fail = any(
         metric.key in _HARD_GATE_KEYS and metric.status == "fail"
         for metric in metrics
@@ -1330,6 +1364,8 @@ def _scorecard_status(
 
 
 def _top_risks(metrics: list[EngineeringMetric]) -> list[str]:
+    # Rank hard failures/warnings first, then lower scores, so the response gives
+    # operators a short actionable list instead of a full dashboard dump.
     ranked = sorted(
         [
             metric for metric in metrics
@@ -1351,6 +1387,8 @@ def _top_risks(metrics: list[EngineeringMetric]) -> list[str]:
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
+    # Empty denominators mean "not enough data" rather than 0%, which would make
+    # new installations look falsely unhealthy.
     if denominator <= 0:
         return None
     return round(numerator / denominator, 4)
@@ -1446,11 +1484,15 @@ def _as_float(value: Any | None) -> float | None:
 def _approval_action_risk(
     approval: Approval, action_by_id: dict[str, Action]
 ) -> str | None:
+    # Missing action rows should not be treated as safe; callers decide whether a
+    # missing risk is ignored, unknown, or counted elsewhere.
     action = action_by_id.get(approval.action_id)
     return action.risk_level if action is not None else None
 
 
 def _l3_confirmation_valid(approval: Approval, action: Action) -> bool:
+    # Mirror backend L3 approval requirements exactly: risk acknowledgement plus
+    # action type and target confirmation.
     return (
         approval.risk_ack is True
         and approval.confirm_action_type == action.type
@@ -1461,6 +1503,8 @@ def _l3_confirmation_valid(approval: Approval, action: Action) -> bool:
 def _run_has_traceable_evidence(
     run: AgentRun, evidence_by_run: set[str]
 ) -> bool:
+    # A run is traceable if the root cause carries evidence IDs or the persistence
+    # layer recorded evidence rows for the run.
     state = run.state if isinstance(run.state, dict) else {}
     root_cause = state.get("root_cause")
     if isinstance(root_cause, dict) and root_cause.get("evidence_ids"):
@@ -1489,6 +1533,8 @@ def _run_has_complete_evidence_records(
     evidence_ids = root_cause.get("evidence_ids")
     if not isinstance(evidence_ids, list):
         return True
+    # Only enforce persisted-row coverage for concrete evidence IDs. Runbook
+    # chunk IDs and legacy references are validated by other tests/eval checks.
     explicit_evidence_refs = {
         evidence_id
         for evidence_id in evidence_ids
@@ -1519,6 +1565,8 @@ def _report_version_issue_count(reports: list[IncidentReport]) -> int:
     issue_count = 0
     for versions in versions_by_incident.values():
         ordered = sorted(versions)
+        # Regeneration should append immutable versions 1..N. Gaps or duplicate
+        # version numbers suggest a report overwrite/regeneration bug.
         expected = list(range(1, len(ordered) + 1))
         if ordered != expected:
             issue_count += 1

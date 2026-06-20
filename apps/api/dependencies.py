@@ -14,10 +14,14 @@ NotificationTaskEnqueue = Callable[[str, dict[str, Any]], str]
 
 
 def get_db() -> Generator[Session, None, None]:
+    # Keep DB session creation behind a dependency so tests can replace it with
+    # an in-memory transaction and routers never create sessions directly.
     yield from get_session()
 
 
 def get_app_settings() -> Settings:
+    # FastAPI dependencies use this wrapper instead of calling get_settings()
+    # directly, which lets tests and local demos override settings per app.
     return get_settings()
 
 
@@ -25,18 +29,24 @@ ResumeTaskEnqueue = Callable[[str, str], str]
 
 
 def get_task_enqueue() -> TaskEnqueue:
+    # Import lazily to avoid pulling Celery/worker setup into module import time
+    # for tests that only need to build the FastAPI app.
     from apps.worker.tasks import enqueue_diagnosis_task
 
     return enqueue_diagnosis_task
 
 
 def get_resume_task_enqueue() -> ResumeTaskEnqueue:
+    # Approval resume is injectable separately from new diagnosis enqueueing so
+    # tests can assert the exact resume decision without starting a worker.
     from apps.worker.tasks import enqueue_resume_task
 
     return enqueue_resume_task
 
 
 def get_notification_task_enqueue() -> NotificationTaskEnqueue:
+    # Notification enqueue is optional side-effect work; keeping it injectable
+    # prevents email/Celery dependencies from leaking into API unit tests.
     from apps.worker.tasks import enqueue_email_notification_task
 
     return enqueue_email_notification_task
@@ -74,11 +84,15 @@ class ScopeRequirement:
         if not settings.api_key_auth_enabled:
             return
 
+        # Authentication middleware is responsible for validating keys and
+        # populating request.state.api_key. Scope dependencies only authorize.
         api_key: dict[str, object] = getattr(request.state, "api_key", {})
         if not api_key:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         raw_scopes: Any = api_key.get("scopes", [])
+        # Scopes are stored as JSON-compatible arrays. Non-list values are treated
+        # as no scopes instead of granting access implicitly.
         scopes: list[str] = list(raw_scopes) if isinstance(raw_scopes, list) else []
         if not self._required.intersection(scopes):
             raise HTTPException(

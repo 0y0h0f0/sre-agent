@@ -33,14 +33,19 @@ class ContextBuilder:
         self.token_counter = token_counter or TokenCounter()
 
     def build(self, input: BuildContextInput) -> BuiltContext:
+        """Assemble budgeted messages and report token/cache metadata."""
         budget = input.budget
         if budget.total_limit <= 0:
+            # A non-positive limit is treated as "use system defaults" for
+            # callers that only want default allocation behavior.
             budget = self.budgeter.allocate_budget()
 
         usage: dict[str, int] = {}
         compressed_list: list[CompressedContext] = []
 
-        # Stabilize evidence ordering for cache determinism
+        # Stabilize evidence ordering for cache determinism and test snapshots.
+        # This also keeps evidence IDs near the facts they support after
+        # compression and report generation.
         evidence = sorted(
             input.evidence,
             key=lambda e: (e.get("type", ""), e.get("timestamp", ""), e.get("evidence_id", "")),
@@ -53,14 +58,16 @@ class ContextBuilder:
         alert_text = json.dumps(input.incident, default=str)
         usage["alert"] = self._count(alert_text)
 
-        # Evidence (compress if needed)
+        # Evidence is the only segment that currently emits compression events.
+        # Runbooks/memory are budget-capped below, but not summarized here.
         evidence_tokens = self._count(json.dumps(evidence, default=str))
         if self.budgeter.evidence_over_threshold(evidence_tokens, budget):
             evidence, comp_ctx = self.compressor.compress_evidence(evidence, budget)
             compressed_list.append(comp_ctx)
         usage["evidence"] = self._count(json.dumps(evidence, default=str))
 
-        # Runbook chunks (sorted by score, capped)
+        # Runbook chunks are sorted by score and capped by budget. They are not
+        # re-ranked here; retrieval/reranking already happened in packages.rag.
         runbook_chunks = self._sort_runbooks(input.runbook_chunks)
         runbook_tokens = 0
         capped_runbooks: list[dict[str, Any]] = []
@@ -72,7 +79,9 @@ class ContextBuilder:
             runbook_tokens += ct
         usage["runbook"] = runbook_tokens
 
-        # Memory — sort by relevance (score) first, then importance as tie-breaker
+        # Memory — sort by relevance (score) first, then importance as
+        # tie-breaker. The store may return lexical/vector results depending on
+        # backend availability, so this keeps final prompt order predictable.
         memories = sorted(
             input.memories,
             key=lambda m: m.get("score", m.get("relevance", m.get("importance", 0))),
@@ -88,7 +97,8 @@ class ContextBuilder:
             mem_tokens += mt
         usage["memory"] = mem_tokens
 
-        # Cross-incident context (Phase 5.1)
+        # Cross-incident context is budget-capped separately from memory so one
+        # very similar incident cannot crowd out service/procedural memory.
         cross_incident_tokens = 0
         capped_cross_incident: list[dict[str, Any]] = []
         if input.cross_incident:
@@ -119,10 +129,12 @@ class ContextBuilder:
         )
 
     def _count(self, text: str) -> int:
+        """Use the deterministic token estimator for prompt budgeting."""
         return self.token_counter.count_tokens(text)
 
     @staticmethod
     def _sort_runbooks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Sort runbook chunks by score, then chunk ID for stable ties."""
         return sorted(
             chunks, key=lambda c: (c.get("score", 0), c.get("chunk_id", "")), reverse=True
         )
@@ -138,6 +150,12 @@ class ContextBuilder:
         memories: list[dict[str, Any]],
         cross_incident: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
+        """Build the final chat-style message list.
+
+        The system message contains stable prompt/schema material. Dynamic
+        incident evidence stays in the user message to maximize provider prefix
+        cache opportunities without confusing it with app/tool cache metrics.
+        """
         messages: list[dict[str, Any]] = []
 
         # Stable system prompt (enables provider prefix caching)
@@ -172,6 +190,11 @@ class ContextBuilder:
 
     @staticmethod
     def _segment_keys(input: BuildContextInput) -> list[str]:
+        """Return stable app-level prompt segment cache keys.
+
+        These keys are metadata for the application segment cache. They are not
+        provider prompt-cache hit counters.
+        """
         keys: list[str] = []
         if input.output_schema:
             keys.append("prompt_segment:schema:diagnosis:v1")

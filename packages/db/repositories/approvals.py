@@ -14,6 +14,8 @@ from packages.db.models import Action, Approval, Incident
 
 
 class ApprovalRepository:
+    """Data access for approval records and approval display queries."""
+
     def __init__(self, db: Session) -> None:
         self.db = db
 
@@ -28,6 +30,7 @@ class ApprovalRepository:
         confirm_action_type: str | None = None,
         confirm_target: str | None = None,
     ) -> Approval:
+        """Create a waiting approval for one action."""
         approval = Approval(
             approval_id=new_id("apv_"),
             action_id=action_id,
@@ -47,7 +50,12 @@ class ApprovalRepository:
         return self.db.scalar(stmt)
 
     def get_for_update(self, approval_id: str) -> Approval | None:
-        """SELECT ... FOR UPDATE to prevent TOCTOU race on approve/reject."""
+        """SELECT ... FOR UPDATE to prevent TOCTOU race on approve/reject.
+
+        ApprovalService checks status and updates the row in one transaction.
+        The lock prevents two API requests from approving/rejecting the same
+        approval concurrently.
+        """
         stmt = (
             select(Approval)
             .where(Approval.approval_id == approval_id)
@@ -64,6 +72,7 @@ class ApprovalRepository:
         return self.db.scalars(stmt).all()
 
     def list_waiting(self) -> Sequence[Approval]:
+        """Return oldest waiting approvals, used by stale auto-approval jobs."""
         stmt = (
             select(Approval)
             .where(Approval.status == "waiting")
@@ -99,6 +108,7 @@ class ApprovalRepository:
         return int(self.db.scalar(stmt) or 0) > 0
 
     def get_display_item(self, approval_id: str) -> dict[str, Any] | None:
+        """Return one approval joined with action and incident display fields."""
         stmt = (
             select(Approval, Action, Incident.service)
             .join(Action, Approval.action_id == Action.action_id)
@@ -159,6 +169,7 @@ class ApprovalRepository:
         return items, total
 
     def _display_item(self, approval: Approval, action: Action, service: str) -> dict[str, Any]:
+        """Normalize joined approval/action/incident columns for API schemas."""
         return {
             "approval_id": approval.approval_id,
             "action_id": action.action_id,
@@ -178,7 +189,7 @@ class ApprovalRepository:
         }
 
     def get_approved_for_action(self, action_id: str) -> Approval | None:
-        """Find an approved approval for the given action."""
+        """Find the latest approved approval for the given action."""
         stmt = (
             select(Approval)
             .where(Approval.action_id == action_id, Approval.status == "approved")
@@ -194,6 +205,7 @@ class ApprovalRepository:
         approver: str,
         comment: str | None = None,
     ) -> Approval | None:
+        """Set approval decision fields without committing."""
         approval = self.get_by_public_id(approval_id)
         if approval is None:
             return None
@@ -211,7 +223,11 @@ class ApprovalRepository:
         confirm_action_type: str,
         confirm_target: str,
     ) -> None:
-        """Persist L3 secondary confirmation fields on the approval record."""
+        """Persist L3 secondary confirmation fields on the approval record.
+
+        Manual action execution re-checks these fields against the action, so
+        they remain durable proof of what the operator confirmed.
+        """
         approval.risk_ack = risk_ack
         approval.confirm_action_type = confirm_action_type
         approval.confirm_target = confirm_target

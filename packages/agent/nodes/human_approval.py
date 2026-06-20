@@ -21,6 +21,12 @@ MAX_REPLAN_CYCLES = 3
 
 
 def human_approval(state: IncidentState, deps: AgentDeps) -> IncidentState:
+    """Pause for human approval and reconcile the result on resume.
+
+    This node is both the first-pass creator of Action/Approval rows and the
+    resume-time reconciler. The persisted approvals are the authority; graph
+    state and resume payloads are hints that help find the current batch.
+    """
     node_id = new_id("nd_")
     started_at = utc_now()
     actions = state.get("recommended_actions", [])
@@ -38,11 +44,17 @@ def human_approval(state: IncidentState, deps: AgentDeps) -> IncidentState:
     current_approval_status = (
         approval_status.get("status") if isinstance(approval_status, dict) else ""
     )
+    # A waiting batch may be seen multiple times: initial interrupt, worker
+    # retry, or checkpoint resume. Reuse it while the batch is still waiting so
+    # the same human decision controls the same action records.
     can_reuse_existing_batch = current_approval_status in (None, "", "waiting")
     approval_ids = (
         [str(item) for item in raw_approval_ids] if can_reuse_existing_batch else []
     )
     if can_reuse_existing_batch and not approval_ids:
+        # Some checkpoints contain the planned actions but not approval_status.
+        # Recover from DB instead of creating duplicates, because the API and
+        # email flows may already have handed those approval IDs to operators.
         approval_ids = _recover_existing_approval_batch(
             state, approval_actions, approval_repo, action_repo
         )
@@ -55,6 +67,8 @@ def human_approval(state: IncidentState, deps: AgentDeps) -> IncidentState:
     try:
         if can_reuse_existing_batch and approval_ids:
             if previous_decision or _has_decided_approval(approval_ids, approval_repo):
+                # A resume command only signals that work may continue. The
+                # actual approval/rejection state is read below per approval ID.
                 return _apply_db_decisions(
                     state, approval_actions, approval_ids, approval_repo
                 )
@@ -74,6 +88,8 @@ def human_approval(state: IncidentState, deps: AgentDeps) -> IncidentState:
             # accumulate stale ids from previously rejected batches.
             approval_ids = []
             for action in approval_actions:
+                # Approval-gated actions get persisted before the interrupt so
+                # operators can inspect exactly what would be executed.
                 db_action = action_repo.create(
                     incident_id=state["incident_id"],
                     agent_run_id=state["agent_run_id"],
@@ -128,6 +144,8 @@ def human_approval(state: IncidentState, deps: AgentDeps) -> IncidentState:
                     )
 
             # No checkpointer (dev/test): auto-approve the whole batch.
+            # _auto_approve still leaves L3 waiting, preserving second-confirm
+            # semantics even in test convenience paths.
             return _auto_approve(state, approval_actions, approval_ids, approval_repo)
 
         # Resume path: never blanket-apply a single decision to the batch.
@@ -183,6 +201,9 @@ def _recover_existing_approval_batch(
     if not approval_actions:
         return []
 
+    # Search within the run, then match by type/target/risk. This is deliberately
+    # narrower than "latest approvals" so an old rejected replan batch is not
+    # accidentally rebound to newly planned actions.
     existing = list(approval_repo.list_for_run(state["agent_run_id"]))
     if not existing:
         return []
@@ -232,6 +253,7 @@ def _link_actions_from_approvals(
     approval_repo: ApprovalRepository,
     action_repo: ActionRepository,
 ) -> None:
+    """Backfill action_id on planned actions from already-created approvals."""
     linked_action_ids: list[str] = []
     for approval_id in approval_ids:
         approval = approval_repo.get_by_public_id(approval_id)
@@ -248,6 +270,7 @@ def _link_actions_from_approvals(
 def _has_decided_approval(
     approval_ids: list[str], approval_repo: ApprovalRepository
 ) -> bool:
+    """Return true once any row in the batch is no longer waiting."""
     for approval_id in approval_ids:
         approval = approval_repo.get_by_public_id(approval_id)
         if approval is not None and approval.status in {"approved", "rejected"}:
@@ -291,6 +314,7 @@ def _wait_for_existing_approvals(
 
 
 def _resume_decision(payload: Any) -> str:
+    """Normalize LangGraph resume payloads from dict or bare string formats."""
     if isinstance(payload, dict):
         decision = payload.get("decision")
         if decision in {"approved", "rejected"}:
@@ -364,6 +388,8 @@ def _apply_db_decisions(
 
     any_approved = False
     for action in approval_actions:
+        # Leave unknown/missing rows in waiting mode. execute_action filters
+        # these out, and graph routing returns to approval instead of guessing.
         decision = status_by_action.get(action.get("action_id", ""), "waiting")
         if decision == "approved":
             action["requires_approval"] = False

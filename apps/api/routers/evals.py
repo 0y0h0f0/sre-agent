@@ -22,6 +22,8 @@ from apps.api.services.engineering_metrics_service import EngineeringMetricsServ
 from apps.api.services.eval_service import EvalService
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
+# Keep the query bounds at the router layer so service code can assume a sane
+# historical window and avoid defensive clamping on every repository call.
 WindowDays = Annotated[int, Query(ge=1, le=365)]
 
 
@@ -40,6 +42,8 @@ def create_eval_run(
     db: Session = Depends(get_db),
 ) -> EvalRunResponse:
     """Trigger an eval run (smoke or full suite)."""
+    # The service creates a queued EvalRun and hands execution to Celery; FastAPI
+    # should not run the deterministic harness inline.
     return EvalService(db).trigger_smoke_eval(data)
 
 
@@ -66,6 +70,8 @@ def trigger_shadow(
     db: Session = Depends(get_db),
 ) -> ShadowRunResponse:
     """Trigger a shadow mode run for an incident."""
+    # Shadow currently preserves API/DB shape only; it must not mutate the source
+    # incident or create real agent runs/actions.
     return EvalService(db).trigger_shadow(data)
 
 
@@ -75,4 +81,6 @@ def trigger_replay(
     db: Session = Depends(get_db),
 ) -> EvalRunResponse:
     """Trigger a safe historical incident replay eval."""
+    # Replay writes only an EvalRun in the application DB. Per-case agent work
+    # runs later in temporary databases owned by the worker.
     return EvalService(db).trigger_replay(data)

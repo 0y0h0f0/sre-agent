@@ -1,3 +1,5 @@
+"""Repository for incident rows and alert payload reconstruction."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -19,10 +21,13 @@ TERMINAL_INCIDENT_STATUSES = (
 
 
 class IncidentRepository:
+    """Data access for incident lifecycle and alert deduplication."""
+
     def __init__(self, db: Session) -> None:
         self.db = db
 
     def create(self, incident_id: str, payload: AlertCreateRequest) -> Incident:
+        """Create an open incident from a normalized alert payload."""
         incident = Incident(
             incident_id=incident_id,
             fingerprint=payload.fingerprint,
@@ -45,6 +50,11 @@ class IncidentRepository:
         return self.db.scalar(stmt)
 
     def get_open_by_fingerprint(self, fingerprint: str) -> Incident | None:
+        """Return the active incident owning a fingerprint, if any.
+
+        This tuple must stay aligned with the partial unique index on
+        ``incidents.fingerprint`` for non-terminal statuses.
+        """
         stmt = select(Incident).where(
             Incident.fingerprint == fingerprint,
             Incident.status.not_in(TERMINAL_INCIDENT_STATUSES),
@@ -54,6 +64,7 @@ class IncidentRepository:
     def _base_query(
         self, *, status: str | None, service: str | None, severity: str | None
     ) -> Select[tuple[Incident]]:
+        """Build the shared incident filter query for list/count methods."""
         stmt: Select[tuple[Incident]] = select(Incident)
         if status:
             stmt = stmt.where(Incident.status == status)
@@ -64,6 +75,7 @@ class IncidentRepository:
         return stmt
 
     def list_all(self, *, limit: int = 1000) -> Sequence[Incident]:
+        """Return recent incidents for internal aggregation jobs."""
         stmt = select(Incident).order_by(Incident.created_at.desc()).limit(limit)
         return self.db.scalars(stmt).all()
 
@@ -112,6 +124,7 @@ class IncidentRepository:
         return items, total
 
     def alert_payload(self, incident: Incident) -> dict[str, Any]:
+        """Reconstruct the alert payload passed into AgentRunner."""
         return {
             "source": incident.source,
             "fingerprint": incident.fingerprint,

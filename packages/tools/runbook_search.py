@@ -1,4 +1,9 @@
-"""Runbook search tool wrapper."""
+"""Runbook search tool wrapper.
+
+The RAG retriever owns ranking and storage details. This wrapper adapts results
+to the common ToolResult/evidence shape so the agent can cite runbook chunks the
+same way it cites metrics, logs, traces, and other evidence.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +19,8 @@ from packages.tools.cache import RequestLocalToolCache
 
 
 class RunbookSearchTool:
+    """BaseTool-compatible wrapper around ``RunbookRetriever``."""
+
     name = "runbook_search"
 
     def __init__(
@@ -50,6 +57,9 @@ class RunbookSearchTool:
                     }
                 ),
                 evidence=[
+                    # chunk_id/source_path/metadata are required for diagnosis
+                    # auditability: root cause and reports can point back to
+                    # the exact runbook text, not just a natural-language quote.
                     {
                         "type": "runbook",
                         "source": "runbook",
@@ -70,6 +80,9 @@ class RunbookSearchTool:
                 duration_ms=elapsed_ms(started_at),
             )
         except Exception as exc:
+            # RAG degradation should not block the incident workflow. The agent
+            # can still diagnose from live evidence and record that runbook
+            # search was unavailable.
             result = ToolResult(
                 status="degraded",
                 data={"query": search_query.model_dump(mode="json")},
@@ -86,6 +99,7 @@ class RunbookSearchTool:
 
 
 def _cache_key(query: RunbookSearchQuery) -> str:
+    """Build a stable non-time-bucketed key for semantic runbook search."""
     payload = query.model_dump(mode="json", exclude_none=True)
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

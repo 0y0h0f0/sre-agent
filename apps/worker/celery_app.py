@@ -1,3 +1,10 @@
+"""Celery application configuration for worker and beat processes.
+
+The API layer only enqueues work. This module centralizes Celery delivery,
+retry, scheduling, and worker metrics settings so diagnosis execution remains
+outside request threads.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -11,6 +18,9 @@ from packages.common.settings import get_settings
 
 settings = get_settings()
 
+# A single Celery app is shared by diagnosis, resume, notifications, discovery,
+# polling, and eval tasks. Keep imports explicit below so workers register every
+# task module on startup.
 celery_app = Celery(
     "sre_incident_response_agent",
     broker=settings.celery_broker_url,
@@ -19,8 +29,13 @@ celery_app = Celery(
 celery_app.conf.update(
     imports=("apps.worker.tasks", "apps.worker.eval_tasks"),
     task_track_started=True,
+    # At-least-once delivery: tasks acknowledge after completion, and a worker
+    # crash causes Redis/broker redelivery. Individual task logic therefore
+    # needs DB-level idempotency checks.
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+    # Diagnosis tasks can be long-running and hold DB/checkpointer state. One
+    # prefetched task per worker prevents a busy worker from hoarding jobs.
     worker_prefetch_multiplier=1,
     task_time_limit=600,      # 10 min — real LLM diagnosis can take 60-120s
     task_soft_time_limit=300,  # 5 min — grace period before hard kill
@@ -79,6 +94,8 @@ def _is_celery_worker_process(argv: Sequence[str] | None = None) -> bool:
 
 
 # Start Prometheus metrics HTTP server for worker scraping (Phase 7.2).
+# This is process-gated below so CLI probes importing this module do not race
+# the real worker for the metrics port.
 if (
     settings.prometheus_metrics_enabled
     and not settings.celery_task_always_eager

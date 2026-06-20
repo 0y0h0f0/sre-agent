@@ -1,4 +1,10 @@
-"""Celery task — runs the LangGraph SRE diagnosis workflow asynchronously."""
+"""Celery tasks for diagnosis, resume, notifications, discovery, and polling.
+
+The worker is the only runtime that executes the LangGraph incident workflow.
+API services create durable rows and enqueue tasks; this module owns idempotent
+claiming, dependency construction, checkpoint setup, graph execution, and final
+incident/run synchronization.
+"""
 
 from __future__ import annotations
 
@@ -46,7 +52,11 @@ from packages.tools.unavailable import UnavailableTool
 
 
 class TransientError(Exception):
-    """Retryable worker dependency failure."""
+    """Retryable worker dependency failure.
+
+    Celery tasks use this exception with autoretry_for for transient graph,
+    dependency, or soft-timeout failures.
+    """
 
 
 def _email_notification_service(db: Session) -> Any:
@@ -56,6 +66,7 @@ def _email_notification_service(db: Session) -> Any:
 
 
 def enqueue_diagnosis_task(incident_id: str, agent_run_id: str) -> str:
+    """Enqueue the initial diagnosis task and return the Celery task ID."""
     async_result = run_incident_diagnosis.delay(incident_id, agent_run_id)
     return str(async_result.id)
 
@@ -67,6 +78,11 @@ def enqueue_resume_task(agent_run_id: str, decision: str) -> str:
 
 
 def enqueue_email_notification_task(notification_type: str, payload: dict[str, Any]) -> str:
+    """Persist an email event, then enqueue the sender task.
+
+    If broker enqueue fails, the EmailLog row is marked failed so operators can
+    distinguish "not queued" from SMTP/send failure.
+    """
     with SessionLocal() as db:
         queued = _email_notification_service(db).queue_event(
             notification_type, payload
@@ -111,6 +127,7 @@ def run_incident_diagnosis(self: Any, incident_id: str, agent_run_id: str) -> di
 def run_incident_diagnosis_logic(
     db: Session, incident_id: str, agent_run_id: str
 ) -> dict[str, Any]:
+    """Run the diagnosis graph with DB-level idempotency protection."""
     incidents = IncidentRepository(db)
     runs = AgentRunRepository(db)
 
@@ -122,6 +139,7 @@ def run_incident_diagnosis_logic(
     if run is None:
         raise NotFoundError("agent_run", agent_run_id)
     if run.status in TERMINAL_RUN_STATUSES:
+        # Redelivered completed tasks are successful no-ops.
         db.rollback()
         return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
     # Already in flight (RUNNING) or paused for a human (WAITING_APPROVAL):
@@ -141,6 +159,8 @@ def run_incident_diagnosis_logic(
             return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
         # Fall through: previous worker died, re-execute.
     elif run.status == AgentRunStatus.WAITING_APPROVAL.value:
+        # Waiting approval is only advanced by the resume task after the API has
+        # committed approval decisions.
         db.rollback()
         return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
 
@@ -157,6 +177,8 @@ def run_incident_diagnosis_logic(
     try:
         settings = get_settings()
         alert_payload = incidents.alert_payload(incident)
+        # Build dependencies after claiming the run so published config, tool
+        # cache, and injected executors are scoped to this execution attempt.
         deps = _build_deps(db, settings, agent_run_id, incident_id)
 
         # Wire PostgresSaver for checkpoint persistence
@@ -166,10 +188,11 @@ def run_incident_diagnosis_logic(
         result = runner.run(incident_id, agent_run_id, alert_payload)
 
         if result["status"] == "waiting_approval":
+            # The graph has interrupted. Persist a display snapshot and leave
+            # checkpoint state to PostgresSaver so resume can continue safely.
             _sync_incident_diagnosis(incident, result.get("state", {}))
             _handle_waiting_approval(db, agent_run_id, result["state"])
             db.commit()
-            _notify_diagnosis_complete(incident_id, agent_run_id, db=db)
             _notify_approval_requests(result["state"], db=db)
             return {
                 "incident_id": incident_id,
@@ -191,6 +214,8 @@ def run_incident_diagnosis_logic(
 
         runs.mark_succeeded(run, state_dict)
         # Only mark mitigated if actions were actually executed
+        # Otherwise the incident was resolved/diagnosed without remediation,
+        # which feeds NFA/alert quality metrics below.
         if result.get("state", {}).get("execution_results"):
             incident.status = IncidentStatus.MITIGATED.value
         else:
@@ -223,6 +248,9 @@ def run_incident_diagnosis_logic(
         agent_metrics.AgentMetricsCollector.dec_active_diagnoses()
         raise
     except Exception as exc:
+        # Any non-transient exception becomes a failed run. The original
+        # exception is re-raised after durable status update so Celery logs keep
+        # the stack trace.
         db.rollback()
         runs.mark_failed(agent_run_id, "DIAGNOSIS_FAILED", str(exc))
         db.commit()
@@ -298,6 +326,7 @@ def _postgres_saver_conn_string(db_url: str) -> str:
 
 
 def _close_checkpointer(checkpointer: Any | None) -> None:
+    """Release PostgresSaver context manager if one was opened."""
     context = getattr(checkpointer, "_codex_context_manager", None)
     if context is not None:
         context.__exit__(None, None, None)
@@ -370,7 +399,8 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
         service_label=effective_config.logs_service_label,
     )
 
-    # Trace tool with backend.
+    # Trace backend selection needs special handling because fixture is safe for
+    # local demo but intentionally unavailable in production deps.
     trace_tool = _build_trace_tool(settings, effective_config, timeout, cache)
 
     git_change_tool = GitChangeTool(
@@ -397,6 +427,7 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
     tool_calls_repo = ToolCallRepository(db)
 
     def node_tracer(**kwargs: Any) -> None:
+        """Persist node trace rows and publish best-effort WebSocket events."""
         _recover_inactive_session(db)
         started = kwargs.get("started_at")
         finished = kwargs.get("finished_at")
@@ -419,6 +450,7 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
         db.flush()
 
         # Publish node update via Redis for WebSocket subscribers
+        # This is an operator convenience path; failures must not fail the graph.
         try:
             from apps.api.ws.publisher import publish_node_event
 
@@ -438,9 +470,12 @@ def _build_deps(db: Session, settings: Any, agent_run_id: str, incident_id: str)
             )
 
     def tool_call_recorder(**kwargs: Any) -> None:
+        """Persist tool call audit rows from agent nodes."""
         result = kwargs.get(
             "result", ToolResult(status="degraded", data={}, summary="", duration_ms=0)
         )
+        # Some degraded tools can leave SQLAlchemy in an aborted transaction
+        # state, especially when the tool itself touched DB-backed fixtures.
         _recover_inactive_session(db, probe=getattr(result, "status", "") == "degraded")
         tool_calls_repo.create(
             agent_run_id=kwargs.get("agent_run_id", agent_run_id),
@@ -488,6 +523,7 @@ def _recover_inactive_session(db: Session, *, probe: bool = False) -> None:
 
 
 def _active_overrides_for_effective_config(db: Session) -> list[dict[str, Any]]:
+    """Return active override rows in EffectiveConfig merge format."""
     from packages.db.repositories.discovery_overrides import DiscoveryOverrideRepository
 
     overrides: list[dict[str, Any]] = []
@@ -512,6 +548,7 @@ def _build_trace_tool(
     timeout: float,
     cache: RequestLocalToolCache,
 ) -> Any:
+    """Build the TraceTool or an UnavailableTool based on effective config."""
     backend_name = str(getattr(settings, "trace_backend", "fixture")).strip().lower()
     if not getattr(settings, "trace_enabled", True) or backend_name == "disabled":
         return TraceTool(
@@ -573,6 +610,7 @@ def _build_or_unavailable(
 
 
 def _sync_incident_diagnosis(incident: Any, state: dict[str, Any]) -> None:
+    """Copy diagnosis summary from graph state onto the incident row."""
     import logging
     _logger = logging.getLogger(__name__)
 
@@ -599,7 +637,8 @@ def _populate_run_metrics(
     run: Any, state: dict[str, Any], cache: RequestLocalToolCache
 ) -> None:
     """Populate AgentRun token/cache columns from graph execution state."""
-    # Token usage from llm_calls recorded in the state
+    # Token usage from llm_calls recorded in the state. Provider cache metrics
+    # come only from LLM call metadata, not from the tool/app cache below.
     llm_calls = state.get("llm_calls")
     if isinstance(llm_calls, list):
         total_prompt = 0
@@ -620,7 +659,7 @@ def _populate_run_metrics(
         run.provider_cache_hit_count = provider_hits
         run.provider_cache_miss_count = provider_misses
 
-    # App-level tool cache stats
+    # App-level tool cache stats are request-local tool cache counters.
     run.app_cache_hit_count = cache.hit_count
     run.app_cache_miss_count = cache.miss_count
 
@@ -659,6 +698,7 @@ def _record_approval_metrics(
 
 
 def _handle_waiting_approval(db: Session, agent_run_id: str, state: dict[str, Any]) -> None:
+    """Persist a display snapshot for a run paused at human approval."""
     runs = AgentRunRepository(db)
     run = runs.get_by_public_id(agent_run_id)
     if run is None:
@@ -694,6 +734,7 @@ def resume_incident_after_approval(self: Any, agent_run_id: str, decision: str) 
 
 
 def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dict[str, Any]:
+    """Resume a paused graph after approval service commits decisions."""
     if decision not in ("approved", "rejected"):
         raise ValueError(
             f"invalid decision '{decision}'; expected 'approved' or 'rejected'"
@@ -706,6 +747,7 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
     if run is None:
         raise NotFoundError("agent_run", agent_run_id)
     if run.status != AgentRunStatus.WAITING_APPROVAL.value:
+        # Duplicate resume delivery or stale enqueue after a run already moved on.
         return {"agent_run_id": agent_run_id, "status": run.status, "idempotent": True}
 
     # Claim the run (WAITING_APPROVAL -> RUNNING) and commit to release the lock;
@@ -718,6 +760,8 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
     try:
         settings = get_settings()
         deps = _build_deps(db, settings, agent_run_id, run.incident_id)
+        # Resume must use the same checkpoint namespace/thread_id contract as
+        # the original run. AgentRunner owns that config.
         checkpointer = _build_checkpointer(settings)
 
         runner = AgentRunner(deps, checkpointer=checkpointer)
@@ -737,7 +781,6 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
                 _sync_incident_diagnosis(incident, result.get("state", {}))
             _handle_waiting_approval(db, agent_run_id, result["state"])
             db.commit()
-            _notify_diagnosis_complete(run.incident_id, agent_run_id, db=db)
             _notify_approval_requests(result["state"], db=db)
             return {
                 "agent_run_id": agent_run_id,
@@ -789,6 +832,7 @@ def _resume_incident_logic(db: Session, agent_run_id: str, decision: str) -> dic
 def _notify_diagnosis_complete(
     incident_id: str, agent_run_id: str, *, db: Session | None = None
 ) -> None:
+    """Enqueue diagnosis-complete email unless this event already exists."""
     if _email_event_exists(
         db,
         notification_type="diagnosis_complete",
@@ -802,6 +846,7 @@ def _notify_diagnosis_complete(
 
 
 def _notify_approval_requests(state: dict[str, Any], *, db: Session | None = None) -> None:
+    """Enqueue one approval-request email per approval ID in graph state."""
     approval_status = state.get("approval_status")
     if not isinstance(approval_status, dict):
         import logging
@@ -828,6 +873,7 @@ def _notify_approval_requests(state: dict[str, Any], *, db: Session | None = Non
 
 
 def _notify_report_generated(state: dict[str, Any], *, db: Session | None = None) -> None:
+    """Enqueue report notification if the graph state produced a report ID."""
     report = state.get("incident_report")
     if not isinstance(report, dict):
         return
@@ -843,12 +889,14 @@ def _notify_report_generated(state: dict[str, Any], *, db: Session | None = None
 
 
 def _email_event_exists(db: Session | None, **criteria: Any) -> bool:
+    """Return whether an equivalent email event is already queued/sent."""
     if db is None:
         return False
     return EmailLogRepository(db).exists_for_event(**criteria)
 
 
 def _enqueue_notification_event(notification_type: str, payload: dict[str, Any]) -> None:
+    """Best-effort notification enqueue used after graph state commits."""
     try:
         enqueue_email_notification_task(notification_type, payload)
     except Exception:
@@ -863,6 +911,7 @@ def _enqueue_notification_event(notification_type: str, payload: dict[str, Any])
 def send_email_notification(
     self: Any, email_log_id: str, notification_type: str, payload: dict[str, Any]
 ) -> dict[str, Any]:
+    """Send one queued email event, retrying transient send failures."""
     attempt = int(getattr(self.request, "retries", 0)) + 1
     with SessionLocal() as db:
         result = _email_notification_service(db).send_queued_event(
@@ -878,6 +927,7 @@ def send_email_notification(
 def send_daily_incident_summary(
     self: Any, summary_date: str | None = None, email_log_id: str | None = None
 ) -> dict[str, Any]:
+    """Queue/send the daily summary, preserving email_log_id across retries."""
     payload = {"date": summary_date} if summary_date else {}
     attempt = int(getattr(self.request, "retries", 0)) + 1
     with SessionLocal() as db:
@@ -947,6 +997,8 @@ def run_discovery_rerun(
             store.finish_run(run, result, status=result.status)
 
             # Generate proposal if there are changes.
+            # Production still requires review/publish elsewhere; discovery
+            # tasks never publish effective config directly.
             if result.backend_endpoints or result.metric_mappings:
                 store.create_proposal(
                     discovery_run_id=discovery_run_id,
@@ -990,6 +1042,7 @@ def run_discovery_rerun(
                     )
                     db.commit()
         except Exception:
+            # Preserve the original task failure if even failure recording fails.
             pass
         raise
 
@@ -1013,6 +1066,8 @@ def auto_discovery_rerun(self: Any) -> dict[str, Any]:
 
     settings = get_settings()
 
+    # Auto discovery is intentionally conservative: no live K8s, no automatic
+    # scan. Manual discovery can still be requested through the API.
     if not settings.discovery_enabled:
         return {"status": "skipped", "reason": "discovery_disabled"}
     if settings.k8s_backend != "live":
@@ -1068,6 +1123,8 @@ def auto_discovery_rerun(self: Any) -> dict[str, Any]:
         try:
             lock.release()
         except Exception:
+            # Lock release failure is logged by Redis/client layers if present;
+            # the task result should still describe the discovery outcome.
             pass
 
 
@@ -1222,6 +1279,8 @@ def auto_approve_stale_approvals(self: Any) -> dict[str, Any]:
 
     max_risk = settings.approval_auto_approve_max_risk
     if max_risk not in ("L0", "L1", "L2"):
+        # L3+ always require explicit second confirmation, even if an operator
+        # misconfigures the auto-approve max risk.
         return {"status": "skipped", "reason": f"max_risk={max_risk} exceeds L2 cap"}
 
     risk_levels = {"L0": 0, "L1": 1, "L2": 2}
@@ -1288,6 +1347,9 @@ def auto_approve_stale_approvals(self: Any) -> dict[str, Any]:
 
         # Resume runs where all approvals are now decided
         if count > 0:
+            # Use the rows already touched in this transaction to find impacted
+            # runs, but only resume after commit and only when no waiting rows
+            # remain for the run.
             run_ids = list({a.agent_run_id for a, _ in stale_rows if a.status == "approved"})
             for run_id in run_ids:
                 if not approvals_repo.has_waiting_for_run(run_id):
@@ -1389,6 +1451,8 @@ def poll_alertmanager(self: Any) -> dict[str, Any]:
     filter_hash = _build_filter_hash(filters)
 
     # Acquire Redis lock per filter hash.
+    # If Redis is unavailable, polling continues without the lock; this mirrors
+    # the alert-ingest bias toward not dropping alerts.
     try:
         r = redis_lib.Redis.from_url(settings.redis_url)
     except Exception:
@@ -1440,6 +1504,8 @@ def _poll_alertmanager_logic(
 
     with db_factory() as db:
         # Build EffectiveConfig to get Alertmanager URL.
+        # Polling shares the same published-config boundary as worker deps:
+        # unpublished proposals never become live poll targets.
         ec_repo = EffectiveConfigRepository(db)
         published_version = ec_repo.get_latest_published()
         published_config = (
@@ -1540,6 +1606,9 @@ def _poll_alertmanager_logic(
                 alert_svc = AlertService(
                     db, settings, enqueue_diagnosis=enqueue_diagnosis_task
                 )
+                # Reuse the webhook ingestion service so poll-created alerts
+                # share fingerprint dedup, NFA suppression, and Celery enqueue
+                # behavior with POST /api/alerts.
                 resp = alert_svc.create_alert(req)
 
                 cursor_repo.mark_seen(

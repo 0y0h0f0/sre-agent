@@ -1,4 +1,11 @@
-"""Deterministic guardrail risk classification. Never trusts LLM output."""
+"""Deterministic guardrail risk classification. Never trusts LLM output.
+
+The LLM/FakeLLM may propose an action, target, params, and rationale, but this
+module is the single source of truth for execution permission. Any change here
+can affect live remediation safety, so new action types should be added with
+matching tests in ``tests/unit/test_guardrails.py`` and executor/preflight
+coverage where applicable.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +14,12 @@ from typing import Any
 
 from packages.agent.schemas import GuardrailDecision
 
+# Static risk registry:
+#   tuple = (risk_level, requires_approval, human-readable reason)
+#
+# L0/L1 actions may execute automatically. L2/L3 require approval, with L3
+# additionally validated by the approval service's second-confirmation fields.
+# L4 is a hard reject and should never enter approval or executor code.
 _RISK_TABLE: dict[str, tuple[str, bool, str]] = {
     "query_metrics": ("L0", False, "read-only metrics"),
     "query_logs": ("L0", False, "read-only logs"),
@@ -65,9 +78,22 @@ _DEFAULT = ("L2", True, "unknown action — conservative default")
 
 
 def classify_risk_level(action: dict[str, Any]) -> GuardrailDecision:
+    """Return the final deterministic permission decision for one action.
+
+    Decision order matters:
+    1. Use the static table, or L2+approval for unknown action types.
+    2. Scan type/target/params for destructive vocabulary and escalate to L4.
+    3. Honor model ``risk_hint`` only when it increases risk to L3/L4.
+
+    The function never downgrades risk based on model-provided fields.
+    """
     action_type = (action.get("type") or "").lower().strip()
     risk_level, needs_approval, reason = _RISK_TABLE.get(action_type, _DEFAULT)
 
+    # Destructive intent can appear in params or target even when the action
+    # type looks benign. Scan the combined text after the table lookup so a
+    # disguised action such as ``restart_pod`` with target ``drop_table`` still
+    # fails closed as L4.
     target = str(action.get("target", "")).lower()
     params_str = str(action.get("params", {})).lower()
     match = _FORBIDDEN_PATTERN.search(f"{action_type} {target} {params_str}")
@@ -78,6 +104,8 @@ def classify_risk_level(action: dict[str, Any]) -> GuardrailDecision:
             f"forbidden keyword '{match.group(1)}' — blocked",
         )
 
+    # risk_hint exists so the model can admit uncertainty or danger, not so it
+    # can grant itself permission. Only upward L3/L4 escalation is accepted.
     risk_hint = (action.get("risk_hint") or "").upper().strip()
     if risk_hint in ("L3", "L4") and _level(risk_hint) > _level(risk_level):
         risk_level = risk_hint
@@ -93,6 +121,7 @@ def classify_risk_level(action: dict[str, Any]) -> GuardrailDecision:
 
 
 def _level(lvl: str) -> int:
+    """Convert risk label suffix to an integer for monotonic comparisons."""
     try:
         return int(lvl[-1])
     except (IndexError, ValueError):

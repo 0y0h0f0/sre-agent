@@ -12,6 +12,8 @@ def main() -> None:
     parser.add_argument("--output", default=None, help="Write the JSON report here")
     args = parser.parse_args()
 
+    # The CLI writes both JSON and Markdown through the harness. Keep the printed
+    # Markdown as a human-readable summary for CI logs and local prompt tuning.
     output = Path(args.output) if args.output else Path("reports") / f"eval-{args.suite}.json"
     report = run_suite(args.suite, output=output)
     print(report.to_markdown())

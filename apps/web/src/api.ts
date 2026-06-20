@@ -226,6 +226,9 @@ type ApiErrorBody = {
   details?: Record<string, unknown>;
 };
 
+// The backend always wraps structured failures in an `error` envelope. Keeping a
+// dedicated error class lets pages show the human message while still preserving
+// request IDs and machine-readable codes for support/debugging.
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -270,10 +273,14 @@ export function clearStoredApiKey(): void {
 }
 
 function requestId(): string {
+  // Every API write path is expected to carry X-Request-Id. Reads use it too so
+  // failed UI fetches can be correlated with backend logs without special cases.
   return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function buildUrl(path: string, query?: Record<string, string | number | boolean | null | undefined>): string {
+  // Empty VITE_API_BASE_URL means "same origin", which keeps local Vite proxy
+  // and production static hosting on the same code path.
   const base = API_BASE_URL || window.location.origin;
   const url = new URL(path, base);
   Object.entries(query ?? {}).forEach(([key, value]) => {
@@ -285,6 +292,8 @@ function buildUrl(path: string, query?: Record<string, string | number | boolean
 }
 
 async function parseBody(response: Response): Promise<unknown> {
+  // DELETE/204 responses legitimately have no body; text fallback keeps proxy or
+  // non-JSON errors visible instead of hiding them behind a JSON parse failure.
   const text = await response.text();
   if (!text) {
     return undefined;
@@ -310,6 +319,8 @@ async function apiRequest<T>(path: string, options: {
   if (options.body !== undefined) {
     headers.set('Content-Type', 'application/json');
   }
+  // Explicit authToken is used only for bootstrap/key-creation flows. All normal
+  // console requests use the locally stored API key, if one exists.
   const apiKey = options.authToken !== undefined ? options.authToken : getStoredApiKey();
   if (apiKey) {
     headers.set('Authorization', `Bearer ${apiKey}`);
@@ -337,6 +348,8 @@ async function apiRequest<T>(path: string, options: {
 }
 
 function normalizePaginated<T>(value: unknown): PaginatedResponse<T> {
+  // Some older endpoints and tests still return raw arrays. Normalize them here
+  // so pages can treat every list query as a paginated response.
   if (Array.isArray(value)) {
     return { items: value as T[], total: value.length, page: 1, page_size: value.length };
   }
@@ -488,6 +501,8 @@ export type BatchApprovalPayload = {
   approver: string;
   comment?: string | null;
   approval_ids: string[];
+  // These L3 fields are present for API parity, but the UI intentionally blocks
+  // batch approval of L3 items so each high-risk action gets an explicit review.
   risk_ack?: boolean;
   confirm_action_type?: string | null;
   confirm_target?: string | null;

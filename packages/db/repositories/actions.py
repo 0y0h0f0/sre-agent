@@ -13,6 +13,8 @@ from packages.db.models import Action
 
 
 class ActionRepository:
+    """Data access for action rows created by graph/API execution paths."""
+
     def __init__(self, db: Session) -> None:
         self.db = db
 
@@ -30,6 +32,11 @@ class ActionRepository:
         reason: str | None = None,
         rollback_plan: str | None = None,
     ) -> Action:
+        """Create an action row for a planned or executable action.
+
+        Approval-gated actions are created before interrupt; L0/L1 automatic
+        actions may be created immediately before execution.
+        """
         action = Action(
             action_id=new_id("act_"),
             incident_id=incident_id,
@@ -51,6 +58,7 @@ class ActionRepository:
         return self.db.scalar(stmt)
 
     def list_for_incident(self, incident_id: str) -> Sequence[Action]:
+        """Return actions in creation order for incident detail/reporting."""
         stmt = (
             select(Action)
             .where(Action.incident_id == incident_id)
@@ -59,6 +67,7 @@ class ActionRepository:
         return self.db.scalars(stmt).all()
 
     def list_for_run(self, agent_run_id: str) -> Sequence[Action]:
+        """Return actions created by a single agent run."""
         stmt = (
             select(Action)
             .where(Action.agent_run_id == agent_run_id)
@@ -72,6 +81,7 @@ class ActionRepository:
         status: str,
         execution_result: dict[str, Any] | None = None,
     ) -> Action | None:
+        """Update action status and optional executor result without commit."""
         action = self.get_by_public_id(action_id)
         if action is None:
             return None

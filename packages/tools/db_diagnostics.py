@@ -40,6 +40,12 @@ _QUERIES: dict[str, str] = {
 
 
 class DbDiagnosticsQuery(BaseModel):
+    """Read-only database diagnostics query.
+
+    ``operation`` selects one predefined SELECT statement. The caller never
+    supplies SQL text.
+    """
+
     operation: DbOperation = "connection_pool"
     limit: int = Field(default=10, ge=1, le=100)
 
@@ -65,6 +71,8 @@ class FixtureDbBackend:
         self.fixture_path = Path(fixture_path)
 
     def fetch(self, query: DbDiagnosticsQuery) -> list[dict[str, Any]]:
+        # Fixture rows use the same list-of-dicts contract as the live backend,
+        # keeping agent nodes and tests independent of the selected backend.
         payload = json.loads(self.fixture_path.read_text(encoding="utf-8"))
         rows = payload.get(query.operation, [])
         if not isinstance(rows, list):
@@ -86,6 +94,8 @@ class LiveDbBackend:
         connect_timeout_seconds: float = 2.0,
     ) -> None:
         self.dsn = dsn
+        # Validate timeout settings at construction time so an invalid live
+        # configuration fails before opening a database connection.
         self.statement_timeout_ms = _coerce_positive_int(
             statement_timeout_ms,
             field_name="statement_timeout_ms",
@@ -111,6 +121,9 @@ class LiveDbBackend:
                 # READ ONLY. statement_timeout is a literal int (no SQL params on SET).
                 conn.read_only = True
                 with conn.cursor() as cur:
+                    # statement_timeout is the only dynamic statement here and
+                    # it is an already-validated integer. The diagnostic SQL
+                    # remains one of the fixed SELECT templates above.
                     cur.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
                     cur.execute(sql, {"limit": query.limit})
                     columns = [desc[0] for desc in cur.description or []]
@@ -122,7 +135,11 @@ class LiveDbBackend:
 
 
 def _assert_read_only(sql: str) -> None:
-    """Reject any statement that is not a single read-only SELECT."""
+    """Reject any statement that is not a single read-only SELECT.
+
+    This is defense in depth for future edits to ``_QUERIES``; user input still
+    cannot provide arbitrary SQL.
+    """
     normalized = sql.strip().lower()
     if not normalized.startswith("select"):
         msg = "db diagnostics only permits SELECT statements"
@@ -134,6 +151,8 @@ def _assert_read_only(sql: str) -> None:
 
 
 class DbDiagnosticsTool:
+    """BaseTool wrapper around fixture/live read-only PostgreSQL diagnostics."""
+
     name = "db_diagnostics"
 
     def __init__(
@@ -178,10 +197,15 @@ class DbDiagnosticsTool:
                 ]
                 if has_data
                 else [],
+                # Empty results are degraded rather than failed: the backend was
+                # reachable, but the diagnostic did not produce useful evidence.
                 duration_ms=elapsed_ms(started_at),
                 error_message=None if has_data else "empty db diagnostics result",
             )
         except Exception as exc:
+            # Connection/query failures are degraded so the agent can still
+            # diagnose from other evidence buckets. Error text is redacted before
+            # it reaches state, logs, or API responses.
             return ToolResult(
                 status="degraded",
                 data={},
@@ -192,6 +216,7 @@ class DbDiagnosticsTool:
 
 
 def _redact_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Redact string values in diagnostic rows before evidence creation."""
     redacted_rows: list[dict[str, Any]] = []
     for row in rows:
         redacted, _ = redact_dict_values(row)
@@ -200,6 +225,7 @@ def _redact_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _coerce_positive_int(value: object, *, field_name: str) -> int:
+    """Coerce a strictly positive integer setting."""
     if isinstance(value, bool):
         raise ValueError(f"{field_name} must be a positive integer")
     if isinstance(value, int):
@@ -214,6 +240,7 @@ def _coerce_positive_int(value: object, *, field_name: str) -> int:
 
 
 def _coerce_connect_timeout_seconds(value: object) -> int:
+    """Coerce psycopg connect timeout seconds, with a minimum of one second."""
     if isinstance(value, bool):
         raise ValueError("connect_timeout_seconds must be a positive number")
     try:

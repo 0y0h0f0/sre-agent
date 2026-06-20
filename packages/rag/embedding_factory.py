@@ -19,7 +19,11 @@ from packages.common.settings import Settings
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):
-    """Protocol for embedding providers used by RunbookRetriever and RunbookIngestor."""
+    """Protocol for embedding providers used by RunbookRetriever and RunbookIngestor.
+
+    Providers must expose their vector dimension because the primary
+    ``runbook_chunks.embedding`` column is currently ``vector(512)``.
+    """
 
     dimension: int
     model_name: str
@@ -88,6 +92,8 @@ class BGEZhEmbeddingProvider:
             )
             response.raise_for_status()
             vectors = response.json()
+            # Validate dimensions before returning so callers never attempt to
+            # write incompatible vectors into the primary pgvector column.
             return _require_dimension(vectors, self.dimension, self.model_name)
         except Exception as exc:
             raise RuntimeError(
@@ -119,6 +125,8 @@ class Text2VecEmbeddingProvider:
             )
             response.raise_for_status()
             vectors = response.json()
+            # This provider is kept for future side-table/migration work; the
+            # factory currently rejects it for primary 512-dim writes.
             return _require_dimension(vectors, self.dimension, self.model_name)
         except Exception as exc:
             raise RuntimeError(
@@ -162,6 +170,9 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
         )
 
     if provider == "external":
+        # External embedding is an M9 capability and is off unless both semantic
+        # search and the subfeature gate are explicitly enabled. Disabled fallback
+        # preserves lexical/BM25 behavior without making network calls.
         if (
             not settings.semantic_runbook_search_enabled
             or not is_m9_subfeature_enabled(settings, "external_embedding_provider")
@@ -195,6 +206,7 @@ def _require_dimension(
     dimension: int,
     model_name: str,
 ) -> list[list[float]]:
+    """Validate and coerce provider output to a list of float vectors."""
     if not isinstance(vectors, list):
         raise ValueError(f"{model_name} response must be a list of vectors")
     checked: list[list[float]] = []
@@ -210,6 +222,7 @@ def _require_dimension(
 
 
 def _parse_csv(value: str) -> list[str]:
+    """Parse comma-separated domain pattern settings."""
     return [item.strip() for item in value.split(",") if item.strip()] if value else []
 
 
@@ -219,6 +232,11 @@ def _parse_csv(value: str) -> list[str]:
 
 
 def _fake_embed(text: str, dimension: int) -> list[float]:
+    """Generate a stable normalized pseudo-embedding from text.
+
+    This is not semantically meaningful like a model embedding, but it is stable
+    across processes and suitable for deterministic tests.
+    """
     values: list[float] = []
     counter = 0
     normalized = " ".join(text.strip().lower().split())

@@ -35,10 +35,14 @@ RequestCallNext = Callable[[Request], Awaitable[Response]]
 
 
 def create_app() -> FastAPI:
+    # Resolve settings once during app construction. Tests can still override
+    # dependency-provided settings without mutating this application shell.
     settings = get_settings()
     app = FastAPI(title="SRE Incident Response Agent", version="0.1.0")
 
     # CORS (Phase 7.4)
+    # Empty CORS config means "do not install CORS middleware"; this keeps local
+    # and production defaults explicit instead of silently allowing every origin.
     origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
     if origins:
         app.add_middleware(
@@ -50,7 +54,11 @@ def create_app() -> FastAPI:
         )
 
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+    # Request IDs are attached before route handlers and echoed on every response
+    # so API errors, worker enqueue logs, and frontend failures can be correlated.
     app.middleware("http")(_request_id_middleware)
+    # API key middleware owns authentication. Scope dependencies in routers only
+    # inspect the identity it places on request.state.
     app.middleware("http")(create_api_key_middleware())
     app.add_exception_handler(AppError, _app_error_handler)
     app.add_exception_handler(HTTPException, _http_exception_handler)
@@ -75,6 +83,8 @@ def create_app() -> FastAPI:
 
 
 async def _request_id_middleware(request: Request, call_next: RequestCallNext) -> Response:
+    # Honor caller-provided IDs for idempotency/debugging, otherwise generate a
+    # public request ID with the same prefix convention as persisted resources.
     request_id = request.headers.get("X-Request-Id") or new_id("req_")
     request.state.request_id = request_id
     response = await call_next(request)
@@ -85,6 +95,8 @@ async def _request_id_middleware(request: Request, call_next: RequestCallNext) -
 async def _app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     if not isinstance(exc, AppError):
         raise exc
+    # AppError already carries the public code/status/details; this handler only
+    # wraps it in the standard API envelope and adds the request ID.
     request_id = getattr(request.state, "request_id", new_id("req_"))
     return JSONResponse(
         status_code=exc.status_code,
@@ -112,6 +124,8 @@ async def _http_exception_handler(request: Request, exc: Exception) -> JSONRespo
         message = "request failed"
         details = {"detail": detail}
 
+    # Preserve headers from FastAPI/security exceptions, then add X-Request-Id so
+    # auth and scope failures still match the project error contract.
     headers = dict(exc.headers or {})
     headers["X-Request-Id"] = request_id
     return JSONResponse(
@@ -131,6 +145,8 @@ async def _http_exception_handler(request: Request, exc: Exception) -> JSONRespo
 async def _validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
     if not isinstance(exc, RequestValidationError):
         raise exc
+    # FastAPI validation errors expose rich field locations; keep them in details
+    # while using a stable top-level code for clients.
     request_id = getattr(request.state, "request_id", new_id("req_"))
     return JSONResponse(
         status_code=422,
@@ -147,6 +163,8 @@ async def _validation_error_handler(request: Request, exc: Exception) -> JSONRes
 
 
 def _http_error_code(status_code: int) -> str:
+    # Map framework-raised HTTPException statuses onto the same public error
+    # vocabulary used by AppError subclasses.
     if status_code == 400:
         return "VALIDATION_ERROR"
     if status_code == 401:

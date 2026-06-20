@@ -23,6 +23,8 @@ from packages.tools.executor_backends import ExecutionContext, FixtureExecutorBa
 
 
 class ActionService:
+    """Action detail and manual fixture execution service."""
+
     def __init__(self, db: Session) -> None:
         self.db = db
         self.actions = ActionRepository(db)
@@ -48,10 +50,17 @@ class ActionService:
         )
 
     def execute(self, action_id: str, request: ExecuteRequest) -> ExecuteResponse:
+        """Manually execute an approved action through the fixture backend.
+
+        This API is intentionally not the live executor path. Live Kubernetes
+        mutations only happen in the worker graph after guardrail, approval,
+        snapshot, executor preflight, and verify/replan handling.
+        """
         action = self._require_action(action_id)
         risk_level = action.risk_level
 
-        # L4 actions are always rejected
+        # L4 actions are always rejected, even if a row exists with an approval
+        # or an operator calls this endpoint directly.
         if risk_level == "L4":
             action.status = ActionStatus.BLOCKED.value
             action.execution_result = {
@@ -64,7 +73,9 @@ class ActionService:
                 details={"action_id": action_id, "risk_level": "L4"},
             )
 
-        # L2/L3 actions require an approved approval
+        # L2/L3 actions require an approved approval. Re-check here instead of
+        # trusting action.status, because action rows and approval rows are
+        # separate audit records.
         if risk_level in ("L2", "L3"):
             approved_approval = self.approvals.get_approved_for_action(action_id)
             if approved_approval is None:
@@ -73,7 +84,8 @@ class ActionService:
                     details={"action_id": action_id, "risk_level": risk_level},
                 )
 
-            # L3 also requires that secondary confirmation fields were saved
+            # L3 also requires that secondary confirmation fields were saved and
+            # still match the current action target/type.
             if risk_level == "L3":
                 if not approved_approval.risk_ack:
                     raise ApprovalRequiredError(
@@ -110,14 +122,16 @@ class ActionService:
                         },
                     )
 
-        # Validate not already executed
+        # Validate not already executed. This manual endpoint is not a retry or
+        # live reconciliation API.
         if action.status in (ActionStatus.EXECUTING.value, ActionStatus.SUCCEEDED.value):
             raise ValidationAppError(
                 "action already executed or in progress",
                 details={"action_id": action_id, "status": action.status},
             )
 
-        # Mark executing
+        # Mark executing before the fixture call so the action history reflects
+        # that a manual operator-triggered execution was attempted.
         action.status = ActionStatus.EXECUTING.value
         self.db.flush()
 

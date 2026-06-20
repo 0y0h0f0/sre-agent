@@ -151,6 +151,9 @@ class FixtureExecutorBackend:
     name = "fixture"
 
     def execute(self, action: dict[str, Any], context: ExecutionContext) -> ExecutionResult:
+        # Fixture execution intentionally accepts every known safe demo action
+        # without side effects. Guardrail/approval tests can assert workflow
+        # behavior without needing a Kubernetes cluster.
         atype = canonical_action_type(action.get("type"))
         return _FIXTURE_RESULTS.get(atype, _FIXTURE_FALLBACK)
 
@@ -160,6 +163,8 @@ class FixtureExecutorBackend:
         snapshot: dict[str, Any],
         context: ExecutionContext,
     ) -> ExecutionResult:
+        # Preserve deterministic rollback behavior for local degraded-loop
+        # tests while exposing which snapshot fields would have been available.
         atype = canonical_action_type(action.get("type"))
         result = _FIXTURE_RESULTS.get(atype, _FIXTURE_FALLBACK)
         return ExecutionResult(
@@ -204,7 +209,8 @@ class LiveK8sExecutorBackend:
         raw_params = action.get("params")
         ns = _effective_live_namespace(context.namespace, self.namespace)
 
-        # Validate K8s resource names to prevent path traversal.
+        # Validate K8s resource names before selecting a handler. The handler
+        # repeats this minimal preflight so direct unit calls cannot bypass it.
         if not target or not _K8S_NAME_RE.match(target):
             return ExecutionResult(
                 status="failed",
@@ -227,6 +233,8 @@ class LiveK8sExecutorBackend:
         if params_type_error:
             return ExecutionResult(status="failed", message=params_type_error)
         params = dict(_to_dict(raw_params))
+        # Params are whitelisted by action type. This blocks attempts to smuggle
+        # unrelated Kubernetes patch fields through a supported action.
         params_error = _live_params_error(atype, params)
         if params_error is not None:
             return params_error
@@ -258,6 +266,7 @@ class LiveK8sExecutorBackend:
         snapshot: dict[str, Any],
         context: ExecutionContext,
     ) -> ExecutionResult:
+        """Execute a rollback-class live action using prior snapshot data."""
         atype = canonical_action_type(action.get("type"))
         target = _normalize_k8s_name(action.get("target", ""))
         raw_params = action.get("params")
@@ -286,6 +295,9 @@ class LiveK8sExecutorBackend:
         if isinstance(k8s_snap, dict) and "error" not in k8s_snap:
             revision = k8s_snap.get("revision")
             replicas = k8s_snap.get("replicas")
+            # Fill only the parameter that belongs to the current rollback
+            # action. Scale-back should not receive a revision, and rollback
+            # should not receive replicas.
             if (
                 atype == "rollback_release"
                 and params.get("to_revision") is None
@@ -522,7 +534,8 @@ def _live_rollback_release(
         return ExecutionResult(status="failed", message=error_message)
     _ensure_k8s_client()
 
-    # POST to the deployment's rollback sub-resource.
+    # POST to the deployment's rollback sub-resource. This is one of the narrow
+    # live write paths explicitly allowed by the project boundary.
     from kubernetes import client  # type: ignore[import-untyped]
 
     body: dict[str, Any] = {"name": target}
@@ -621,6 +634,7 @@ _LIVE_ALLOWED_PARAMS: dict[str, frozenset[str]] = {
 
 
 def _params_type_error(value: object) -> str:
+    """Return an error when live params are not object-like."""
     if value is None or isinstance(value, (dict, BaseModel)):
         return ""
     return "live action params must be an object"
@@ -630,6 +644,7 @@ def _live_params_error(
     action_type: str,
     params: dict[str, Any],
 ) -> ExecutionResult | None:
+    """Validate action-specific live parameter allowlists."""
     allowed = _LIVE_ALLOWED_PARAMS.get(action_type)
     if allowed is None:
         return None
@@ -653,6 +668,12 @@ def _live_handler_preflight(
     params: object,
     namespace: object,
 ) -> tuple[str, dict[str, Any], str, ExecutionResult | None]:
+    """Normalize and validate the minimal live handler inputs.
+
+    The public backend entrypoint already performs these checks. Handlers call
+    this again for defense in depth because tests and internal code may invoke
+    handlers directly.
+    """
     normalized_target = _normalize_k8s_name(target)
     normalized_namespace = _effective_live_namespace(namespace)
     if not normalized_target or not _K8S_NAME_RE.match(normalized_target):
@@ -702,10 +723,12 @@ def _to_dict(value: object) -> dict[str, Any]:
 
 
 def _normalize_k8s_name(value: object) -> str:
+    """Trim a Kubernetes name/namespace candidate."""
     return str(value or "").strip()
 
 
 def _effective_live_namespace(*candidates: object) -> str:
+    """Choose the first non-empty namespace, falling back to ``default``."""
     for candidate in candidates:
         namespace = _normalize_k8s_name(candidate)
         if namespace:
@@ -714,6 +737,7 @@ def _effective_live_namespace(*candidates: object) -> str:
 
 
 def _safe_exception_message(exc: Exception) -> str:
+    """Return a redacted exception summary safe for logs/results."""
     return redact_text(str(exc)).redacted_text
 
 
@@ -755,11 +779,16 @@ def coerce_live_rollback_revision(value: object) -> tuple[int | None, str | None
 
 
 def _now_iso() -> str:
+    """Return a timezone-aware UTC timestamp for restart annotations."""
     return datetime.now(UTC).isoformat()
 
 
 def _ensure_k8s_client() -> None:
-    """Lazy-import and configure the kubernetes client."""
+    """Lazy-import and configure the kubernetes client.
+
+    The fixture path should not require the kubernetes package. Live handlers
+    call this only after all deterministic preflight checks have passed.
+    """
     try:
         from kubernetes import config  # type: ignore[import-untyped]
     except ImportError as exc:
@@ -805,6 +834,7 @@ def build_executor_backend(settings: Settings) -> ExecutorBackend:
 
 
 def _effective_live_executor_namespace(settings: Settings) -> str:
+    """Resolve live executor namespace using executor-specific config first."""
     return _effective_live_namespace(
         getattr(settings, "executor_k8s_namespace", ""),
         getattr(settings, "k8s_namespace", ""),

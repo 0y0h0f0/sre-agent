@@ -19,11 +19,15 @@ class EvalCase:
 
 
 def load_suite_cases(suite: str) -> list[EvalCase]:
+    # Keep accepted suite names explicit so CI cannot accidentally pick up an
+    # unreviewed dataset directory and turn it into a gate.
     if suite not in {"smoke", "full"}:
         msg = f"unknown suite: {suite}"
         raise ValueError(msg)
 
     if suite == "smoke":
+        # Smoke cases are individual files to make CI gate additions obvious in
+        # review; full eval can use a manifest to carry a larger manual dataset.
         paths = sorted((DATASET_ROOT / suite).glob("*.json"))
         return [_load_case_file(path) for path in paths]
 
@@ -40,6 +44,8 @@ def load_suite_cases(suite: str) -> list[EvalCase]:
 
 
 def suite_dataset_version(suite: str) -> str:
+    # Versioning is intentionally coarse for now. Bump this when case semantics,
+    # expected outputs, or scoring rules change in a non-comparable way.
     return f"{suite}-v1"
 
 

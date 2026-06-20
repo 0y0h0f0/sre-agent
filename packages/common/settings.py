@@ -9,8 +9,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # All runtime configuration comes from environment/.env plus these safe
+    # defaults. Unknown environment keys are ignored so roadmap experiments do
+    # not break older deployments.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Core service endpoints default to the docker-compose/local demo stack.
     database_url: str = "postgresql+psycopg://sre:sre@localhost:5432/sre"
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/1"
@@ -246,6 +250,9 @@ class Settings(BaseSettings):
         app_env = data.get('app_env', 'local')
         if app_env != 'production':
             return data
+        # Production flips only defaults that were not explicitly supplied. This
+        # preserves operator intent while keeping accidental production boots from
+        # enabling real LLM/discovery paths.
         if 'llm_provider' not in data:
             data['llm_provider'] = 'disabled'
         if 'discovery_enabled' not in data:
@@ -260,6 +267,8 @@ class Settings(BaseSettings):
         Conflict detection (M9 disabled + tempo, fixture in production)
         is handled by feature_flags.resolve_m9_feature_flags().
         """
+        # Keep enum validation local to Settings; cross-field M9 conflicts are
+        # resolved later in feature_flags so callers can inspect degraded states.
         valid_backends = frozenset({'disabled', 'fixture', 'jaeger', 'tempo'})
         if self.trace_backend not in valid_backends:
             raise ValueError(
@@ -290,6 +299,8 @@ class Settings(BaseSettings):
     cross_incident_max_results: int = Field(default=5, ge=1)
 
     # --- Phase 6: Collaboration & Approval Enhancement ---
+    # Zero means "disabled". Any auto-approval feature must still respect the
+    # max-risk cap and backend guardrail decisions.
     approval_auto_approve_minutes: int = Field(default=0, ge=0)
     approval_auto_approve_max_risk: str = "L2"
     rate_limit_max_requests: int = Field(default=10, ge=1)
@@ -297,6 +308,8 @@ class Settings(BaseSettings):
 
     # --- Phase 7: Ops & Engineering ---
     # 7.1 Auth
+    # Tests override this to false. In normal app construction it remains true so
+    # non-open routes require API key middleware identity.
     api_key_auth_enabled: bool = True
     api_key_open_paths: str = (
         "/healthz,/readyz,/metrics,/docs,/openapi.json,/api/approvals/by-token"
@@ -326,4 +339,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    # Cache settings per process so validators and SecretStr parsing happen once.
+    # Tests that need different env values should clear this cache or override
+    # FastAPI's get_app_settings dependency.
     return Settings()

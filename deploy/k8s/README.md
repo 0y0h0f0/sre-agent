@@ -82,27 +82,40 @@ deploy/k8s/
 
 ## 第二步：配置 Secret
 
-**必须修改 `base/secret.yaml`**，填入真实的连接信息：
+Kustomize 通过 `secretGenerator` 读取 `base/.env.secret`。`base/secret.yaml` 只是字段参考，
+不会被直接应用。先复制模板再填入真实连接信息：
 
-```yaml
-stringData:
-  # Postgres — 指向你的 pgvector 数据库
-  DATABASE_URL: "postgresql+psycopg://<db-user>:<db-password>@<pg-host>:5432/sre"
+```bash
+cp deploy/k8s/base/.env.secret.example deploy/k8s/base/.env.secret
+vim deploy/k8s/base/.env.secret
+```
 
-  # Redis — 指向你的 Redis 实例
-  REDIS_URL: "redis://your-redis-host:6379/0"
-  CELERY_BROKER_URL: "redis://your-redis-host:6379/1"
-  CELERY_RESULT_BACKEND: "redis://your-redis-host:6379/2"
+`.env.secret` 示例：
 
-  # 如果启用 LLM
-  LLM_API_KEY: "<replace-with-llm-api-key>"
+```dotenv
+# Postgres — 指向你的 pgvector 数据库
+DATABASE_URL=postgresql+psycopg://<db-user>:<db-password>@<pg-host>:5432/sre
 
-  # 如果启用 SMTP 通知
-  SMTP_USER: "sre-agent"
-  SMTP_PASSWORD: "<replace-with-smtp-password>"
+# Redis — 指向你的 Redis 实例
+REDIS_URL=redis://your-redis-host:6379/0
+CELERY_BROKER_URL=redis://your-redis-host:6379/1
+CELERY_RESULT_BACKEND=redis://your-redis-host:6379/2
 
-  # 初始运维 API 密钥种子（用于生成第一个 operator key）
-  API_KEY_INITIAL_SEED: "<replace-with-random-seed>"
+# 如果启用 LLM
+LLM_API_KEY=<replace-with-llm-api-key>
+
+# 如果启用 SMTP 通知；SMTP_HOST 为空时只写 email_log skipped，不会真实发送
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_TLS_MODE=starttls
+SMTP_FROM=sre-agent@example.com
+SRE_EMAIL_LIST=sre@example.com,oncall@example.com
+WEB_BASE_URL=https://sre-agent.your-domain.com
+SMTP_USER=sre-agent
+SMTP_PASSWORD=<replace-with-smtp-password>
+
+# 初始运维 API 密钥种子（用于生成第一个 operator key）
+API_KEY_INITIAL_SEED=<replace-with-random-seed>
 ```
 
 > **安全提示：** 生产环境请使用 Sealed Secrets、External Secrets Operator 或 Vault 管理 Secret，不要将明文 Secret 提交到 Git。
@@ -122,6 +135,9 @@ stringData:
 | `GITHUB_API_URL` | `https://api.github.com` | GitHub API 地址；企业版可改为内部 API |
 | `CORS_ALLOW_ORIGINS` | — | 前端域名 |
 | `WEB_BASE_URL` | — | 前端 URL（用于邮件通知中的链接）|
+| `SMTP_HOST` | 空 | 为空时邮件发送会被标记为 `skipped`；要收到真实邮件必须配置 |
+| `SMTP_FROM` | `sre-agent@example.local` | 邮件发件人；真实 SMTP 通常要求使用被验证的域名 |
+| `SRE_EMAIL_LIST` | `sre@example.local` | 逗号或分号分隔的全局收件人 |
 
 如果集群已有可观测性组件，注释掉 `base/kustomization.yaml` 中的 `prometheus.yaml`、`loki.yaml`、`grafana.yaml`。
 
@@ -172,6 +188,27 @@ from apps.api.services.api_key_service import ApiKeyService
 
 # 检查数据库迁移
 kubectl logs -n sre-agent deployment/api | grep "alembic"
+```
+
+### 验证邮件通知
+
+邮件通知是 best-effort：诊断不会因为 SMTP 不可用而失败。没有收到邮件时，先查
+`email_log`，再看 worker 日志。
+
+```bash
+# 使用内置 Postgres 时：
+kubectl exec -n sre-agent statefulset/postgres -- \
+  psql -U sre -d sre -c \
+  "select notification_type,status,recipient_count,last_error,created_at \
+   from email_log order by created_at desc limit 20;"
+
+# 常见状态：
+# queued  = 已写入邮件事件，但 send_email_notification 还没跑或 worker 没消费
+# sent    = SMTP provider 已接受
+# skipped = SMTP_HOST / SMTP_FROM / SRE_EMAIL_LIST 等前置配置缺失
+# failed  = SMTP 连接、认证或发送错误；看 last_error 和 worker 日志
+
+kubectl logs -n sre-agent deployment/worker --tail=200 | grep -i "email\\|smtp\\|notification"
 ```
 
 ## 第六步：暴露服务

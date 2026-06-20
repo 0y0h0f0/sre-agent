@@ -1,4 +1,9 @@
-"""Stable cache-key helpers for tool queries."""
+"""Stable cache-key helpers for tool queries.
+
+The cache is scoped to one agent run, not a cross-run/global cache. It avoids
+duplicate work inside the same diagnosis cycle while keeping observations fresh
+for later runs and avoiding any confusion with provider prompt-cache metrics.
+"""
 
 from __future__ import annotations
 
@@ -37,10 +42,15 @@ class RequestLocalToolCache:
                 self.miss_count += 1
                 return None
             self.hit_count += 1
+            # Return a copy so callers can adjust duration/cache metadata
+            # without mutating the canonical cached ToolResult.
             return cached.model_copy(update={"cache_hit": True})
 
     def set(self, key: str, result: ToolResult) -> None:
         with self._lock:
+            # Keep memory bounded for long or highly parallel evidence
+            # collection. FIFO is sufficient because the cache only lives for
+            # one run and keys are deterministic.
             if len(self._items) >= self._MAX_ITEMS and key not in self._items:
                 oldest = self._keys.pop(0)
                 self._items.pop(oldest, None)
@@ -59,6 +69,12 @@ def build_cache_key(
     bucket_seconds: int,
     datasource: str | None = None,
 ) -> str:
+    """Build a stable key for time-windowed observability queries.
+
+    Service/start/end are lifted into explicit key segments after bucketing; the
+    remaining normalized query body is hashed. Tools pass ``datasource`` when
+    fixture/live/provider backends must not share cached observations.
+    """
     normalized = _normalized_query_payload(query)
     normalized.pop("service", None)
     normalized.pop("start", None)
@@ -80,13 +96,17 @@ def build_cache_key(
 
 
 def _normalized_query_payload(query: BaseModel) -> dict[str, Any]:
+    """Normalize query fields before hashing."""
     payload = query.model_dump(mode="json", exclude_none=True)
+    # Empty keyword lists are equivalent to "no keyword filter"; dropping them
+    # keeps logs cache keys stable across default constructors.
     if payload.get("keywords") == []:
         payload.pop("keywords")
     return payload
 
 
 def _bucket_datetime(value: datetime, bucket_seconds: int, *, round_up: bool) -> datetime:
+    """Bucket datetimes in UTC so cache keys are timezone-independent."""
     normalized = ensure_utc(value).astimezone(UTC)
     timestamp = int(normalized.timestamp())
     if round_up:
@@ -97,4 +117,5 @@ def _bucket_datetime(value: datetime, bucket_seconds: int, *, round_up: bool) ->
 
 
 def expand_window(start: datetime, end: datetime, before: timedelta) -> tuple[datetime, datetime]:
+    """Return a UTC-normalized window expanded backwards by ``before``."""
     return ensure_utc(start) - before, ensure_utc(end)

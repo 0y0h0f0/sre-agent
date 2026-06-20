@@ -50,6 +50,8 @@ from .datasets import EvalCase
 
 @dataclass(slots=True)
 class EvalCaseResult:
+    # One case result is intentionally close to the JSON report shape so the CLI,
+    # API task, and replay mode can share scoring without extra translation.
     case_id: str
     incident_type: str
     source_path: str
@@ -171,6 +173,8 @@ class _FixtureMetricsTool:
     def run(self, query: BaseModel) -> ToolResult:
         metrics_query = MetricsQuery.model_validate(query)
         started_at = start_timer()
+        # Use the same cache key helper and one-minute bucket as the production
+        # metrics tool so eval cache metrics exercise the real normalization path.
         cache_key = build_cache_key(
             tool_name=self.name,
             service=metrics_query.service,
@@ -183,6 +187,8 @@ class _FixtureMetricsTool:
         if cached is not None:
             return cached.model_copy(update={"duration_ms": elapsed_ms(started_at)})
 
+        # Missing fixture data degrades instead of failing. This mirrors tool
+        # behavior during partial outages and lets evidence coverage detect gaps.
         payload = self.fixtures.get(metrics_query.metric_type, {"samples": []})
         samples = [float(value) for value in payload.get("samples", [])]
         if not samples:
@@ -246,6 +252,8 @@ class _FixtureLogsTool:
     def run(self, query: BaseModel) -> ToolResult:
         logs_query = LogsQuery.model_validate(query)
         started_at = start_timer()
+        # Log fixtures also go through cache-key normalization so smoke eval can
+        # catch regressions in query hashing without reaching Loki.
         cache_key = build_cache_key(
             tool_name=self.name,
             service=logs_query.service,
@@ -339,6 +347,8 @@ def run_case(case: EvalCase, *, suite: str, settings: Settings | None = None) ->
     env = _make_environment(settings)
     session = env.session
     try:
+        # Every case gets a fresh in-memory database and checkpointer. This keeps
+        # fingerprint dedup, memory, runbooks, and approvals isolated per case.
         _seed_runbooks(session, env.runbook_path)
         incident = _create_incident(session, case, settings)
         agent_run = _create_agent_run(session, incident.incident_id, settings)
@@ -351,12 +361,17 @@ def run_case(case: EvalCase, *, suite: str, settings: Settings | None = None) ->
         initial_result = runner.run(
             incident.incident_id, agent_run.agent_run_id, _alert_payload(case)
         )
+        # High-risk interception is measured by either the interrupt status or
+        # persisted approval rows, since a later resume may finish the run.
         approval_interrupted = (
             initial_result.get("status") == "waiting_approval"
             or bool(ApprovalRepository(session).list_for_run(agent_run.agent_run_id))
         )
         final_result = initial_result
         if final_result.get("status") == "waiting_approval":
+            # The harness auto-approves only inside its temporary DB so reports
+            # can be generated and scored. Production approval semantics remain
+            # covered by API/integration tests.
             for _ in range(6):
                 _approve_waiting_approvals(session, agent_run.agent_run_id)
                 final_result = runner.resume(agent_run.agent_run_id, "approved")
@@ -430,6 +445,8 @@ def run_suite(suite: str, *, output: str | Path | None = None) -> EvalSuiteRepor
 
     cases = load_suite_cases(suite)
     started_at = utc_now()
+    # Build settings once per suite so report metadata reflects the model and
+    # provider actually used by every case in this run.
     settings = _eval_settings()
     results = [run_case(case, suite=suite, settings=settings) for case in cases]
     finished_at = utc_now()
@@ -455,6 +472,8 @@ def run_suite(suite: str, *, output: str | Path | None = None) -> EvalSuiteRepor
 
 
 def _make_environment(settings: Settings) -> _EvalEnvironment:
+    # StaticPool keeps the in-memory SQLite database visible across all sessions
+    # opened by repositories/tools during a single eval case.
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -476,6 +495,8 @@ def _make_environment(settings: Settings) -> _EvalEnvironment:
 
 
 def _seed_runbooks(session: Session, runbook_path: Path) -> None:
+    # Smoke/full eval must not depend on external embedding services. The fake
+    # provider is deterministic and matches the current 512-dimensional schema.
     ingestor = RunbookIngestor(
         RunbookChunkRepository(session),
         embedding_provider=FakeEmbeddingProvider(),
@@ -492,6 +513,8 @@ def _build_deps(
     tool_cache: RequestLocalToolCache,
 ) -> AgentDeps:
     chunk_repo = RunbookChunkRepository(session)
+    # Force fake embedding and fake reranking even if the shell is configured for
+    # a local or external semantic search provider.
     retriever = RunbookRetriever(
         chunk_repo,
         embedding_provider=FakeEmbeddingProvider(),
@@ -518,6 +541,8 @@ def _build_deps(
         ),
         memory_store=MemoryStore(session),
         context_builder=ContextBuilder(),
+        # LLM selection comes from eval settings: fake by default, real provider
+        # only when the operator explicitly opts in for manual evaluation.
         llm=build_llm(settings),
         node_tracer=_node_tracer(session, agent_run_id),
         tool_call_recorder=_tool_call_recorder(session, agent_run_id),
@@ -613,6 +638,8 @@ def _node_tracer(session: Session, agent_run_id: str) -> Callable[..., None]:
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
+            # Reports need readable node history, but eval state should not carry
+            # arbitrarily large logs or prompt fragments in trace summaries.
             input_summary=(kwargs.get("input_summary") or "")[:500],
             output_summary=(kwargs.get("output_summary") or "")[:500],
             error_message=(kwargs.get("error_message") or "")[:500] or None,
@@ -676,6 +703,8 @@ def _suite_metrics(results: list[EvalCaseResult]) -> dict[str, Any]:
         "p95_prompt_token_estimate": _p95([case.prompt_token_estimate for case in results]),
         "tool_success_rate": round(sum(case.tool_successes for case in results) / tool_total, 4),
         "tool_cache_hit_rate": round(sum(case.tool_cache_hits for case in results) / tool_total, 4),
+        # These two cache metrics are placeholders in the deterministic harness.
+        # They must not be interpreted as real provider prefix-cache telemetry.
         "provider_prompt_cache_hit_rate": round(
             sum(case.tool_cache_hits for case in results) / tool_total, 4
         ),
@@ -730,6 +759,9 @@ def _structured_output_valid(state: dict[str, Any], result: dict[str, Any]) -> b
 
 
 def _memory_misuse(state: dict[str, Any], case: EvalCase) -> bool:
+    # The smoke/full datasets are single-service incidents. A memory item that
+    # does not mention the target service is a conservative proxy for leakage or
+    # unrelated retrieval.
     memories = [item for item in state.get("memory_context", []) if isinstance(item, dict)]
     if not memories:
         return False
@@ -755,6 +787,8 @@ def _required_evidence_hit(state: dict[str, Any], expected_types: list[str]) -> 
 
 def _evidence_types(state: dict[str, Any]) -> set[str]:
     types: set[str] = set()
+    # Evidence coverage scores signal presence by source class, while detailed
+    # traceability is checked elsewhere through evidence IDs and report output.
     for key in ("metrics_evidence", "logs_evidence", "traces_evidence", "deployment_evidence"):
         for item in state.get(key, []) or []:
             if isinstance(item, dict) and item.get("type"):
@@ -804,6 +838,8 @@ def _string_value(source: dict[str, Any], key: str) -> str:
 
 
 def _sanitize_state(state: dict[str, Any]) -> dict[str, Any]:
+    # Persist only JSON-serializable public state in AgentRun rows. Private keys
+    # are dropped to avoid saving dependency objects or transient internals.
     def convert(value: Any) -> Any:
         if isinstance(value, datetime):
             return value.isoformat()
@@ -894,6 +930,8 @@ def _eval_settings() -> Settings:
         "celery_result_backend": "memory://backend",
         "llm_provider": provider,
         "llm_model": os.getenv("LLM_MODEL", "fake-diagnosis-model"),
+        # Embedding/reranker are locked to fake even for real-LLM manual evals so
+        # model quality comparisons are not mixed with external retrieval drift.
         "embedding_provider": "fake",
         "reranker_provider": "fake",
         "trace_fixture_path": "demo/faults/traces.json",

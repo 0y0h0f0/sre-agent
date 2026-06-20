@@ -1,4 +1,11 @@
-"""LangGraph StateGraph builder — wires nodes with dependency injection."""
+"""LangGraph StateGraph builder — wires nodes with dependency injection.
+
+The graph is intentionally the only place that describes node order and loop
+boundaries. Individual nodes stay ordinary Python functions so they can be
+unit-tested without LangGraph, while this module owns the production routing
+contract: evidence collection, diagnosis, guardrail approval, execution,
+verification, reporting, and memory persistence.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +44,10 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     """
     graph = StateGraph(IncidentState)
 
+    # All external handles are injected through AgentDeps and bound here. This
+    # keeps nodes from constructing DB sessions, HTTP clients, executors, or
+    # LLM adapters on their own, which preserves the test/mocking boundary and
+    # the production safety rules around fixture vs live backends.
     graph.add_node("parse_alert", partial(parse_alert, deps=deps))
     graph.add_node("collect_all_evidence", partial(collect_all_evidence, deps=deps))
     graph.add_node("collect_gap", partial(collect_gap, deps=deps))
@@ -56,6 +67,9 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph.add_node("generate_report", partial(generate_report, deps=deps))
     graph.add_node("persist_memory", partial(persist_memory, deps=deps))
 
+    # The first segment is a straight-line enrichment path. It normalizes the
+    # alert, gathers all primary evidence, then adds memory/runbook/correlation
+    # context before the LLM or FakeLLM is asked for a diagnosis.
     graph.set_entry_point("parse_alert")
     graph.add_edge("parse_alert", "collect_all_evidence")
     graph.add_edge("collect_all_evidence", "retrieve_memory")
@@ -64,6 +78,10 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph.add_edge("retrieve_runbook", "build_context")
     graph.add_edge("build_context", "diagnose")
     graph.add_edge("diagnose", "compress_context")
+
+    # Diagnosis may ask for one targeted evidence refill. The cap is enforced
+    # in the router, not in the LLM output, so missing-evidence loops remain
+    # deterministic and bounded.
     graph.add_conditional_edges(
         "compress_context",
         _route_after_diagnose,
@@ -73,11 +91,17 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
     graph.add_edge("rank_hypotheses", "plan_actions")
     graph.add_edge("plan_actions", "guardrail_check")
 
+    # Guardrail output is the security boundary between suggested actions and
+    # anything that might execute. L4 ends in a report, L2/L3 pauses for human
+    # approval, and only already-safe actions continue to snapshot/execute.
     graph.add_conditional_edges(
         "guardrail_check",
         _route_after_guardrail,
         {"execute": "take_snapshot", "approval": "human_approval", "report": "generate_report"},
     )
+    # human_approval is re-entered after interrupt resume. It reads persisted
+    # approval rows and routes based on the DB-backed decision, so a resume
+    # payload cannot silently approve unrelated actions.
     graph.add_conditional_edges(
         "human_approval",
         _route_after_approval,
@@ -88,8 +112,14 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
             "report": "generate_report",
         },
     )
+    # Snapshot is deliberately before executor invocation. Live backends use it
+    # for target/namespace preflight and rollback-capable replans use it as the
+    # last known good reference after a degraded verification.
     graph.add_edge("take_snapshot", "execute_action")
     graph.add_edge("execute_action", "verify")
+    # Verification is a bounded ReAct-style loop. Non-terminal verdicts return
+    # to planning with fresh evidence; terminal verdicts always produce a
+    # report and then persist memory best-effort.
     graph.add_conditional_edges(
         "verify",
         _route_after_verify,
@@ -102,6 +132,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any | None = None) -> Any:
 
 
 def _route_after_guardrail(state: IncidentState) -> str:
+    """Choose the post-guardrail path from deterministic risk metadata."""
     needs_approval = state.get("_needs_approval", False)
     all_l4 = state.get("_all_l4", False)
     if all_l4:
@@ -118,6 +149,8 @@ def _route_after_diagnose(state: IncidentState) -> str:
     the cycle limit, route back to collect_gap for targeted re-collection.
     Otherwise proceed to rank_hypotheses.
     """
+    # missing_evidence is advisory, but the loop budget is authoritative. This
+    # prevents a model or fixture response from expanding collection forever.
     rationale = state.get("diagnosis_rationale", {})
     missing = rationale.get("missing_evidence", [])
     cycles = int(state.get("_collect_gap_cycles", 0))
@@ -133,6 +166,8 @@ def _route_after_verify(state: IncidentState) -> str:
     - ``improving`` / ``unchanged`` / ``degraded`` → replan (plan_actions
       receives degraded feedback with rollback guidance)
     """
+    # Treat unknown/error as terminal because the next report should surface
+    # the uncertainty instead of making unbounded operational changes.
     verdict = state.get("verify_result", "resolved")
     cycles = int(state.get("_verify_cycles", 0))
     if verdict in ("resolved", "skipped", "unknown", "error") or cycles >= MAX_VERIFY_CYCLES:
@@ -148,6 +183,9 @@ def _route_after_approval(state: IncidentState) -> str:
     if phase == "approval_approved":
         return "execute"
     if phase == "approval_waiting":
+        # Re-enter the same node and interrupt again. execute_action still
+        # filters on requires_approval, but routing away from execution keeps
+        # pending approvals explicit in node traces.
         return "wait"
     if phase == "approval_rejected":
         # Bound the reject -> replan cycle; give up to report after the cap so

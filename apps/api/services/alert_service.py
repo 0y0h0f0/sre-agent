@@ -1,3 +1,11 @@
+"""Alert ingestion service.
+
+This service owns the webhook/poll ingestion business boundary: fingerprint
+deduplication, incident/run creation, transaction commits, Celery enqueue, and
+best-effort notification enqueue. The request thread must never run LangGraph
+diagnosis inline.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -22,6 +30,8 @@ NotificationTaskEnqueue = Callable[[str, dict[str, Any]], str]
 
 
 class AlertService:
+    """Create or deduplicate incidents from normalized alert payloads."""
+
     def __init__(
         self,
         db: Session,
@@ -38,13 +48,23 @@ class AlertService:
         self.fpp = FalsePositivePatternRepository(db)
 
     def create_alert(self, payload: AlertCreateRequest) -> AlertCreateResponse:
-        # Phase 5: check for suppressed NFA patterns before creating incident
+        """Create an incident + agent run, then enqueue diagnosis.
+
+        The incident/run rows are committed before Celery enqueue so the worker
+        can read them on its own DB connection. If enqueue fails, the new run and
+        incident are moved to failed instead of leaving an open dedup trap.
+        """
+        # Phase 5: check for suppressed NFA patterns before creating incident.
+        # Suppressed alerts are still recorded, but auto-downgraded so operators
+        # can audit them without paging on known-not-actionable fingerprints.
         suppressed = self.fpp.should_suppress(
             payload.fingerprint, threshold=self.settings.nfa_auto_suppress_threshold
         )
 
         existing = self.incidents.get_open_by_fingerprint(payload.fingerprint)
         if existing is not None:
+            # Deduplication is by open incident fingerprint. No new run is
+            # enqueued because the existing incident remains the active owner.
             return self._deduplicated_response(existing)
 
         incident_id = new_id("inc_")
@@ -61,6 +81,8 @@ class AlertService:
             self.db.commit()
         except IntegrityError:
             self.db.rollback()
+            # Race-safe dedup: another request may have inserted the same
+            # fingerprint between our lookup and commit.
             existing = self.incidents.get_open_by_fingerprint(payload.fingerprint)
             if existing is not None:
                 return self._deduplicated_response(existing)
@@ -79,6 +101,8 @@ class AlertService:
 
         self.agent_runs.set_task_id(agent_run_id, celery_task_id)
         self.db.commit()
+        # Notifications are intentionally outside the critical path; ingestion
+        # success is the incident/run/task durable state above.
         self._enqueue_notification("new_incident", {"incident_id": incident_id})
         return AlertCreateResponse(
             incident_id=incident_id,
@@ -89,6 +113,7 @@ class AlertService:
         )
 
     def _enqueue_notification(self, notification_type: str, payload: dict[str, Any]) -> None:
+        """Best-effort notification enqueue; never blocks alert ingestion."""
         if self.enqueue_notification is None:
             return
         try:
@@ -119,7 +144,8 @@ class AlertService:
             grafana_webhook_ingest_total.labels(status="malformed").inc()
             raise ValueError("missing 'alerts' field in Grafana payload")
 
-        # 3. Parse via Grafana schema.
+        # 3. Parse via Grafana schema. The shared AlertCreateRequest path keeps
+        # Grafana webhooks aligned with generic alert dedup and Celery enqueue.
         from apps.api.schemas.alerts import grafana_to_alert
         parsed = grafana_to_alert(raw_payload)
         parsed["source"] = "grafana"
@@ -131,6 +157,7 @@ class AlertService:
         return response
 
     def _deduplicated_response(self, incident: Incident) -> AlertCreateResponse:
+        """Return the existing incident/latest-run tuple for duplicate alerts."""
         latest_run = self.agent_runs.get_latest_for_incident(incident.incident_id)
         if latest_run is None:
             agent_run_id = ""

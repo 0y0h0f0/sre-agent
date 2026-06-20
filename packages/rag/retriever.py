@@ -20,6 +20,8 @@ WORD_RE = re.compile(r"[a-z0-9_]+")
 
 
 class RunbookSearchQuery(BaseModel):
+    """Normalized runbook search request used by API, tool, and retriever."""
+
     query: str = Field(min_length=1)
     service: str | None = None
     incident_type: str | None = None
@@ -42,6 +44,12 @@ class RunbookSearchQuery(BaseModel):
 
 
 class RunbookSearchResult(BaseModel):
+    """Public runbook search result contract.
+
+    chunk_id and source_path are required so diagnosis/report output can cite
+    the exact runbook evidence that influenced a recommendation.
+    """
+
     chunk_id: str
     source_path: str
     title: str
@@ -54,6 +62,8 @@ RunbookSearchResultList = list[RunbookSearchResult]
 
 
 class RunbookSearchCache:
+    """Small in-process cache for retriever results."""
+
     def __init__(self) -> None:
         self._items: dict[str, RunbookSearchResultList] = {}
 
@@ -61,13 +71,17 @@ class RunbookSearchCache:
         cached = self._items.get(key)
         if cached is None:
             return None
+        # Return deep copies so callers cannot mutate cached Pydantic results.
         return [item.model_copy(deep=True) for item in cached]
 
     def set(self, key: str, results: RunbookSearchResultList) -> None:
+        """Store a defensive copy of search results."""
         self._items[key] = [item.model_copy(deep=True) for item in results]
 
 
 class RunbookRetriever:
+    """Retrieve runbook chunks with vector, lexical, BM25, and rerank stages."""
+
     def __init__(
         self,
         repository: RunbookChunkRepository,
@@ -80,6 +94,8 @@ class RunbookRetriever:
         self.repository = repository
         if embedding_provider is None:
             from packages.common.settings import get_settings
+            # Settings-driven provider selection keeps tests on fake embeddings
+            # while allowing explicit local/controlled semantic providers.
             embedding_provider = build_embedding_provider(get_settings())
         self.embedding_provider: EmbeddingProvider = embedding_provider
         self.cache = cache
@@ -87,6 +103,7 @@ class RunbookRetriever:
         self._reranker: RerankerBackend | None = reranker  # lazy-init from settings
 
     def search(self, query: RunbookSearchQuery) -> RunbookSearchResultList:
+        """Search for relevant runbook chunks and return top_k results."""
         normalized_query = RunbookSearchQuery.model_validate(query)
         cache_key = _search_cache_key(normalized_query)
         if self.cache is not None:
@@ -101,6 +118,8 @@ class RunbookRetriever:
         for chunk in self.repository.list_chunks():
             if not _matches_metadata(chunk.metadata_json, normalized_query):
                 continue
+            # Disabled embeddings are zero vectors, so lexical overlap is kept
+            # in this path to make keyword-only fallback useful and deterministic.
             vec_score = max(
                 _normalized_cosine(query_embedding, chunk.embedding),
                 _lexical_score(normalized_query.query, f"{chunk.title}\n{chunk.content}"),
@@ -126,6 +145,8 @@ class RunbookRetriever:
         if bm25_scores:
             titles_for_alpha = [chunk.title for chunk, _ in all_chunks.values()]
             alpha = adaptive_alpha(normalized_query.query, titles_for_alpha)
+            # alpha weights lexical/BM25 confidence against vector/overlap score.
+            # It adapts so exact operational terms can dominate vague embeddings.
             for chunk_id, (chunk, vec_score) in all_chunks.items():
                 bm25 = bm25_scores.get(chunk_id, 0.0)
                 hybrid = alpha * bm25 + (1.0 - alpha) * vec_score
@@ -137,6 +158,8 @@ class RunbookRetriever:
         # Rerank via configured backend (batch call, then sort by rerank score)
         if self._reranker is None:
             from packages.common.settings import get_settings
+            # Lazy-init keeps simple unit tests from constructing external
+            # reranker clients until search actually runs.
             self._reranker = build_reranker_backend(get_settings())
         docs = [
             {
@@ -174,6 +197,7 @@ class RunbookRetriever:
 
 
 def format_runbook_context(results: list[RunbookSearchResult]) -> str:
+    """Format search results for prompt context with explicit citations."""
     blocks = []
     for result in results:
         title = result.title.replace('"', "'")
@@ -185,6 +209,7 @@ def format_runbook_context(results: list[RunbookSearchResult]) -> str:
 
 
 def _matches_metadata(metadata: dict[str, Any], query: RunbookSearchQuery) -> bool:
+    """Apply service and incident-type filters from normalized query."""
     if query.service and (metadata.get("service") or "").lower() != query.service.lower():
         return False
     if query.incident_type and metadata.get("incident_type") != query.incident_type:
@@ -205,6 +230,7 @@ def _has_values(vec: object) -> bool:
 
 
 def _normalized_cosine(left: list[float], right: list[float]) -> float:
+    """Return cosine similarity normalized to the 0..1 interval."""
     if not _has_values(left) or not _has_values(right):
         return 0.0
     count = min(len(left), len(right))
@@ -217,6 +243,7 @@ def _normalized_cosine(left: list[float], right: list[float]) -> float:
 
 
 def _lexical_score(query: str, text: str) -> float:
+    """Return simple query-term overlap for deterministic lexical fallback."""
     query_terms = set(WORD_RE.findall(query.lower()))
     if not query_terms:
         return 0.0
@@ -228,6 +255,7 @@ def _lexical_score(query: str, text: str) -> float:
 
 
 def _excerpt(content: str, query: str, *, limit: int = 360) -> str:
+    """Build a compact excerpt centered near the first query term."""
     compact = " ".join(content.split())
     if len(compact) <= limit:
         return compact
@@ -242,6 +270,7 @@ def _excerpt(content: str, query: str, *, limit: int = 360) -> str:
 
 
 def _search_cache_key(query: RunbookSearchQuery) -> str:
+    """Build a stable cache key for normalized runbook search inputs."""
     payload = query.model_dump(mode="json", exclude_none=True)
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

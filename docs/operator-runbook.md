@@ -136,6 +136,17 @@ Worker metrics server 默认端口 `9800`，由 `PROMETHEUS_METRICS_ENABLED` 和
 3. 多审批 run 只有全部 sibling approvals 决定后才 resume。
 4. L3 不允许 email token 审批。
 
+### 没有收到邮件
+
+1. 查询 `email_log`，确认对应 incident/run 是否有 `new_incident`、`approval_request`、
+   `diagnosis_complete` 或 `incident_report` 记录。
+2. `status=skipped` 通常表示 `SMTP_HOST`、`SMTP_FROM` 或 `SRE_EMAIL_LIST` 缺失；
+   K8s base 默认 `SMTP_HOST` 为空，需要显式配置后才会真实发送。
+3. `status=failed` 看 `last_error` 和 worker 日志，重点检查 SMTP 出口网络、端口、
+   TLS 模式、用户名密码和发件人域名。
+4. `status=queued` 说明邮件事件已写库但 sender task 没消费，检查 Redis broker、
+   worker 是否运行，以及 `send_email_notification` task 日志。
+
 ### Runbook 搜索无结果
 
 1. 确认已 ingest runbooks。

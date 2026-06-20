@@ -1,3 +1,5 @@
+"""Incident report read/regeneration service."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -17,6 +19,8 @@ NotificationTaskEnqueue = Callable[[str, dict[str, Any]], str]
 
 
 class ReportService:
+    """Owns latest report lookup and append-only report regeneration."""
+
     def __init__(
         self, db: Session, enqueue_notification: NotificationTaskEnqueue | None = None
     ) -> None:
@@ -28,6 +32,7 @@ class ReportService:
         self.reports = IncidentReportRepository(db)
 
     def get_latest(self, incident_id: str) -> IncidentReportResponse:
+        """Return the latest persisted report version for an incident."""
         self._require_incident(incident_id)
         report = self.reports.get_latest_for_incident(incident_id)
         if report is None:
@@ -35,6 +40,11 @@ class ReportService:
         return self._schema(report)
 
     def regenerate(self, incident_id: str) -> IncidentReportResponse:
+        """Create a new report version from the latest run and persisted facts.
+
+        Regeneration is append-only: it uses ``next_version`` and never overwrites
+        older incident_reports rows.
+        """
         incident = self._require_incident(incident_id)
         run = self.agent_runs.get_latest_for_incident(incident_id)
         if run is None:
@@ -48,6 +58,9 @@ class ReportService:
         state_report = _dict_value(run.state.get("incident_report"))
         version = self.reports.next_version(incident_id)
 
+        # Prefer the structured report from the run state when present, but
+        # fall back to durable incident/evidence/action rows so regeneration
+        # still works for older or partial runs.
         root_cause = _string_value(state_report.get("root_cause")) or _root_cause(incident, run)
         impact = _string_value(state_report.get("impact")) or _impact(incident)
         timeline = _record_list(state_report.get("timeline")) or _timeline(
@@ -80,10 +93,12 @@ class ReportService:
             body_markdown=body_markdown,
         )
         self.db.commit()
+        # Notification failure must not roll back the new report version.
         self._enqueue_notification("incident_report", {"report_id": report.report_id})
         return self._schema(report)
 
     def _enqueue_notification(self, notification_type: str, payload: dict[str, Any]) -> None:
+        """Best-effort report notification enqueue."""
         if self.enqueue_notification is None:
             return
         try:
@@ -98,6 +113,7 @@ class ReportService:
         return incident
 
     def _schema(self, report: IncidentReport) -> IncidentReportResponse:
+        """Map the persisted report plus current evidence IDs to API schema."""
         evidence_ids = [item.evidence_id for item in self.reads.list_evidence(report.incident_id)]
         return IncidentReportResponse(
             report_id=report.report_id,
@@ -116,6 +132,7 @@ class ReportService:
 
 
 def _root_cause(incident: Incident, run: AgentRun) -> str:
+    """Resolve root cause text from incident/run fallback sources."""
     state_root = _dict_value(run.state.get("root_cause"))
     return (
         incident.root_cause_summary
@@ -133,6 +150,7 @@ def _timeline(
     evidence: list[EvidenceItem],
     actions: list[Action],
 ) -> list[dict[str, Any]]:
+    """Build a simple timeline from alert time, evidence timestamps, and actions."""
     entries: list[dict[str, Any]] = [
         {"time": incident.starts_at.isoformat(), "event": f"{incident.alert_name} fired"}
     ]
@@ -150,6 +168,7 @@ def _timeline(
 
 
 def _actions(actions: list[Action]) -> list[dict[str, Any]]:
+    """Project action rows into report action entries."""
     return [
         {
             "action_id": action.action_id,
@@ -180,6 +199,7 @@ def _body_markdown(
     actions: list[dict[str, Any]],
     follow_ups: list[dict[str, Any] | str],
 ) -> str:
+    """Render a deterministic Markdown body for regenerated reports."""
     lines = [
         f"# Incident report v{version}",
         "",
@@ -203,20 +223,24 @@ def _body_markdown(
 
 
 def _dict_value(value: Any) -> dict[str, Any]:
+    """Return dict values only, shielding older state snapshots."""
     return value if isinstance(value, dict) else {}
 
 
 def _record_list(value: Any) -> list[dict[str, Any]]:
+    """Return list entries that are JSON object records."""
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
 
 
 def _follow_ups(value: Any) -> list[dict[str, Any] | str]:
+    """Return follow-up entries that match the API schema."""
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict) or isinstance(item, str)]
 
 
 def _string_value(value: Any) -> str:
+    """Return string values only."""
     return value if isinstance(value, str) else ""

@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 
 class EvalRunRequest(BaseModel):
+    # CI should use "smoke"; "full" is exposed for manual/local comparison and
+    # is not intended to become a stable gate with real providers.
     suite: str = Field(default="smoke", pattern="^(smoke|full)$")
     model: str | None = None
     prompt_version: str = Field(default="v1")
@@ -52,6 +54,8 @@ class ShadowRunResponse(BaseModel):
 
 
 class ReplayRunRequest(BaseModel):
+    # Keep replay bounded because each selected incident can run a full graph in
+    # an isolated temporary database.
     limit: int = Field(default=20, ge=1, le=100)
     service: str | None = Field(default=None, max_length=128)
     incident_ids: list[str] = Field(default_factory=list, max_length=100)
@@ -69,6 +73,8 @@ class CompareResponse(BaseModel):
 
 
 class EngineeringMetric(BaseModel):
+    # A metric carries both its computed value and enough reproduction context
+    # for operators to verify the number outside the API response.
     key: str
     category: str
     label: str
@@ -96,6 +102,8 @@ class EngineeringCategoryScore(BaseModel):
 
 
 class EngineeringScorecard(BaseModel):
+    # Unknown external metrics are tracked for completeness but excluded from the
+    # weighted score; see service score_model for exact scoring rules.
     overall_score: float | None = None
     gate_status: Literal["pass", "fail", "warn", "unknown"] = "unknown"
     completeness_rate: float

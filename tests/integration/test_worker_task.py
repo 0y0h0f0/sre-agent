@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -135,6 +136,71 @@ def test_diagnosis_skips_in_flight_run(monkeypatch, db_session, in_flight_status
     assert result["idempotent"] is True
     assert result["status"] == in_flight_status
     assert runs.get_by_public_id("run_inflight").status == in_flight_status
+
+
+def test_waiting_approval_does_not_send_diagnosis_complete(monkeypatch, db_session) -> None:
+    """A paused run should send approval mail, not consume the final-complete event."""
+
+    class _WaitingRunner:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def run(
+            self, _incident_id: str, _agent_run_id: str, _alert_payload: dict[str, Any]
+        ) -> dict[str, Any]:
+            return {
+                "status": "waiting_approval",
+                "state": {
+                    "approval_status": {"approval_ids": ["apv_waiting"]},
+                    "root_cause": {"summary": "Needs an approved restart"},
+                },
+            }
+
+    diagnosis_notifications: list[tuple[Any, ...]] = []
+    approval_notifications: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(tasks, "_build_deps", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(tasks, "_build_checkpointer", lambda _settings: object())
+    monkeypatch.setattr(tasks, "AgentRunner", _WaitingRunner)
+    monkeypatch.setattr(
+        tasks,
+        "_notify_diagnosis_complete",
+        lambda *args, **kwargs: diagnosis_notifications.append(args),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_notify_approval_requests",
+        lambda state, **kwargs: approval_notifications.append(state),
+    )
+
+    payload = AlertCreateRequest(
+        source="mock",
+        fingerprint="fp-waiting-email",
+        service="checkout",
+        severity="P2",
+        alert_name="High5xxAfterDeploy",
+        starts_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    IncidentRepository(db_session).create("inc_waiting_email", payload)
+    runs = AgentRunRepository(db_session)
+    runs.create("run_waiting_email", "inc_waiting_email", model_name="fake")
+    db_session.commit()
+
+    result = tasks.run_incident_diagnosis_logic(
+        db_session, "inc_waiting_email", "run_waiting_email"
+    )
+
+    run = runs.get_by_public_id("run_waiting_email")
+    assert result["status"] == "waiting_approval"
+    assert run is not None
+    assert run.status == "waiting_approval"
+    assert diagnosis_notifications == []
+    assert approval_notifications == [
+        {
+            "approval_status": {"approval_ids": ["apv_waiting"]},
+            "root_cause": {"summary": "Needs an approved restart"},
+        }
+    ]
 
 
 def test_notify_approval_requests_enqueues_each_id(monkeypatch) -> None:

@@ -27,6 +27,8 @@ class EngineeringMetricsRepository:
         self._db = db
 
     def list_agent_runs(self, *, since: datetime) -> list[AgentRun]:
+        # Engineering metrics intentionally read broad row sets for one bounded
+        # window; scoring logic stays in the service instead of leaking into SQL.
         return list(
             self._db.scalars(
                 select(AgentRun).where(AgentRun.created_at >= since)
@@ -62,6 +64,8 @@ class EngineeringMetricsRepository:
         )
 
     def list_approvals(self, *, since: datetime) -> list[Approval]:
+        # Approvals are windowed by requested_at because a still-waiting approval
+        # may not have a decided_at timestamp.
         return list(
             self._db.scalars(
                 select(Approval).where(Approval.requested_at >= since)
@@ -83,6 +87,9 @@ class EngineeringMetricsRepository:
         )
 
     def latest_eval_run(self, *, suite: str, since: datetime) -> EvalRun | None:
+        # Only succeeded eval runs feed engineering scorecards. Queued/running/
+        # failed evals remain visible through /api/evals/runs but do not affect
+        # current quality metrics.
         return self._db.scalars(
             select(EvalRun)
             .where(

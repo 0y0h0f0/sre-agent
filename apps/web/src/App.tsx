@@ -81,6 +81,8 @@ import {
   type PaginatedResponse
 } from './api';
 
+// These statuses still represent active backend work. Pages use this set to
+// decide when polling or WebSocket updates are worth keeping alive.
 const LIVE_STATUSES = new Set(['open', 'diagnosing', 'waiting_approval', 'queued', 'running', 'executing']);
 
 // ---------------------------------------------------------------------------
@@ -164,6 +166,9 @@ async function buildIncidentWebSocketUrl(incidentId: string): Promise<string> {
   const protocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(`/api/ws/incidents/${incidentId}`, `${protocol}//${baseUrl.host}`);
   if (getStoredApiKey()) {
+    // Browsers cannot attach Authorization headers to WebSocket constructors.
+    // Exchange the stored API key for a short-lived ticket instead of putting
+    // the raw key into the socket URL.
     const ticket = await createWebSocketTicket(incidentId);
     url.searchParams.set('ticket', ticket.ticket);
   }
@@ -173,6 +178,8 @@ async function buildIncidentWebSocketUrl(incidentId: string): Promise<string> {
 function useWebSocket(incidentId: string | null, enabled: boolean) {
   const wsRef = useRef<WebSocket | null>(null);
   const mountedRef = useRef(true);
+  // Handlers live in a ref so subscribers can be added without rebuilding the
+  // socket connection or closing over stale component state.
   const handlersRef = useRef<Set<(event: WsEvent) => void>>(new Set());
   const reconnectTimerRef = useRef<number | null>(null);
   const [connectionState, setConnectionState] = useState<WsConnectionState>('disabled');
@@ -221,6 +228,8 @@ function useWebSocket(incidentId: string | null, enabled: boolean) {
         if (!mountedRef.current) return;
         try {
           const event = JSON.parse(String(msg.data)) as WsEvent;
+          // Keep a bounded client-side event window; the canonical run history
+          // still comes from the API node trace and tool-call records.
           setEvents((current) => [event, ...current].slice(0, 40));
           handlersRef.current.forEach((h) => h(event));
         } catch { /* ignore parse errors */ }
@@ -233,6 +242,8 @@ function useWebSocket(incidentId: string | null, enabled: boolean) {
           wsRef.current = null;
         }
         setConnectionState((state) => (state === 'disabled' ? state : 'closed'));
+        // The API remains the source of truth via polling. Reconnect here only
+        // restores lower-latency updates when the socket path becomes available.
         reconnectTimerRef.current = window.setTimeout(() => {
           if (!mountedRef.current) return;
           void connect();
@@ -245,6 +256,8 @@ function useWebSocket(incidentId: string | null, enabled: boolean) {
     return () => {
       cancelled = true;
       mountedRef.current = false;
+      // Clear both timer and socket on route changes so an old incident cannot
+      // continue pushing events into the next page's state.
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
@@ -523,6 +536,8 @@ function IncidentsPage() {
     queryKey: ['incidents', filters],
     queryFn: () => listIncidents(filters),
     refetchInterval: (request) => {
+      // Finished incident lists are stable enough to stop polling. Active lists
+      // stay fresh for queued/running diagnoses and approval transitions.
       const data = request.state.data as PaginatedResponse<IncidentListItem> | undefined;
       return data?.items.some((incident) => LIVE_STATUSES.has(incident.status)) ? 5000 : false;
     }
@@ -647,6 +662,8 @@ function IncidentDetailPage() {
   const diagnosisMutation = useMutation({
     mutationFn: () => triggerDiagnosis(incidentId, { force: true, reason: 'manual rerun from UI' }),
     onSuccess: () => {
+      // A manual rerun can create a new Agent run and new approvals, so refresh
+      // every panel that derives from the incident rather than only the header.
       void queryClient.invalidateQueries({ queryKey: ['incident', incidentId] });
       void queryClient.invalidateQueries({ queryKey: ['incident-runs', incidentId] });
       void queryClient.invalidateQueries({ queryKey: ['incident-approvals', incidentId] });
@@ -876,6 +893,8 @@ function AgentRunPage() {
     const eventRunId = stringValue(latest.payload.agent_run_id);
     if (eventRunId && eventRunId !== agentRunId) return;
     if (['node_update', 'approval_update', 'incident_update'].includes(latest.type)) {
+      // Socket events are hints, not the source of truth. Invalidate the query
+      // so the UI rehydrates from persisted node traces, tool calls, and state.
       void queryClient.invalidateQueries({ queryKey: ['agent-run', agentRunId] });
       if (query.data?.incident_id) {
         void queryClient.invalidateQueries({ queryKey: ['incident', query.data.incident_id] });
@@ -895,6 +914,8 @@ function AgentRunPage() {
     return <EmptyState title="运行不可用" detail="Agent 运行响应为空。" />;
   }
   const compressionEvents = asRecordArray(run.state.compression_events);
+  // Progress is derived from persisted node traces plus any expected node order
+  // embedded in state, which keeps the timeline readable before all nodes emit.
   const progress = getRunProgress(run);
 
   return (
@@ -1020,6 +1041,8 @@ function ApprovalsPage() {
   const query = useQuery<PaginatedResponse<ApprovalItem>, ApiError>({
     queryKey: ['approvals', status],
     queryFn: () => listApprovals({ status, page_size: 50 }),
+    // Waiting approvals are operationally time-sensitive; historical approval
+    // tabs do not need background refresh.
     refetchInterval: status === 'waiting' ? 5000 : false
   });
   const directQuery = useQuery<ApprovalItem, ApiError>({
@@ -1060,6 +1083,8 @@ function ApprovalsPage() {
 
   function batchDecide(decision: 'approve' | 'reject') {
     if (checkedIds.size === 0) return;
+    // L3 approvals require action-type and target confirmation, which cannot be
+    // safely collected in a single bulk form. The backend also validates this.
     if (decision === 'approve' && selectedHasL3) return;
     batchMutation.mutate({
       decision,
@@ -1071,6 +1096,8 @@ function ApprovalsPage() {
 
   const waitingItems = query.data?.items.filter((a) => a.approval_status === 'waiting') ?? [];
   const selectedItems = query.data?.items.filter((a) => checkedIds.has(a.approval_id)) ?? [];
+  // This flag only controls UX affordances. Deterministic backend guardrails
+  // remain the final authority for approval and execution permission.
   const selectedHasL3 = selectedItems.some((a) => a.risk_level === 'L3');
 
   return (
@@ -1170,6 +1197,8 @@ function ApprovalNotificationControl({ approvals }: { approvals: ApprovalItem[] 
   useEffect(() => {
     const ids = approvals.map((approval) => approval.approval_id);
     if (!initializedRef.current) {
+      // Do not notify for approvals that were already present when the page was
+      // opened; notifications should represent newly arriving work.
       ids.forEach((id) => notifiedRef.current.add(id));
       initializedRef.current = true;
       return;
@@ -1241,6 +1270,8 @@ async function showApprovalNotification(approval: ApprovalItem): Promise<void> {
   if ('serviceWorker' in navigator) {
     const registration = await navigator.serviceWorker.getRegistration().catch(() => undefined);
     if (registration) {
+      // Prefer the service worker path when available so notification clicks can
+      // focus or open the approval route even if the tab is in the background.
       await registration.showNotification(title, options);
       return;
     }
@@ -1287,6 +1318,8 @@ function ApprovalDialog({ approval, onClose }: { approval: ApprovalItem; onClose
 
     const payload: ApprovalDecisionPayload = { approver, comment: comment || null };
     if (decision === 'approve' && approval.risk_level === 'L3') {
+      // L3 fields are deliberately collected only on approval. Rejecting an L3
+      // action should not require operators to retype a dangerous target.
       payload.risk_ack = data.get('risk_ack') === 'on';
       payload.confirm_action_type = String(data.get('confirm_action_type') ?? '').trim();
       payload.confirm_target = String(data.get('confirm_target') ?? '').trim();
@@ -1576,6 +1609,8 @@ function getRunProgress(run: AgentRunDetail): RunProgressModel {
   const latestByName = new Map<string, RunNodeTrace>();
   run.nodes.forEach((node) => latestByName.set(node.name, node));
 
+  // Expected node order comes from agent state when available. Missing trace
+  // rows become synthetic pending entries so the timeline shows the whole graph.
   const orderedNames = expectedNames.length > 0 ? expectedNames : Array.from(latestByName.keys());
   const seenNames = new Set<string>();
   const entries: RunTimelineEntry[] = orderedNames.map((name) => {
@@ -1595,6 +1630,8 @@ function getRunProgress(run: AgentRunDetail): RunProgressModel {
 
   run.nodes.forEach((node) => {
     if (!seenNames.has(node.name)) {
+      // Preserve unexpected or dynamically-added node traces instead of dropping
+      // audit data just because an older state snapshot lacked the node name.
       entries.push(node);
     }
   });
@@ -1613,6 +1650,8 @@ function getExpectedNodeNames(run: AgentRunDetail): string[] {
   const state = run.state;
   const graph = asRecord(state.graph);
   const workflow = asRecord(state.workflow);
+  // Different backend versions have stored graph metadata under slightly
+  // different keys; keep the reader tolerant while the rendered model is stable.
   const candidates = [
     state.graph_node_order,
     state.graph_nodes,
@@ -1725,6 +1764,9 @@ function TimelineMarkerIcon({ status }: { status: string }) {
 }
 
 function LiveNodeLog({ events, run }: { events: WsEvent[]; run: AgentRunDetail }) {
+  // Only display node updates for this run. Incident-level WebSocket streams can
+  // include approval or incident events that are useful for cache invalidation
+  // but noisy inside the node log.
   const nodeEvents = events
     .filter((event) => event.type === 'node_update')
     .filter((event) => {
@@ -1875,6 +1917,8 @@ function buildSwimlaneRows(run: AgentRunDetail): SwimlaneRow[] {
   const timestamps = run.tool_calls
     .map((call) => new Date(call.created_at).getTime())
     .filter((value) => Number.isFinite(value));
+  // Tool calls are normalized onto a 0-100 axis so the chart stays responsive
+  // without depending on a full timeline visualization library.
   const min = Math.min(...timestamps);
   const max = Math.max(...timestamps);
   const span = Math.max(1, max - min);
@@ -1893,6 +1937,8 @@ function buildSwimlaneRows(run: AgentRunDetail): SwimlaneRow[] {
 }
 
 function classifySignalSource(toolName: string, nodeName: string): string {
+  // Tool and node names are intentionally enough here; the backend remains the
+  // source of typed evidence, while the UI groups signals for quick scanning.
   const value = `${toolName} ${nodeName}`.toLowerCase();
   if (value.includes('metric') || value.includes('prometheus')) return 'metrics';
   if (value.includes('log') || value.includes('loki')) return 'logs';
@@ -1913,6 +1959,9 @@ function buildDependencyGraph(run: AgentRunDetail): { nodes: DependencyNode[]; e
   const stateTopology = extractStateTopology(run.state);
   if (stateTopology.nodes.length > 0) return stateTopology;
 
+  // When the agent did not persist a service topology, synthesize a small graph
+  // from the affected service and observed signal sources so the panel still
+  // explains what context was inspected.
   const service = extractRunService(run.state) || 'incident service';
   const sources = Array.from(new Set(buildSwimlaneRows(run).map((row) => row.source)));
   const labels = [service, ...sources.map((source) => humanize(source))];
@@ -1942,6 +1991,8 @@ function extractStateTopology(state: Record<string, unknown>): { nodes: Dependen
   const topology = asRecord(state.service_topology) ?? asRecord(state.topology);
   const rawNodes = Array.isArray(topology?.nodes) ? topology.nodes : [];
   const rawEdges = Array.isArray(topology?.edges) ? topology.edges : [];
+  // Accept partial topology records from experiments/M9 extensions, but keep the
+  // rendered node contract explicit and bounded.
   const nodes = rawNodes
     .map((item, index) => {
       const record = asRecord(item);
@@ -1997,6 +2048,8 @@ function buildEvidenceNetwork(run: AgentRunDetail): EvidenceNetworkModel {
     hypotheses.push({ id: 'agent_hypothesis', summary: '诊断等待中', confidence: 0.2 });
   }
 
+  // Evidence IDs and runbook chunk IDs are preserved rather than summarized so
+  // operators can trace a displayed hypothesis back to concrete collected data.
   const evidenceIds = readStringArray(run.state.evidence_ids)
     .concat(readStringArray(run.state.runbook_chunk_ids))
     .concat(readStringArray(diagnosis?.evidence_ids))
@@ -2068,6 +2121,8 @@ function ToolCallList({ run }: { run: AgentRunDetail }) {
 function ContextSummary({ state, compressionEvents }: { state: Record<string, unknown>; compressionEvents: Array<Record<string, unknown>> }) {
   const tokenUsage = asRecord(state.token_usage);
   const contextBudget = asRecord(state.context_budget);
+  // Provider token/cache metadata can be absent in FakeLLM or manual demos, so
+  // prefer known state fields and render "unknown" instead of inventing values.
   return (
     <div className="contextGrid">
       <Metric label="Prompt Tokens" value={stringValue(tokenUsage?.prompt_tokens) || stringValue(contextBudget?.prompt_tokens) || '未知'} />

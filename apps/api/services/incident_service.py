@@ -1,3 +1,5 @@
+"""Incident read and manual diagnosis service."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -35,6 +37,8 @@ TaskEnqueue = Callable[[str, str], str]
 
 
 class IncidentService:
+    """Owns incident API business logic above repository queries."""
+
     def __init__(
         self,
         db: Session,
@@ -72,6 +76,7 @@ class IncidentService:
         )
 
     def get_detail(self, incident_id: str) -> IncidentDetailResponse:
+        """Return incident detail with evidence/action API projections."""
         incident = self._require_incident(incident_id)
         evidence = [self._evidence_item(item) for item in self.reads.list_evidence(incident_id)]
         actions = [self._action_summary(action) for action in self.reads.list_actions(incident_id)]
@@ -90,6 +95,12 @@ class IncidentService:
         )
 
     def trigger_diagnosis(self, incident_id: str, request: DiagnoseRequest) -> DiagnoseResponse:
+        """Create a new diagnosis run and enqueue it.
+
+        ``force=False`` protects the worker/checkpointer path from concurrent
+        active runs for the same incident. ``force=True`` creates an additional
+        run but does not delete or mutate the existing one.
+        """
         incident = self._require_incident(incident_id)
         active = self.agent_runs.get_active_for_incident(incident_id)
         if active is not None and not request.force:
@@ -102,6 +113,7 @@ class IncidentService:
         self.agent_runs.create(
             agent_run_id, incident.incident_id, model_name=self.settings.llm_model
         )
+        # Commit the run before enqueue so Celery can read it immediately.
         self.db.commit()
 
         if self.enqueue_diagnosis is None:
@@ -110,6 +122,9 @@ class IncidentService:
         try:
             celery_task_id = self.enqueue_diagnosis(incident_id, agent_run_id)
         except Exception as exc:  # pragma: no cover - specific clients vary
+            # The incident already existed before this manual run. Mark only the
+            # new run failed; do not fail the whole incident for a retry enqueue
+            # problem.
             self.agent_runs.mark_enqueue_failed(agent_run_id, str(exc))
             self.db.commit()
             raise DependencyUnavailableError("celery", "failed to enqueue diagnosis task") from exc
@@ -124,6 +139,7 @@ class IncidentService:
         )
 
     def list_runs(self, incident_id: str) -> list[AgentRunSummary]:
+        """List runs after proving the incident exists."""
         self._require_incident(incident_id)
         return [
             AgentRunSummary(
@@ -156,6 +172,11 @@ class IncidentService:
         )
 
     def _evidence_item(self, item: EvidenceModel) -> EvidenceItem:
+        """Map persisted evidence to the public API shape.
+
+        Runbook evidence may store source_path/metadata either at the top level
+        or under payload.payload depending on which node/tool produced it.
+        """
         return EvidenceItem(
             evidence_id=item.evidence_id,
             type=item.type,
@@ -181,6 +202,7 @@ class IncidentService:
 
 
 def _source_path(payload: dict[str, object]) -> str | None:
+    """Extract runbook/source path from historical payload shapes."""
     nested = payload.get("payload")
     if isinstance(nested, dict) and nested.get("source_path"):
         return str(nested["source_path"])
@@ -189,6 +211,7 @@ def _source_path(payload: dict[str, object]) -> str | None:
 
 
 def _metadata(payload: dict[str, object]) -> dict[str, object]:
+    """Extract evidence metadata from historical payload shapes."""
     nested = payload.get("payload")
     if isinstance(nested, dict) and isinstance(nested.get("metadata"), dict):
         return dict(nested["metadata"])

@@ -52,6 +52,8 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
     started_at = utc_now()
     try:
         execution_results = state.get("execution_results", [])
+        # Only L2/L3 remediations need post-action verification. L0/L1 actions
+        # are record/local work and should not create a remediation feedback loop.
         actionable = [
             r for r in execution_results if str(r.get("risk_level", "")).upper() in ("L2", "L3")
         ]
@@ -78,6 +80,8 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
                 "phase": "verified",
             }  # type: ignore[typeddict-unknown-key]
 
+        # Build from capability metadata attached during execution. This avoids
+        # trusting free-form model text to decide which verification checks run.
         gate_plan = _build_gate_plan(actionable)
 
         # Wait for the system to stabilise after the action.
@@ -108,6 +112,8 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
             )
             gate_evidence = result.pop("_evidence", [])
             if gate_evidence:
+                # Verify observations become first-class evidence so reports and
+                # replans can cite concrete post-action facts, not just verdicts.
                 gate_evidence = persist_evidence(
                     deps.db,
                     state["incident_id"],
@@ -172,7 +178,11 @@ def verify(state: IncidentState, deps: AgentDeps) -> IncidentState:
 
 
 def _build_gate_plan(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build a de-duplicated verify gate plan from action capability metadata."""
+    """Build a de-duplicated verify gate plan from action capability metadata.
+
+    Multiple actions can share a gate. Required status is merged upward: if any
+    action requires a gate, the combined gate remains required.
+    """
     planned: list[dict[str, Any]] = []
     seen: dict[tuple[str, ...], int] = {}
     for action in actions:
@@ -203,6 +213,7 @@ def _build_gate_plan(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _gate_key(gate: str, action: dict[str, Any]) -> tuple[str, ...]:
+    """Return the de-duplication key for a gate/action pair."""
     action_type = canonical_action_type(action.get("type"))
     if gate == "k8s_rollout":
         expected_replicas = _expected_scale_replicas(action)
@@ -222,6 +233,7 @@ def _gate_key(gate: str, action: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _expected_scale_replicas(action: dict[str, Any]) -> float | None:
+    """Extract expected replica count for scale verification."""
     if canonical_action_type(action.get("type")) not in {"scale_deployment", "scale_back"}:
         return None
 
@@ -238,6 +250,7 @@ def _expected_scale_replicas(action: dict[str, Any]) -> float | None:
 
 
 def _action_verify_gates(action: dict[str, Any]) -> tuple[str, ...]:
+    """Prefer execution-attached gates, then fall back to static registry."""
     capability = action.get("capability")
     if isinstance(capability, dict):
         gates = capability.get("verify_gates", [])
@@ -251,6 +264,11 @@ def _action_verify_gates(action: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _gate_required(gate: str, action: dict[str, Any]) -> bool:
+    """Return whether a gate failure/unknown should block resolved verdicts.
+
+    Params may promote optional gates to required for stricter checks, but they
+    never demote registry-required gates.
+    """
     params = action.get("params", {})
     if isinstance(params, dict):
         required = params.get("required_verify_gates")
@@ -270,6 +288,7 @@ def _run_verify_gate(
     fresh_start: datetime,
     fresh_end: datetime,
 ) -> dict[str, Any]:
+    """Dispatch one read-only verification gate."""
     gate_name = str(gate["gate"])
     required = bool(gate.get("required", True))
     if gate_name == "metrics_logs":
@@ -307,6 +326,7 @@ def _run_metrics_logs_gate(
     fresh_start: datetime,
     fresh_end: datetime,
 ) -> dict[str, Any]:
+    """Re-query metrics and logs and compare them to pre-action evidence."""
     metric_type = _metric_for_alert(alert_name)
     fresh_metrics = _safe_query_metrics(
         deps, agent_run_id, service, metric_type, fresh_start, fresh_end
@@ -332,6 +352,7 @@ def _run_k8s_rollout_gate(
     agent_run_id: str,
     service: str,
 ) -> dict[str, Any]:
+    """Verify live K8s state through the read-only diagnostics tool."""
     required = bool(gate.get("required", True))
     if deps.k8s_tool is None:
         verdict = "degraded" if required else "unknown"
@@ -405,6 +426,7 @@ def _run_db_readonly_gate(
     deps: AgentDeps,
     agent_run_id: str,
 ) -> dict[str, Any]:
+    """Verify database pressure using only predefined read-only diagnostics."""
     required = bool(gate.get("required", True))
     if deps.db_diagnostics_tool is None:
         verdict = "degraded" if required else "unknown"
@@ -456,6 +478,7 @@ def _run_db_readonly_gate(
 
 
 def _gate_base(gate: dict[str, Any]) -> dict[str, Any]:
+    """Create the common public shape for all gate verdicts."""
     base = {
         "gate": str(gate.get("gate", "")),
         "required": bool(gate.get("required", True)),
@@ -476,6 +499,11 @@ def _safe_query_metrics(
     start: datetime,
     end: datetime,
 ) -> list[dict[str, Any]]:
+    """Best-effort metrics query for verification.
+
+    Tool failures degrade the gate through missing evidence rather than raising
+    out of the node, keeping the overall incident report available.
+    """
     try:
         query = MetricsQuery(service=service, metric_type=metric_type, start=start, end=end)
         result = deps.metrics_tool.run(query)
@@ -518,6 +546,7 @@ def _safe_query_logs(
     start: datetime,
     end: datetime,
 ) -> list[dict[str, Any]]:
+    """Best-effort log query for verification."""
     try:
         keywords = _keywords_for_alert(alert_name)
         query = LogsQuery(service=service, start=start, end=end, keywords=keywords, limit=50)
@@ -664,7 +693,11 @@ def _assess_k8s_rollout(
     expected_replicas: float | None = None,
     required: bool,
 ) -> str:
-    """Assess a read-only rollout status payload."""
+    """Assess a read-only rollout status payload.
+
+    Required gates fail closed on unavailable/degraded data. Optional gates may
+    return unknown so an unrelated optional signal does not block resolution.
+    """
     if status in {"failed", "timeout"}:
         return "degraded" if required else "unknown"
     if status == "degraded":
@@ -772,7 +805,11 @@ def _assess_db_readonly(
 
 
 def _combine_gate_verdicts(gates: list[dict[str, Any]]) -> str:
-    """Collapse gate verdicts into the workflow-level verify result."""
+    """Collapse gate verdicts into the workflow-level verify result.
+
+    Degraded dominates, unknown required gates keep the result unknown, and any
+    unchanged/improving gate prevents the workflow from declaring full success.
+    """
     if not gates:
         return "unknown"
 

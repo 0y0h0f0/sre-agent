@@ -16,13 +16,15 @@ from packages.memory.schemas import MemoryFilters, MemoryItemCreate
 class MemoryStore:
     """Stores and retrieves memory items across L0-L3 scopes.
 
-    Does NOT call any LLM. Embedding for search uses FakeEmbedding.
+    Does NOT call any LLM. Search embedding uses the configured embedding
+    provider; the default fake provider is deterministic and local.
     """
 
     def __init__(self, db: Session) -> None:
         self.db = db
 
     def put(self, item: MemoryItemCreate) -> MemoryItem:
+        """Create a memory row without committing the surrounding transaction."""
         memory = MemoryItem(
             memory_id=new_id("mem_"),
             scope=item.scope,
@@ -39,6 +41,7 @@ class MemoryStore:
         return memory
 
     def get_by_scope(self, scope: str, scope_key: str, limit: int = 10) -> list[MemoryItem]:
+        """Read recent important memories for an exact L0/L1 scope."""
         stmt = (
             sa_select(MemoryItem)
             .where(MemoryItem.scope == scope, MemoryItem.scope_key == scope_key)
@@ -48,6 +51,12 @@ class MemoryStore:
         return list(self.db.scalars(stmt).all())
 
     def search(self, query: str, filters: MemoryFilters, top_k: int = 5) -> list[MemoryItem]:
+        """Search memories with vector ranking and lexical fallback.
+
+        pgvector is preferred when available. SQLite tests and deployments
+        without pgvector still return useful filtered results through the
+        fallback path.
+        """
         clauses: list[ColumnElement[bool]] = []
         if filters.scope:
             clauses.append(MemoryItem.scope == filters.scope)
@@ -61,7 +70,7 @@ class MemoryStore:
         if filters.service:
             clauses.append(MemoryItem.content_json["service"].as_string() == filters.service)
 
-        # Exclude expired memories
+        # Exclude expired memories in both vector and lexical paths.
         clauses.append(MemoryItem.expires_at.is_(None) | (MemoryItem.expires_at > utc_now()))
 
         where = and_(*clauses) if clauses else true()
@@ -82,6 +91,7 @@ class MemoryStore:
             pass
 
         # Fallback: filter by content LIKE query terms, order by importance
+        # Limit term count to keep generated SQL small and deterministic.
         q_terms = [t for t in query.lower().split() if len(t) > 1]
         if q_terms:
             term_clauses = [MemoryItem.content.ilike(f"%{t}%") for t in q_terms[:5]]
@@ -97,6 +107,11 @@ class MemoryStore:
         return list(self.db.scalars(stmt).all())
 
     def mark_used(self, memory_id: str, agent_run_id: str) -> None:
+        """Record that a memory was used.
+
+        The current implementation only refreshes updated_at; agent_run_id is
+        accepted for future audit linkage without changing call sites.
+        """
         stmt = sa_select(MemoryItem).where(MemoryItem.memory_id == memory_id)
         item = self.db.scalar(stmt)
         if item is not None:
@@ -104,6 +119,7 @@ class MemoryStore:
 
     @staticmethod
     def _embed_query(query: str) -> list[float]:
+        """Generate an embedding for memory search without invoking an LLM."""
         from packages.common.settings import get_settings
         from packages.rag.embedding_factory import build_embedding_provider
 

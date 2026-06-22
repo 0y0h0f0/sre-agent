@@ -1,6 +1,6 @@
 # Agent 工作流
 
-**最后更新：** 2026-06-18
+**最后更新：** 2026-06-23
 
 ## 概述
 
@@ -71,7 +71,7 @@ parse_alert
 | `cross_incident` | service/fingerprint | `cross_incident_context` | 查找相似历史 incident |
 | `retrieve_runbook` | alert/service/root query | `runbook_context` | 通过 `RunbookSearchTool` 返回带 chunk ID/source path 的上下文，并把命中持久化为 runbook evidence 后回写 `evidence_id` |
 | `build_context` | evidence、runbook、memory、cross incident | `_built_messages`、`token_budget`、`compression_events` | 调用 `ContextBuilder`，不直接调用 LLM |
-| `diagnose` | `_built_messages` 和 state evidence | `hypotheses`、`root_cause`、`diagnosis_rationale`、`llm_calls` | 支持单次诊断或 multi-perspective 诊断，失败时可规则回退 |
+| `diagnose` | `_built_messages` 和 state evidence | `hypotheses`、`root_cause`、`diagnosis_rationale`、`llm_calls` | LLM 使用 compact internal schema 后映射回 public diagnosis；支持单次诊断或 multi-perspective 诊断；可选并发 metrics/logs/traces specialist，synthesizer 仍顺序执行；失败时可规则回退 |
 | `compress_context` | `compression_events` | L2 compressed memory | 将超预算上下文摘要写入 service scope memory |
 | `collect_gap` | `diagnosis_rationale.missing_evidence` | 追加 gap evidence | 按关键词选择工具，扩大窗口 5 分钟，最多 1 轮 |
 | `rank_hypotheses` | hypotheses、evidence | ranked hypotheses | 按证据数量、来源多样性、部署相关性、runbook/memory 匹配排序 |
@@ -81,7 +81,7 @@ parse_alert
 | `take_snapshot` | pending executable actions | `pre_action_snapshot` | 执行前抓取 evidence count 和 K8s deployment 状态，供回滚/降级处理使用 |
 | `execute_action` | allowed 且无需审批的 actions | action records、`execution_results` | 对无 `action_id` 的自动动作先创建 Action 记录，再通过注入的 executor backend 执行；默认 fixture |
 | `verify` | execution results | `verify_result`、`verify_evidence`、`verify_gates` | 按 action capability metadata 执行只读 verify gates；默认重新查 metrics/logs，K8s live 能力追加 `k8s_rollout`，rollback 类能力可追加 `db_readonly`；最多 2 轮验证/重规划 |
-| `generate_report` | run trajectory、evidence、verify gates | `incident_report` | 生成结构化 incident report，并向 `incident_reports` 追加版本 |
+| `generate_report` | run trajectory、evidence、verify gates | `incident_report` | 生成结构化 incident report，并向 `incident_reports` 追加版本；`LLM_DETERMINISTIC_REPORT_ENABLED=true` 时跳过报告 LLM 调用并使用确定性报告生成 |
 | `persist_memory` | diagnosis/report/actions | L0-L3 memory writes | best-effort 写入，失败不终止主流程 |
 
 ## 条件路由和循环上限

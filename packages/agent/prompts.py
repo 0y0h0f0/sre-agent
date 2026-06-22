@@ -30,6 +30,17 @@ JSON_SCHEMA_INSTRUCTIONS = (
     "the final non-whitespace content of your response."
 )
 
+COMPACT_DIAGNOSIS_OUTPUT_INSTRUCTIONS = """\
+Output compact JSON with keys:
+- h: hypotheses array. Each item uses id, s (statement), e (supporting_evidence_ids),
+  r (runbook_chunk_ids), c (confidence 0-1), why (rank_explanation).
+- rc: root cause object using s (summary), c (confidence 0-1), e (evidence_ids),
+  r (runbook_chunk_ids).
+- e: all evidence_ids used.
+- r: all runbook_chunk_ids used.
+- m: missing_evidence array.
+"""
+
 DIAGNOSIS_PROMPT_TEMPLATE = """\
 Analyze the following incident and produce a structured diagnosis.
 
@@ -48,32 +59,29 @@ Reason step by step from evidence to hypotheses to root cause. For each
 hypothesis, cite supporting_evidence_ids and explain its rank in rank_explanation.
 For root_cause, cite evidence_ids and explain why it was chosen over alternatives.
 
-Output JSON with keys: hypotheses, root_cause, evidence_ids, runbook_chunk_ids, missing_evidence.
-Each hypothesis must have: id, statement, supporting_evidence_ids, confidence (0-1),
-rank_explanation, runbook_chunk_ids. Root cause must have: summary, confidence (0-1),
-evidence_ids, runbook_chunk_ids.
+{compact_schema}
 
 Example structure (do not copy values — this is a format example only):
 {{
-  "hypotheses": [
+  "h": [
     {{
       "id": "h1",
-      "statement": "Connection pool saturated by slow queries",
-      "supporting_evidence_ids": ["evd_abc123"],
-      "runbook_chunk_ids": ["chk_runbook123"],
-      "confidence": 0.88,
-      "rank_explanation": "DB connections near max with elevated query latency"
+      "s": "Connection pool saturated by slow queries",
+      "e": ["evd_abc123"],
+      "r": ["chk_runbook123"],
+      "c": 0.88,
+      "why": "DB connections near max with elevated query latency"
     }}
   ],
-  "root_cause": {{
-    "summary": "DB connection pool exhausted near max connections due to slow query accumulation",
-    "confidence": 0.88,
-    "evidence_ids": ["evd_abc123", "evd_def456"],
-    "runbook_chunk_ids": ["chk_runbook123"]
+  "rc": {{
+    "s": "DB connection pool exhausted near max connections due to slow query accumulation",
+    "c": 0.88,
+    "e": ["evd_abc123", "evd_def456"],
+    "r": ["chk_runbook123"]
   }},
-  "evidence_ids": ["evd_abc123", "evd_def456"],
-  "runbook_chunk_ids": ["chk_runbook123"],
-  "missing_evidence": ["stack traces", "pool configuration"]
+  "e": ["evd_abc123", "evd_def456"],
+  "r": ["chk_runbook123"],
+  "m": ["stack traces", "pool configuration"]
 }}
 """
 
@@ -125,7 +133,7 @@ Rules:
 - Weigh each specialist's findings by their stated confidence and evidence quality.
 - Resolve contradictions between specialists explicitly.
 - The runbook and memory provide known patterns — match against them.
-- Output valid JSON matching the DiagnosisOutput schema.
+- Output valid compact JSON matching the compact diagnosis schema.
 - Cite evidence_ids from ALL sources, not just one specialist.
 - Preserve runbook chunk_id values in runbook_chunk_ids when runbook context is used.
 - Rank hypotheses by integrated evidence strength across all perspectives.
@@ -143,9 +151,7 @@ Time window: {time_window}
 
 Reason step by step from evidence to hypotheses. Cite supporting_evidence_ids.
 For each hypothesis, explain its rank in rank_explanation.
-Output JSON with keys: hypotheses, root_cause, evidence_ids, missing_evidence.
-Each hypothesis: id, statement, supporting_evidence_ids, confidence (0-1),
-rank_explanation. Root cause: summary, confidence (0-1), evidence_ids.
+{compact_schema}
 """
 
 SYNTHESIZER_PROMPT_TEMPLATE = """\
@@ -177,10 +183,7 @@ Reason step by step. Weigh each specialist's hypotheses by confidence and eviden
 quality. Resolve contradictions explicitly. The final root cause and hypotheses
 should integrate findings across all perspectives.
 
-Output JSON with keys: hypotheses, root_cause, evidence_ids, runbook_chunk_ids, missing_evidence.
-Each hypothesis: id, statement, supporting_evidence_ids, confidence (0-1),
-rank_explanation, runbook_chunk_ids. Root cause: summary, confidence (0-1),
-evidence_ids, runbook_chunk_ids.
+{compact_schema}
 """
 
 RANK_PROMPT_TEMPLATE = """\

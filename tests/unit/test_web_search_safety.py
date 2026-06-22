@@ -24,11 +24,105 @@ class StaticWebSearchProvider:
         return WebSearchResponse(status="ok", results=self.results, query_redacted=query)
 
 
+class DegradedWebSearchProvider:
+    name = "degraded"
+
+    def __init__(self, *, error_message: str) -> None:
+        self.error_message = error_message
+        self.queries: list[str] = []
+
+    def search(self, query: str) -> WebSearchResponse:
+        self.queries.append(query)
+        return WebSearchResponse(status="degraded", error_message=self.error_message)
+
+
+class RaisingWebSearchProvider:
+    name = "raising"
+
+    def __init__(self, *, error_message: str) -> None:
+        self.error_message = error_message
+        self.queries: list[str] = []
+
+    def search(self, query: str) -> WebSearchResponse:
+        self.queries.append(query)
+        raise RuntimeError(self.error_message)
+
+
+class _MetricSpy:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, str], float]] = []
+
+    def labels(self, **labels: str) -> _MetricSpyChild:
+        return _MetricSpyChild(self, labels)
+
+
+class _MetricSpyChild:
+    def __init__(self, parent: _MetricSpy, labels: dict[str, str]) -> None:
+        self.parent = parent
+        self.labels = labels
+
+    def inc(self, amount: float = 1.0) -> None:
+        self.parent.calls.append(("inc", dict(self.labels), amount))
+
+    def observe(self, value: float) -> None:
+        self.parent.calls.append(("observe", dict(self.labels), value))
+
+
+def _patch_web_search_metrics(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    from packages.common import metrics
+
+    spies = SimpleNamespace(
+        requests=_MetricSpy(),
+        blocked=_MetricSpy(),
+        results=_MetricSpy(),
+        redactions=_MetricSpy(),
+        cache=_MetricSpy(),
+        duration=_MetricSpy(),
+    )
+    monkeypatch.setattr(metrics, "web_search_requests_total", spies.requests)
+    monkeypatch.setattr(metrics, "web_search_blocked_total", spies.blocked)
+    monkeypatch.setattr(metrics, "web_search_results_total", spies.results)
+    monkeypatch.setattr(
+        metrics,
+        "web_search_query_redactions_total",
+        spies.redactions,
+    )
+    monkeypatch.setattr(metrics, "web_search_cache_status_total", spies.cache)
+    monkeypatch.setattr(metrics, "web_search_duration_seconds", spies.duration)
+    return spies
+
+
+def _matching_calls(
+    spy: _MetricSpy,
+    action: str,
+    **labels: str,
+) -> list[tuple[str, dict[str, str], float]]:
+    return [
+        call
+        for call in spy.calls
+        if call[0] == action
+        and all(call[1].get(key) == value for key, value in labels.items())
+    ]
+
+
+def _all_metric_call_text(spies: SimpleNamespace) -> str:
+    return repr([
+        spies.requests.calls,
+        spies.blocked.calls,
+        spies.results.calls,
+        spies.redactions.calls,
+        spies.cache.calls,
+        spies.duration.calls,
+    ])
+
+
 def _enabled_settings(**overrides) -> Settings:
     values = {
         "m9_extensions_enabled": True,
         "runbook_web_search_enabled": True,
         "runbook_web_search_provider": "fake",
+        "runbook_web_search_cache_enabled": False,
+        "redis_url": "memory://web-search-default",
         "api_key_auth_enabled": False,
     }
     values.update(overrides)
@@ -253,6 +347,7 @@ class TestWebSearchSettings:
         assert settings.runbook_web_search_require_https is True
         assert settings.runbook_web_search_max_redirects == 3
         assert settings.runbook_web_search_max_content_bytes == 1_048_576
+        assert settings.runbook_web_search_cache_enabled is True
 
     def test_web_search_allowed_domains_default_empty(self):
         """Allowed domains default to empty (production requires non-empty)."""
@@ -404,13 +499,43 @@ class TestRunbookWebContextBuilder:
         )
         token = "sk-" + "abcdefghijklmnopqrstuvwxyz123456"
         result = builder.build_context(
-            query=f"service=checkout password=s3cret token {token}"
+            query=(
+                f"service=checkout password=s3cret token {token} "
+                "api.prod.svc.cluster.local/v1"
+            )
         )
         assert result.status == "ok"
         assert provider.queries
         assert "checkout" not in provider.queries[0]
         assert "s3cret" not in provider.queries[0]
         assert token not in provider.queries[0]
+        assert "api.prod.svc.cluster.local" not in provider.queries[0]
+        assert "/v1" not in provider.queries[0]
+
+    def test_web_search_payload_redacts_bare_internal_topology(self):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(runbook_web_search_max_results=1),
+        ).build_context(
+            query="api.prod.svc.cluster.local latency 10.0.0.5/runbook /readyz"
+        )
+
+        assert result.status == "ok"
+        assert result.results
+        payload_text = " ".join([
+            result.query_redacted,
+            result.results[0].title,
+            result.results[0].snippet,
+        ])
+        for sensitive in (
+            "api.prod.svc.cluster.local",
+            "svc.cluster.local",
+            "10.0.0.5",
+            "/runbook",
+            "/readyz",
+        ):
+            assert sensitive not in payload_text
 
     def test_web_search_redirect_to_metadata_blocked(self):
         from packages.rag.runbook_web_context import RunbookWebContextBuilder
@@ -488,9 +613,37 @@ class TestRunbookWebContextBuilder:
             dns_resolver=lambda _host: ["93.184.216.34"],
         ).build_context(query="private ip")
         assert result.status == "blocked"
-        assert "s3cret" not in caplog.text
-        assert "api_key" not in caplog.text
-        assert "user:s3cret" not in caplog.text
+        for sensitive in (
+            "10.0.0.5",
+            "s3cret",
+            "api_key",
+            "user:s3cret",
+            "/path",
+        ):
+            assert sensitive not in caplog.text
+        assert "reason_code=url_credentials" in caplog.text
+
+    def test_web_search_blocked_url_log_does_not_leak_internal_host(self, caplog):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        caplog.set_level("WARNING", logger="packages.rag.runbook_web_context")
+        provider = StaticWebSearchProvider([
+            _item(final_url="https://api.prod.svc.cluster.local/runbook")
+        ])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(query="internal host")
+        assert result.status == "blocked"
+        for sensitive in (
+            "api.prod.svc.cluster.local",
+            "svc.cluster.local",
+            "api.prod",
+            "/runbook",
+        ):
+            assert sensitive not in caplog.text
+        assert "reason_code=cluster_internal_domain" in caplog.text
 
     def test_web_search_metric_reason_uses_fixed_code(self):
         from packages.rag.runbook_web_context import _metric_reason
@@ -498,6 +651,365 @@ class TestRunbookWebContextBuilder:
         reason = _metric_reason("Host 'token-secret.example.com' is blocked")
         assert reason == "blocked_domain"
         assert "token-secret" not in reason
+
+    def test_disabled_provider_records_metrics_without_external_call(self, monkeypatch):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        spies = _patch_web_search_metrics(monkeypatch)
+        provider = StaticWebSearchProvider([_item()])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(runbook_web_search_provider="disabled"),
+            provider=provider,
+        ).build_context(query="password=s3cret latency")
+
+        assert result.status == "config_error"
+        assert provider.queries == []
+        assert _matching_calls(
+            spies.requests,
+            "inc",
+            provider="disabled",
+            status="config_error",
+            reason="provider_disabled",
+        )
+        assert _matching_calls(
+            spies.duration,
+            "observe",
+            provider="disabled",
+            status="config_error",
+            reason="provider_disabled",
+        )
+        result_calls = _matching_calls(
+            spies.results,
+            "inc",
+            provider="disabled",
+            status="config_error",
+        )
+        assert result_calls and result_calls[0][2] == 0
+        assert _matching_calls(
+            spies.cache,
+            "inc",
+            provider="disabled",
+            status="not_applicable",
+        )
+
+    def test_fake_provider_records_deterministic_observability(self, monkeypatch):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        spies = _patch_web_search_metrics(monkeypatch)
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(runbook_web_search_max_results=2),
+        ).build_context(query="service=checkout password=s3cret latency")
+
+        assert result.status == "ok"
+        assert len(result.results) == 2
+        assert _matching_calls(
+            spies.requests,
+            "inc",
+            provider="fake",
+            status="ok",
+            reason="none",
+        )
+        assert _matching_calls(
+            spies.duration,
+            "observe",
+            provider="fake",
+            status="ok",
+            reason="none",
+        )
+        result_calls = _matching_calls(
+            spies.results,
+            "inc",
+            provider="fake",
+            status="ok",
+        )
+        assert result_calls and result_calls[0][2] == 2
+        redaction_calls = _matching_calls(
+            spies.redactions,
+            "inc",
+            provider="fake",
+        )
+        assert redaction_calls and redaction_calls[0][2] >= 2
+        assert _matching_calls(
+            spies.cache,
+            "inc",
+            provider="fake",
+            status="not_applicable",
+        )
+
+    def test_web_search_observability_does_not_label_query_or_url_path(
+        self,
+        monkeypatch,
+        caplog,
+    ):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        spies = _patch_web_search_metrics(monkeypatch)
+        caplog.set_level("WARNING", logger="packages.rag.runbook_web_context")
+        secret = "sk-" + "abcdefghijklmnopqrstuvwxyz123456"
+        provider = StaticWebSearchProvider([
+            _item(final_url="https://user:s3cret@10.0.0.5/private/path?api_key=abc")
+        ])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(
+            query=(
+                "service=checkout namespace=prod "
+                f"password=s3cret token {secret} "
+                "https://api.prod.svc.cluster.local/v1"
+            )
+        )
+
+        assert result.status == "blocked"
+        metric_text = _all_metric_call_text(spies)
+        for sensitive in (
+            "checkout",
+            "namespace=prod",
+            "s3cret",
+            secret,
+            "svc.cluster.local",
+            "/private/path",
+            "api_key",
+            "user:s3cret",
+        ):
+            assert sensitive not in metric_text
+            assert sensitive not in caplog.text
+            assert sensitive not in repr(result)
+        assert _matching_calls(
+            spies.blocked,
+            "inc",
+            provider="fake",
+            reason="url_credentials",
+        )
+        assert _matching_calls(
+            spies.blocked,
+            "inc",
+            provider="fake",
+            reason="all_results_blocked",
+        )
+
+    def test_web_search_diagnostics_redact_provider_error(self, monkeypatch):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        spies = _patch_web_search_metrics(monkeypatch)
+        provider = DegradedWebSearchProvider(
+            error_message=(
+                "failed for service=checkout password=s3cret "
+                "api.prod.svc.cluster.local path /runbook 10.0.0.5/admin"
+            )
+        )
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(query="service=checkout password=s3cret")
+
+        assert result.status == "degraded"
+        assert result.error_message
+        for sensitive in (
+            "checkout",
+            "s3cret",
+            "api.prod.svc.cluster.local",
+            "svc.cluster.local",
+            "/runbook",
+            "10.0.0.5",
+            "/admin",
+        ):
+            assert sensitive not in result.error_message
+            assert sensitive not in _all_metric_call_text(spies)
+        assert _matching_calls(
+            spies.requests,
+            "inc",
+            provider="fake",
+            status="degraded",
+            reason="provider_degraded",
+        )
+
+    def test_web_search_provider_exception_log_does_not_leak_secret(
+        self,
+        monkeypatch,
+        caplog,
+    ):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        spies = _patch_web_search_metrics(monkeypatch)
+        caplog.set_level("WARNING", logger="packages.rag.runbook_web_context")
+        provider = RaisingWebSearchProvider(
+            error_message=(
+                "failed for service=checkout password=s3cret "
+                "https://api.prod.svc.cluster.local/v1"
+            )
+        )
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        ).build_context(query="service=checkout password=s3cret")
+
+        assert result.status == "degraded"
+        assert result.error_message == "web_search provider exception"
+        for sensitive in ("checkout", "s3cret", "svc.cluster.local"):
+            assert sensitive not in caplog.text
+            assert sensitive not in repr(result)
+            assert sensitive not in _all_metric_call_text(spies)
+        assert _matching_calls(
+            spies.requests,
+            "inc",
+            provider="fake",
+            status="degraded",
+            reason="provider_exception",
+        )
+
+    def test_equivalent_redacted_query_hits_cache(self, monkeypatch):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        spies = _patch_web_search_metrics(monkeypatch)
+        provider = StaticWebSearchProvider([_item(snippet="cached guidance")])
+        builder = RunbookWebContextBuilder(
+            settings=_enabled_settings(
+                runbook_web_search_cache_enabled=True,
+                redis_url="memory://web-search-cache-equivalent",
+            ),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+        )
+
+        first = builder.build_context(
+            query=(
+                "service=checkout password=s3cret "
+                "https://api.prod.svc.cluster.local/v1 latency"
+            )
+        )
+        second = builder.build_context(
+            query=(
+                "service=payments password=another-secret "
+                "https://api.stage.svc.cluster.local/v2 latency"
+            )
+        )
+
+        assert first.status == "ok"
+        assert second.status == "ok"
+        assert len(provider.queries) == 1
+        assert second.results[0].snippet == "cached guidance"
+        cache_statuses = [
+            call[1]["status"]
+            for call in spies.cache.calls
+            if call[0] == "inc" and call[1].get("provider") == "fake"
+        ]
+        assert "miss" in cache_statuses
+        assert "hit" in cache_statuses
+
+    def test_web_search_cache_key_contains_no_raw_secret_host_or_path(self):
+        from packages.rag.runbook_web_context import (
+            _redact_web_search_text,
+            _web_context_cache_key,
+        )
+
+        raw_query = (
+            "service=checkout password=s3cret "
+            "https://api.prod.svc.cluster.local/v1/runbook latency"
+        )
+        redacted_query = _redact_web_search_text(raw_query).redacted_text
+        key = _web_context_cache_key(
+            _enabled_settings(runbook_web_search_cache_enabled=True),
+            provider="fake",
+            purpose="draft_enrichment",
+            redacted_query=redacted_query,
+        )
+
+        for sensitive in (
+            "checkout",
+            "s3cret",
+            "api.prod.svc.cluster.local",
+            "svc.cluster.local",
+            "/v1",
+            "/runbook",
+            "latency",
+        ):
+            assert sensitive not in key
+
+    def test_cached_records_are_url_safety_validated(self, caplog):
+        from packages.rag.runbook_web_context import (
+            RunbookWebContextBuilder,
+            WebSearchResult,
+            _serialize_cache_results,
+        )
+
+        class UnsafeCache:
+            def get(self, key: str) -> str:
+                return _serialize_cache_results([
+                    WebSearchResult(
+                        title="Unsafe cached result",
+                        original_url="https://docs.example.com/runbook",
+                        final_url="http://169.254.169.254/latest/meta-data",
+                        snippet="do not use",
+                        content_hash="sha256:unsafe",
+                        provider="fake",
+                        redaction_version="m9-9.4-1",
+                        retrieved_at="2026-06-01T00:00:00+00:00",
+                    )
+                ])
+
+            def setex(self, key: str, ttl_seconds: int, value: str) -> None:
+                return None
+
+        caplog.set_level("WARNING", logger="packages.rag.runbook_web_context")
+        provider = StaticWebSearchProvider([_item(snippet="fresh safe result")])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(runbook_web_search_cache_enabled=True),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+            cache=UnsafeCache(),
+        ).build_context(query="latency")
+
+        assert result.status == "ok"
+        assert len(provider.queries) == 1
+        assert result.results[0].snippet == "fresh safe result"
+        assert "169.254.169.254" not in repr(result)
+        assert "latest/meta-data" not in caplog.text
+
+    def test_web_search_cache_failure_does_not_leak_query_or_secret(
+        self,
+        caplog,
+    ):
+        from packages.rag.runbook_web_context import RunbookWebContextBuilder
+
+        class FailingCache:
+            def get(self, key: str) -> str | None:
+                raise RuntimeError(
+                    "cache read failed for password=s3cret "
+                    "https://api.prod.svc.cluster.local/v1"
+                )
+
+            def setex(self, key: str, ttl_seconds: int, value: str) -> None:
+                raise RuntimeError(
+                    "cache write failed for password=s3cret "
+                    "https://api.prod.svc.cluster.local/v1"
+                )
+
+        caplog.set_level("WARNING", logger="packages.rag.runbook_web_context")
+        provider = StaticWebSearchProvider([_item()])
+        result = RunbookWebContextBuilder(
+            settings=_enabled_settings(runbook_web_search_cache_enabled=True),
+            provider=provider,
+            dns_resolver=lambda _host: ["93.184.216.34"],
+            cache=FailingCache(),
+        ).build_context(
+            query="service=checkout password=s3cret api.prod.svc.cluster.local/v1"
+        )
+
+        assert result.status == "ok"
+        assert len(provider.queries) == 1
+        for sensitive in (
+            "checkout",
+            "s3cret",
+            "api.prod.svc.cluster.local",
+            "svc.cluster.local",
+            "/v1",
+        ):
+            assert sensitive not in caplog.text
+            assert sensitive not in repr(result)
 
 
 # ---------------------------------------------------------------------------

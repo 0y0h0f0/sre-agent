@@ -2,36 +2,29 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
-from apps.api.dependencies import get_app_settings
-from apps.api.main import create_app
+from apps.api.routers.runbooks import web_search
+from apps.api.schemas.runbooks import WebSearchRequest
 from packages.common.settings import Settings
 
 
 def test_web_search_endpoint_returns_draft_traceability() -> None:
-    app = create_app()
     settings = Settings(
         api_key_auth_enabled=False,
+        redis_url="memory://web-search-endpoint",
         m9_extensions_enabled=True,
         runbook_web_search_enabled=True,
         runbook_web_search_provider="fake",
     )
-    app.dependency_overrides[get_app_settings] = lambda: settings
+    response = web_search(
+        WebSearchRequest(
+            query="service=checkout password=s3cret high 5xx runbook",
+            purpose="draft_enrichment",
+        ),
+        settings=settings,
+        _scope=None,
+    )
 
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/runbooks/web-search",
-            json={
-                "query": "service=checkout password=s3cret high 5xx runbook",
-                "purpose": "draft_enrichment",
-            },
-        )
-
-    app.dependency_overrides.clear()
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
+    payload = response.model_dump()
     assert payload["status"] == "ok"
     assert payload["purpose"] == "draft_enrichment"
     assert "checkout" not in payload["query_redacted"]

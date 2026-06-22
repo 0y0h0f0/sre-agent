@@ -1,6 +1,6 @@
 # Runbook RAG
 
-**最后更新：** 2026-06-18
+**最后更新：** 2026-06-23
 
 ## 概述
 
@@ -197,13 +197,28 @@ Review 可以把 amendment 从 `pending_review` 置为 `approved` 或 `rejected`
 安全措施：
 
 - 搜索 query 脱敏。
+- Web 搜索在通用 secret redaction 之外额外脱敏裸内部 host、cluster host、私网 IP/path 和 URL path，避免 `query_redacted`、title/snippet 或 degraded diagnostic 重新暴露内部拓扑。
 - 使用 `BackendUrlSafetyValidator` 的 web-search 严格模式校验 original URL、redirect chain 和 final URL。
 - 默认要求 HTTPS，阻止 localhost、metadata endpoint、cluster 内域名、私网 IP，并对 DNS 解析结果再次校验。
 - `RUNBOOK_WEB_SEARCH_BLOCKED_DOMAINS` 优先于 allowed domains；生产环境 allowed domains 为空时返回 blocked/config error，不发起 provider 调用。
 - 结果带 original URL、final URL、content hash、provider、redaction version、retrieved_at。
 - 结果只作为 draft enrichment evidence，不自动发布。
+- 当前 Web context 只接入 runbook draft enrichment，不接入 Agent run 诊断上下文。Agent-run Web context 对应 LAT-14，必须由用户明确要求后另行增加默认关闭 gate；不能复用或绕过 `purpose="draft_enrichment"` 的 safety check。
+- Web context cache 在 Web 搜索启用时可用，backend 使用 `REDIS_URL`；`memory://` 使用进程内 TTL cache。rollback path 是设置 `RUNBOOK_WEB_SEARCH_CACHE_ENABLED=false`，无需 DB migration。
+- Cache TTL 使用 `RUNBOOK_WEB_SEARCH_CACHE_TTL_SECONDS`。cache key 只包含 provider、purpose、redacted query hash、allow/block policy hash、HTTPS/redirect policy、result/content budget、recency bucket 和 redaction/cache version；不包含原始 query、URL path、host、secret 或内部拓扑。
+- Cache value 只保存已通过 URL safety 校验的 traceability/result 字段：title、original URL、final URL、snippet、content hash、provider、redaction version、retrieved_at。命中缓存时仍按当前 URL safety policy 复验 original/final URL。
 
 当前 provider：`disabled` 和 deterministic `fake`。`exa` 仍是未来 provider；未知 provider 会返回 `config_error`，不会回退到默认搜索 provider。
+
+Web 搜索观测只覆盖当前 `disabled`/`fake` 路径：
+
+- `agentp_web_search_requests_total` 和 `agentp_web_search_duration_seconds` 使用固定的 provider/status/reason label。
+- `agentp_web_search_results_total` 记录 URL safety 过滤后的安全结果数。
+- `agentp_web_search_blocked_total` 记录策略或 URL safety 阻断，reason 来自固定枚举，不携带原始 URL、host 或 path。
+- `agentp_web_search_query_redactions_total` 记录 provider 调用前的 query 脱敏次数。
+- `agentp_web_search_cache_status_total` 记录 `hit`、`miss`、`unknown` 或 `not_applicable`；label 仍只包含 provider/status，不包含 key、query、URL 或 host。
+
+这些指标不得把原始 query、URL path、内部 host、secret 或 provider diagnostic message 放入 label。URL path 只能作为已验证结果中的 traceability 字段保留。
 
 ## 动作分类
 
@@ -240,5 +255,7 @@ Review 可以把 amendment 从 `pending_review` 置为 `approved` 或 `rejected`
 - `tests/unit/test_external_embedding_provider.py`
 - `tests/unit/test_llm_runbook_generation.py`
 - `tests/unit/test_incident_diff_analysis.py`
+- `tests/unit/test_web_search_safety.py`
+- `tests/integration/test_runbook_web_context_draft.py`
 - `tests/e2e/test_m9_semantic_search.py`
 - `tests/e2e/test_m9_ai_extensions.py`

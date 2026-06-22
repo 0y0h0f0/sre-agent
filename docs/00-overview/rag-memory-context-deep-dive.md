@@ -1,6 +1,6 @@
 # RAG、记忆与上下文技术深挖
 
-**最后更新：** 2026-06-18
+**最后更新：** 2026-06-23
 
 本文沿当前代码路径说明 Runbook RAG、memory store、context builder、context compression 和 cache 指标如何组合到一次诊断 run 中。它补充 [Runbook RAG](../04-rag/runbook-rag.md) 和 [记忆、缓存与上下文压缩](../05-memory/memory-cache-compression.md)：前两者说明模块能力，本文说明跨模块执行路径和调试边界。Runbook draft、version、amendment 的完整生命周期见 [Runbook 草稿、版本与 Amendment 生命周期技术深挖](runbook-draft-version-amendment-lifecycle-deep-dive.md)。
 
@@ -12,6 +12,7 @@
 - `retrieve_runbook` 如何通过 `RunbookSearchTool` 返回带 `chunk_id` 的上下文。
 - `retrieve_memory` 如何读取 L0-L3 memory，并在 pgvector 不可用时回退。
 - `build_context` 如何组装 prompt、裁剪 runbook/memory/cross incident，并触发确定性 evidence 压缩。
+- prompt segment key、report input compression 和 Web context cache 分别解决什么问题。
 - `compress_context` 和 `persist_memory` 分别写入什么 memory。
 - tool cache、prompt segment key、provider prompt cache 为什么不能混为一个指标。
 
@@ -30,6 +31,8 @@
 | Agent memory 节点 | `packages/agent/nodes/retrieve_memory.py` |
 | context builder | `packages/memory/context_builder.py`、`packages/agent/nodes/build_context.py` |
 | deterministic compression | `packages/memory/compressor.py`、`packages/agent/nodes/compress_context.py` |
+| report input compression | `packages/memory/compressor.py::compress_report_inputs()`、`packages/agent/nodes/generate_report.py` |
+| Web context cache | `packages/rag/runbook_web_context.py` |
 | memory 持久化 | `packages/memory/memory_store.py`、`packages/agent/nodes/persist_memory.py` |
 | worker 依赖构造 | `apps/worker/tasks.py` 的 `_build_deps()` |
 
@@ -130,7 +133,7 @@ RunbookSearchQuery(query=alert_name, service=service, top_k=5)
 2. 使用稳定 cache key 查询 request-local tool cache。
 3. 调用 `RunbookRetriever.search()`，把结果写入 `ToolResult.data["results"]`，并把 chunk/source 信息放入 `ToolResult.evidence`。
 
-`retrieve_runbook` 记录 tool call，然后把 `data["results"]` 写入 `state["runbook_context"]`。这些 runbook chunk 不写入 `evidence_items` 主表，但必须保留 `chunk_id`、`source_path`、`title`、`excerpt`、`score` 和 `metadata`，供诊断和报告引用。
+`retrieve_runbook` 记录 tool call，然后把 `data["results"]` 写入 `state["runbook_context"]`。当前节点会把 runbook 命中持久化为 `evidence_items(type=runbook)`，`source_id` 指向 `chunk_id`，`payload.source_path` 保留原始 Markdown 路径，并把生成的 `evidence_id` 回写到 `runbook_context`。诊断和报告引用 runbook 时应同时保留 `evidence_id` 和 `runbook_chunk_ids`。
 
 `RunbookRetriever.search()` 当前流程：
 
@@ -178,7 +181,9 @@ RunbookSearchQuery(query=alert_name, service=service, top_k=5)
 - runbook chunks 按 `(score, chunk_id)` 降序排序，并按 `budget.runbook` 截断。
 - memories 按 `score`、`relevance` 或 `importance` 降序排序，并按 `budget.memory` 截断。
 - cross incident 按输入顺序纳入，并按 `budget.cross_incident` 截断。
-- `segment_cache_keys` 当前生成 schema key 和输入 runbook chunk key。
+- `segment_cache_keys` 当前生成 static prompt、schema 和已纳入 prompt 的 runbook chunk 的版本化 key。
+- stable prefix hash 只覆盖 leading system messages 和 prompt/schema version；alert、evidence、runbook、memory、Web context 等动态内容必须留在后续 user message。
+- diagnosis schema segment 当前指向 compact internal schema；下游 state/API 仍使用 public `DiagnosisOutput`。
 
 `BuildContextInput` 的 schema 默认使用 `ContextBudget()` 原始字段。`ContextBudgeter.allocate_budget()` 和 `ContextBudget.with_defaults()` 则按总预算百分比分配。当前 agent 节点没有显式传入 `budget.total_limit <= 0`，因此 builder 会使用 `ContextBudget()` 默认字段；维护者调整预算时需要同时看 `schemas.py` 和 `context_budget.py`，避免只改一处。
 
@@ -245,6 +250,21 @@ ContextBuilder.build()
 
 Runbook chunks、memory 和 cross incident 超预算时当前是裁剪，不产生 `compression_events`。
 
+## Report 输入压缩
+
+`generate_report` 在构造 LLM prompt 或确定性报告前，会调用 `Compressor.compress_report_inputs()`：
+
+| 字段 | 行为 |
+|------|------|
+| evidence | 最多保留 12 条 compact summary，不携带 raw log message/samples |
+| evidence_counts | 按 evidence type 统计 |
+| retained/omitted/all evidence IDs | 用于报告 traceability 和审计 |
+| runbook_chunk_ids | 从 runbook evidence payload、root cause 和 state 合并 |
+| actions | 最多 10 条 compact action trajectory |
+| errors | 最多 5 条结构化错误摘要，只记录 node/type/status/error_present |
+
+该路径会追加 `scope="report_generation"` 的 compression event。`LLM_DETERMINISTIC_REPORT_ENABLED=true` 时，报告 LLM 调用被跳过，但仍使用同一套压缩输入、traceability 合并和 append-only report version 逻辑。
+
 ## Memory 写入
 
 ### compress_context
@@ -282,10 +302,13 @@ L3 procedural memory 只从 `status` 为 `succeeded`、`executed` 或 `approved`
 | 类别 | 位置 | 写入/展示 |
 |------|------|-----------|
 | Tool request-local cache | `packages/tools/cache.py` | 单次 agent run 内复用 tool result；worker 汇总到 `agent_runs.app_cache_*` |
-| Prompt segment key | `ContextBuilder.segment_cache_keys` | 当前 builder 只生成 schema/runbook chunk key，供应用层 prompt segment cache 使用 |
+| Prompt segment key | `ContextBuilder.segment_cache_keys` | 当前 builder 生成 static/schema/runbook chunk key，供应用层 prompt segment cache 使用 |
 | Provider prompt cache | LLM provider 自身 | 只有 provider 调用结果明确返回 cache hit/miss 时才统计到 `agent_runs.provider_cache_*` |
+| Web context cache | `RunbookWebContextBuilder` | 只缓存 Web search draft enrichment 的安全结果 traceability 字段；不会接入 Agent run 诊断，除非以后显式执行 LAT-14 |
 
 不要把 Redis/tool cache hit rate 当作 provider prompt cache hit rate。工程指标中的 `provider_prompt_cache_hit_rate` 与 `app_prompt_segment_cache_hit_rate` 必须分开解释；provider 未返回缓存数据时应保持 `unknown` 或空值语义。
+
+Web context cache 也不是 prompt segment cache。它的 key 只包含 provider、purpose、redacted query hash、allow/block policy hash、HTTPS/redirect policy、budget、recency bucket 和 redaction/cache version；value 只保存 title、original/final URL、snippet、content hash、provider、redaction version 和 retrieved_at，并在 cache hit 时重新执行 URL safety 校验。
 
 ## 调试 Checklist
 
@@ -310,6 +333,7 @@ L3 procedural memory 只从 `status` 为 `succeeded`、`executed` 或 `approved`
 - 看 state 中 `compression_events` 的 retained/omitted evidence IDs。
 - 日志超过 20 条或 evidence group 超过 evidence budget 80% 时会触发压缩。
 - runbook/memory 超预算当前是裁剪，不会产生 compression event。
+- report prompt 过大时看 `scope="report_generation"` 的 compression event、`all_evidence_ids`、`retained_evidence_ids` 和 `omitted_evidence_ids`。
 
 ### Cache 指标异常
 
@@ -327,6 +351,7 @@ L3 procedural memory 只从 `status` 为 `succeeded`、`executed` 或 `approved`
 - 不把大块原始日志绕过 `ContextBuilder` 放入 prompt。
 - 不混淆 provider prompt cache、tool cache 和 app prompt segment cache。
 - 不把 M9 外部 embedding/web/LLM 能力写成生产默认开启。
+- 不把 Web context 接入 Agent run 诊断；该能力是 LAT-14，必须由用户明确要求并加默认关闭 gate。
 
 ## 相关测试入口
 

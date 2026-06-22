@@ -80,6 +80,51 @@ def test_logs_tool_queries_loki_and_aggregates_sample_logs() -> None:
     assert result.data["samples"][0]["message"] == "5xx spike after deploy"
 
 
+def test_logs_tool_falls_back_to_unfiltered_logs_when_keywords_match_nothing() -> None:
+    inner = json.dumps(
+        {
+            "level": "info",
+            "msg": "access",
+            "service": "api-gateway",
+            "status": 401,
+            "path": "/api/v1/projects",
+        }
+    )
+    line = json.dumps({"log": f"{inner}\n", "stream": "stderr"})
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = str(request.url.params["query"])
+        seen.append(query)
+        result = []
+        if query == '{service="api-gateway"}':
+            result = [
+                {
+                    "stream": {"service": "api-gateway"},
+                    "values": [["1780272000000000000", line]],
+                }
+            ]
+        return httpx.Response(200, json={"status": "success", "data": {"result": result}})
+
+    client = httpx.Client(base_url="http://loki", transport=httpx.MockTransport(handler))
+    tool = LogsTool(base_url="http://loki", client=client)
+
+    result = tool.run(
+        LogsQuery(
+            service="api-gateway",
+            start=START,
+            end=END,
+            keywords=["5xx", "error", "deploy"],
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.data["top_error_type"] == "http_4xx"
+    assert result.data["samples"][0]["message"] == "access"
+    assert any("|=" in query for query in seen)
+    assert '{service="api-gateway"}' in seen
+
+
 def test_logs_tool_degrades_when_loki_is_unavailable() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("loki down", request=request)

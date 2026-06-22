@@ -33,6 +33,117 @@ class DiagnosisOutput(BaseModel):
     missing_evidence: list[str] = Field(default_factory=list)
 
 
+class CompactHypothesis(BaseModel):
+    id: str = ""
+    s: str = ""
+    e: list[str] = Field(default_factory=list)
+    r: list[str] = Field(default_factory=list)
+    c: float = 0.0
+    why: str = ""
+
+
+class CompactRootCause(BaseModel):
+    s: str = ""
+    c: float = 0.0
+    e: list[str] = Field(default_factory=list)
+    r: list[str] = Field(default_factory=list)
+
+
+class CompactDiagnosisOutput(BaseModel):
+    h: list[CompactHypothesis] = Field(default_factory=list)
+    rc: CompactRootCause = Field(default_factory=CompactRootCause)
+    e: list[str] = Field(default_factory=list)
+    r: list[str] = Field(default_factory=list)
+    m: list[str] = Field(default_factory=list)
+
+
+def diagnosis_output_from_compact(value: object) -> DiagnosisOutput:
+    """Map compact internal LLM JSON back to the public diagnosis schema."""
+
+    if isinstance(value, DiagnosisOutput):
+        return value
+    if isinstance(value, dict) and (
+        "hypotheses" in value or "root_cause" in value or "missing_evidence" in value
+    ):
+        return DiagnosisOutput(**value)
+    compact = (
+        value
+        if isinstance(value, CompactDiagnosisOutput)
+        else CompactDiagnosisOutput(**value)  # type: ignore[arg-type]
+    )
+    hypotheses: list[Hypothesis] = []
+    evidence_ids: list[str] = []
+    runbook_chunk_ids: list[str] = []
+    for idx, item in enumerate(compact.h, start=1):
+        hypothesis = Hypothesis(
+            id=item.id or f"h{idx}",
+            statement=item.s,
+            supporting_evidence_ids=list(item.e),
+            runbook_chunk_ids=list(item.r),
+            confidence=item.c,
+            rank_explanation=item.why,
+        )
+        hypotheses.append(hypothesis)
+        _extend_unique(evidence_ids, hypothesis.supporting_evidence_ids)
+        _extend_unique(runbook_chunk_ids, hypothesis.runbook_chunk_ids)
+
+    root_cause = {
+        "summary": compact.rc.s,
+        "confidence": compact.rc.c,
+        "evidence_ids": list(compact.rc.e or compact.e),
+        "runbook_chunk_ids": list(compact.rc.r or compact.r),
+    }
+    _extend_unique(evidence_ids, compact.e)
+    _extend_unique(evidence_ids, root_cause["evidence_ids"])
+    _extend_unique(runbook_chunk_ids, compact.r)
+    _extend_unique(runbook_chunk_ids, root_cause["runbook_chunk_ids"])
+    return DiagnosisOutput(
+        hypotheses=hypotheses,
+        root_cause=root_cause,
+        evidence_ids=evidence_ids,
+        runbook_chunk_ids=runbook_chunk_ids,
+        missing_evidence=list(compact.m),
+    )
+
+
+def compact_diagnosis_from_output(output: DiagnosisOutput) -> CompactDiagnosisOutput:
+    """Convert a full diagnosis to the compact internal LLM shape."""
+
+    root_cause = output.root_cause
+    return CompactDiagnosisOutput(
+        h=[
+            CompactHypothesis(
+                id=h.id,
+                s=h.statement,
+                e=list(h.supporting_evidence_ids),
+                r=list(h.runbook_chunk_ids),
+                c=h.confidence,
+                why=h.rank_explanation,
+            )
+            for h in output.hypotheses
+        ],
+        rc=CompactRootCause(
+            s=str(root_cause.get("summary", "")),
+            c=float(root_cause.get("confidence", 0) or 0),
+            e=[item for item in root_cause.get("evidence_ids", []) if isinstance(item, str)],
+            r=[
+                item
+                for item in root_cause.get("runbook_chunk_ids", [])
+                if isinstance(item, str)
+            ],
+        ),
+        e=list(output.evidence_ids),
+        r=list(output.runbook_chunk_ids),
+        m=list(output.missing_evidence),
+    )
+
+
+def _extend_unique(target: list[str], values: list[str]) -> None:
+    for value in values:
+        if isinstance(value, str) and value and value not in target:
+            target.append(value)
+
+
 class RankedHypothesis(Hypothesis):
     rank: int = 0
     evidence_count: int = 0

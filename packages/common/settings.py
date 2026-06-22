@@ -105,6 +105,21 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=30.0, gt=0)
     llm_max_tokens: int = Field(default=512, gt=0)
     llm_temperature: float = Field(default=0.1, ge=0)
+    # Optional latency mode: skip report-generation LLM calls and use the
+    # deterministic report builder. Default off preserves existing behaviour.
+    llm_deterministic_report_enabled: bool = False
+    # Optional profile plumbing for latency tuning. Empty/zero values inherit
+    # the global LLM_MODEL / LLM_MAX_TOKENS settings.
+    llm_fast_json_model: str = ""
+    llm_fast_json_max_tokens: int = Field(default=0, ge=0)
+    llm_diagnose_reasoning_model: str = ""
+    llm_diagnose_reasoning_max_tokens: int = Field(default=0, ge=0)
+    llm_report_model: str = ""
+    llm_report_max_tokens: int = Field(default=0, ge=0)
+    # Comma-separated key=value pairs or JSON object. Keys are profile/node
+    # names such as fast_json, diagnose_reasoning, report, or generate_report.
+    llm_node_model_overrides: str = ""
+    llm_node_max_tokens: str = ""
     llm_reasoning_enabled: bool = False
     llm_reasoning_effort: str = "medium"
     # Per-node reasoning-depth layering (roadmap Phase 1.2). Comma-separated node
@@ -114,6 +129,9 @@ class Settings(BaseSettings):
     # (metrics / logs / traces) plus a synthesizer instead of a single
     # monolithic LLM call.  Default off preserves existing behaviour.
     llm_multi_perspective_enabled: bool = False
+    # Optional latency mode for multi-perspective diagnosis. Specialists run in
+    # parallel only when the provider exposes call-local metadata.
+    llm_multi_perspective_parallel_enabled: bool = False
     token_budget_total: int = Field(default=32_000, gt=0)
 
     # --- M0: Production Safety Foundation ---
@@ -200,6 +218,7 @@ class Settings(BaseSettings):
     # Comma-separated blocked domain patterns (overrides allowed).
     runbook_web_search_blocked_domains: str = ""
     runbook_web_search_max_content_bytes: int = Field(default=1_048_576, gt=0)
+    runbook_web_search_cache_enabled: bool = True
     runbook_web_search_cache_ttl_seconds: int = Field(default=86400, gt=0)
     runbook_web_search_max_redirects: int = Field(default=3, ge=0, le=10)
 

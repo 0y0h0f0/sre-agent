@@ -6,15 +6,18 @@ import logging
 from copy import deepcopy
 from typing import Any
 
+from packages.agent.llm.profiles import FAST_JSON_PROFILE
 from packages.agent.llm.reasoning import (
     capture_metadata,
     format_call_metadata,
+    llm_profile_call_options,
     record_llm_call,
     should_use_deep_reasoning,
 )
 from packages.agent.prompts import PLAN_ACTIONS_PROMPT_TEMPLATE, allowed_actions_table
 from packages.agent.schemas import AgentDeps, PlannedAction
 from packages.agent.state import IncidentState
+from packages.common import metrics as agent_metrics
 from packages.common.ids import new_id
 from packages.common.time import utc_now
 
@@ -51,17 +54,31 @@ def plan_actions(state: IncidentState, deps: AgentDeps) -> IncidentState:
             snapshot_context=snapshot_section,
         )
         thinking = should_use_deep_reasoning(deps.settings, _NODE_NAME)
+        profile_options = llm_profile_call_options(
+            deps.settings,
+            FAST_JSON_PROFILE,
+            aliases=(_NODE_NAME,),
+        )
 
         # Generate actions via LLM — split from metadata capture so a
         # bookkeeping failure never discards real LLM output.
         meta: dict[str, object] = {}
         try:
-            models = deps.llm.generate_json(prompt, list[PlannedAction], thinking=thinking)
+            models = deps.llm.generate_json(
+                prompt,
+                list[PlannedAction],
+                thinking=thinking,
+                **profile_options,
+            )
             actions = [a.model_dump() for a in models]
         except Exception:
             logger.error(
                 "plan_actions: LLM generate_json failed, using fallback",
                 exc_info=True,
+            )
+            agent_metrics.AgentMetricsCollector.record_llm_fallback(
+                node=_NODE_NAME,
+                reason="llm_generate_failed",
             )
             from packages.agent.rules_fallback import _ACTIONS_MAP
 

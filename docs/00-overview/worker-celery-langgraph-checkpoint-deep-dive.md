@@ -1,6 +1,6 @@
 # Worker、Celery 与 LangGraph Checkpoint 技术深挖
 
-**最后更新：** 2026-06-17
+**最后更新：** 2026-06-23
 
 本文沿当前代码路径说明 API 入队后，Celery worker 如何领取诊断任务、保证幂等、构造 `AgentDeps`、初始化 LangGraph checkpointer、处理中断/恢复、记录 node/tool audit、同步 incident/run 状态、发送通知、执行 discovery/poll/eval 任务。它补充 [Celery 与异步任务](../01-backend/celery-and-jobs.md) 和 [Agent 工作流](../02-agent/workflow.md)：前者列出任务和调度，后者列出图节点；本文解释执行面如何把它们安全组合。
 
@@ -320,10 +320,12 @@ Resume 后可能再次 `waiting_approval`。例如拒绝后重规划提出新 L2
 | 指标 | 来源 | 写入字段 |
 |------|------|----------|
 | LLM token usage | `state["llm_calls"][].usage` | `total_prompt_tokens`、`total_completion_tokens` |
-| Provider cache | `state["llm_calls"][].cache_hit` | `provider_cache_hit_count`、`provider_cache_miss_count` |
+| LLM cached token / duration summary | `state["llm_calls"][].usage.cached_prompt_tokens`、`duration_ms` | `agent_runs.state.llm_metrics_summary`、`state.token_usage` |
+| Provider cache | `state["llm_calls"][].provider_cache_status` (`hit`/`miss`/`unknown`)，legacy `cache_hit` 仅作兼容 fallback | DB: `provider_cache_hit_count`、`provider_cache_miss_count`; state summary: `provider_cache.unknown` |
 | App tool cache | `RequestLocalToolCache` | `app_cache_hit_count`、`app_cache_miss_count` |
 
 Provider prompt cache、tool request-local cache、app prompt segment cache 是不同概念，不能混用。
+每次 provider 调用的 token/duration/cache runtime Prometheus 指标由 adapter 调用路径记录；worker 只从 `state["llm_calls"]` 汇总 run 级字段，不重复递增 per-call token counter。provider cache `unknown`、cached prompt token 总量和 LLM duration 摘要保存在 `agent_runs.state.llm_metrics_summary` / `state.token_usage`，不需要 DB migration。
 
 ## 12. Notifications
 

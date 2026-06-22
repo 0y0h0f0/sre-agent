@@ -169,6 +169,30 @@ def test_metrics_tool_falls_back_to_backend_metric_and_job_alias() -> None:
     assert len(seen) > 1
 
 
+def test_metrics_tool_falls_back_to_sparse_latency_window() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = str(request.url.params["query"])
+        seen.append(query)
+        values = [[1, "0.25"]] if 'job="api-gateway"' in query and "[15m]" in query else []
+        return httpx.Response(
+            200,
+            json={"status": "success", "data": {"result": [{"values": values}]}},
+        )
+
+    client = httpx.Client(base_url="http://prom", transport=httpx.MockTransport(handler))
+    tool = MetricsTool(base_url="http://prom", client=client)
+    result = tool.run(
+        MetricsQuery(service="api-gateway", metric_type="latency", start=START, end=END)
+    )
+
+    assert result.status == "succeeded"
+    assert 'job="api-gateway"' in result.data["query"]
+    assert "[15m]" in result.data["query"]
+    assert any("[5m]" in query for query in seen)
+
+
 def test_metrics_tool_redacts_sensitive_service_before_query_and_output() -> None:
     seen: list[str] = []
 

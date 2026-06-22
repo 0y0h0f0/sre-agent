@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from typing import Any
 
 from packages.memory.compressor import Compressor
@@ -13,6 +15,16 @@ from packages.memory.schemas import (
     CompressedContext,
 )
 from packages.memory.token_counter import TokenCounter
+
+_PROMPT_SEGMENT_PREFIX = "prompt_segment"
+_DIAGNOSIS_PROMPT_SEGMENT = "diagnosis"
+_STATIC_PROMPT_VERSION = "v1"
+_SCHEMA_SEGMENT_VERSION = "v1"
+_RUNBOOK_SEGMENT_VERSION = "v1"
+_STABLE_PREFIX_HASH_VERSION = "v1"
+_SAFE_SEGMENT_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_SAFE_RUNBOOK_CHUNK_ID_RE = re.compile(r"^chk_[A-Za-z0-9_-]+$")
+_SAFE_HASH_COMPONENT_RE = re.compile(r"^(?:sha256_)?[A-Fa-f0-9]{6,128}$")
 
 
 class ContextBuilder:
@@ -124,7 +136,11 @@ class ContextBuilder:
         return BuiltContext(
             messages=messages,
             token_usage_estimate=usage,
-            segment_cache_keys=self._segment_keys(input),
+            segment_cache_keys=self._segment_keys(
+                system_text=system_text,
+                schema_text=schema_text,
+                runbook_chunks=capped_runbooks,
+            ),
             compressed_context=compressed_list,
         )
 
@@ -188,18 +204,124 @@ class ContextBuilder:
         messages.append({"role": "user", "content": "\n\n".join(parts)})
         return messages
 
-    @staticmethod
-    def _segment_keys(input: BuildContextInput) -> list[str]:
+    @classmethod
+    def stable_prefix_hash(
+        cls,
+        messages: list[dict[str, Any]],
+        *,
+        prompt_version: str = _STATIC_PROMPT_VERSION,
+        schema_version: str = _SCHEMA_SEGMENT_VERSION,
+    ) -> str:
+        """Hash the stable leading system-prefix portion of built messages.
+
+        The current LLM path still calls ``generate_json(prompt, schema)`` after
+        concatenating message content. This helper documents and tests the
+        boundary we keep stable: all leading system messages before the first
+        non-system message. Dynamic alert/evidence/runbook/memory content must
+        stay outside this hash.
+        """
+        prefix_messages: list[dict[str, str]] = []
+        for message in messages:
+            if message.get("role") != "system":
+                break
+            prefix_messages.append({
+                "role": "system",
+                "content": str(message.get("content", "")),
+            })
+        return cls._hash_payload({
+            "hash_version": _STABLE_PREFIX_HASH_VERSION,
+            "prompt_version": prompt_version,
+            "schema_version": schema_version,
+            "messages": prefix_messages,
+        })
+
+    @classmethod
+    def _segment_keys(
+        cls,
+        *,
+        system_text: str,
+        schema_text: str,
+        runbook_chunks: list[dict[str, Any]],
+    ) -> list[str]:
         """Return stable app-level prompt segment cache keys.
 
         These keys are metadata for the application segment cache. They are not
         provider prompt-cache hit counters.
         """
         keys: list[str] = []
-        if input.output_schema:
-            keys.append("prompt_segment:schema:diagnosis:v1")
-        for chunk in input.runbook_chunks:
+        if system_text:
+            keys.append(cls._segment_key(
+                "static",
+                _DIAGNOSIS_PROMPT_SEGMENT,
+                _STATIC_PROMPT_VERSION,
+                cls._hash_text(system_text),
+            ))
+        if schema_text:
+            keys.append(cls._segment_key(
+                "schema",
+                _DIAGNOSIS_PROMPT_SEGMENT,
+                _SCHEMA_SEGMENT_VERSION,
+                cls._hash_text(schema_text),
+            ))
+        for chunk in runbook_chunks:
             cid = chunk.get("chunk_id", "")
             if cid:
-                keys.append(f"prompt_segment:runbook:{cid}:v1")
+                keys.append(cls._segment_key(
+                    "runbook",
+                    cls._runbook_segment_name(str(cid)),
+                    _RUNBOOK_SEGMENT_VERSION,
+                    cls._runbook_fingerprint(chunk),
+                ))
         return keys
+
+    @staticmethod
+    def _segment_key(kind: str, name: str, version: str, fingerprint: str) -> str:
+        return (
+            f"{_PROMPT_SEGMENT_PREFIX}:"
+            f"{kind}:"
+            f"{name}:"
+            f"{version}:"
+            f"{fingerprint[:16]}"
+        )
+
+    @classmethod
+    def _runbook_fingerprint(cls, chunk: dict[str, Any]) -> str:
+        metadata = chunk.get("metadata")
+        content_hash = chunk.get("content_hash")
+        if not content_hash and isinstance(metadata, dict):
+            content_hash = metadata.get("content_hash")
+        if isinstance(content_hash, str) and content_hash.strip():
+            candidate = cls._safe_segment_component(content_hash.strip())
+            if _SAFE_HASH_COMPONENT_RE.fullmatch(candidate):
+                return candidate[:32]
+            return cls._hash_text(content_hash.strip())
+        return cls._hash_payload({
+            "chunk_id": chunk.get("chunk_id", ""),
+            "title": chunk.get("title", ""),
+            "excerpt": chunk.get("excerpt", ""),
+        })
+
+    @classmethod
+    def _runbook_segment_name(cls, chunk_id: str) -> str:
+        if _SAFE_RUNBOOK_CHUNK_ID_RE.fullmatch(chunk_id):
+            return chunk_id
+        return cls._hash_text(chunk_id)[:16]
+
+    @staticmethod
+    def _hash_text(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _hash_payload(payload: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _safe_segment_component(value: str) -> str:
+        component = _SAFE_SEGMENT_COMPONENT_RE.sub("_", value.strip())
+        return component.strip("_") or "unknown"

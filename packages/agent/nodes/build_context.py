@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from packages.agent.prompts import SYSTEM_PROMPT
+from packages.agent.prompts import COMPACT_DIAGNOSIS_OUTPUT_INSTRUCTIONS, SYSTEM_PROMPT
 from packages.agent.schemas import AgentDeps
 from packages.agent.state import IncidentState
 from packages.common.ids import new_id
@@ -34,7 +34,7 @@ def build_context(state: IncidentState, deps: AgentDeps) -> IncidentState:
             runbook_chunks=state.get("runbook_context", []),
             memories=state.get("memory_context", []),
             cross_incident=state.get("cross_incident_context", []),
-            output_schema="DiagnosisOutput",
+            output_schema=f"CompactDiagnosisOutput:v1\n{COMPACT_DIAGNOSIS_OUTPUT_INSTRUCTIONS}",
         )
         built = deps.context_builder.build(bci)
         deps.node_tracer(

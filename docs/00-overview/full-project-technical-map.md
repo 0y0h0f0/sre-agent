@@ -1,6 +1,6 @@
 # 全项目技术地图
 
-**最后更新：** 2026-06-18
+**最后更新：** 2026-06-23
 
 本文从全项目视角说明各目录、进程、共享库、数据对象和测试资产如何协作。它补充 [仓库地图](repository-map.md) 和 [系统架构](architecture.md)：仓库地图回答“文件在哪里”，系统架构回答“主链路是什么”，本文回答“模块之间的技术契约是什么”。
 
@@ -317,7 +317,7 @@ Discovery 负责发现和提议，不负责擅自修改 worker 运行配置：
 | Deployment changes | `DEPLOYMENT_BACKEND`、`GITHUB_*`、`ARGOCD_*` | GitChangeTool、deployment backend、collect_deployment | GitHub/Argo CD 是只读变更证据来源，不是发布或 rollback 执行入口；细节见 `deployment-change-github-argocd-deep-dive.md` |
 | Executor | `EXECUTOR_BACKEND`、`EXECUTOR_K8S_NAMESPACE` | worker、executor backend、capability/preflight/verify path | production 不会自动把 live 改回 fixture；live allowlist 与风险表不是一回事，细节见 `executor-action-verification-loop-deep-dive.md` |
 | RAG/embedding | `EMBEDDING_PROVIDER`、`RUNBOOK_HYBRID_SEARCH_ENABLED` | runbook ingest/search、memory search | primary vector store 是 512 维 |
-| LLM | `LLM_PROVIDER`、`LLM_REASONING_ENABLED` | diagnose/report/runbook draft/diff | 真实 LLM 不能做 CI 稳定门禁；provider/prompt 边界见 `llm-prompt-fakellm-provider-boundaries-deep-dive.md` |
+| LLM | `LLM_PROVIDER`、`LLM_REASONING_ENABLED`、profile/latency flags | diagnose/report/runbook draft/diff | 真实 LLM 不能做 CI 稳定门禁；provider cache 三态、compact diagnosis、deterministic report 和 parallel specialist 边界见 `llm-prompt-fakellm-provider-boundaries-deep-dive.md` |
 | M9 | `M9_EXTENSIONS_ENABLED` 和子开关 | RAG、trace、Grafana parser/helper、semantic search | global gate false 会强制关闭 M9 子能力；Grafana helper 当前未暴露为独立 router |
 | Auth | `API_KEY_AUTH_ENABLED`、bootstrap/admin scope | API middleware、frontend API key panel | auth disabled 时 scope dependency 会跳过 |
 | Notifications | `SMTP_*`、`SRE_EMAIL_LIST`、`WEB_BASE_URL`、`NOTIFICATION_TIMEZONE` | email service、worker tasks、templates、frontend links | 邮件不是诊断硬依赖；配置缺失会 skipped |
@@ -338,6 +338,7 @@ Discovery 负责发现和提议，不负责擅自修改 worker 运行配置：
 | 新 Agent 节点 | Agent 工作流 | `graph.py`、`nodes/`、`state.py` | `docs/02-agent/workflow.md` | node unit + graph/integration |
 | 新报告生成、再生成或 incident lifecycle 行为 | 报告生命周期深挖、API 参考、前端控制台 | `packages/agent/nodes/generate_report.py`、`apps/api/services/report_service.py`、`packages/db/repositories/reports.py`、`apps/worker/tasks.py`、`apps/web/src/App.tsx` | `report-generation-incident-lifecycle-deep-dive.md`、`api-reference.md`、`data-model.md`、`react-console.md` | report API integration + report node + frontend report tests |
 | 新 LLM provider、prompt、FakeLLM 覆盖或 M9 LLM draft 行为 | LLM 与提示词、LLM/Prompt/FakeLLM 边界深挖、Eval、Runbook RAG | `packages/agent/llm/`、`packages/agent/prompts.py`、`packages/agent/fake_llm.py`、`packages/rag/llm_runbook_generator.py`、`packages/rag/incident_diff.py` | `llm-and-prompts.md`、`llm-prompt-fakellm-provider-boundaries-deep-dive.md`、`evaluation.md`、`runbook-rag.md` | provider/fallback/redaction + FakeLLM smoke/eval + M9 draft tests |
+| Agent run LLM/Web latency 优化 | Latency plan/cards、LLM 与提示词、Memory、Runbook RAG、Worker 深挖 | `packages/agent/llm/`、`packages/agent/nodes/`、`packages/memory/`、`packages/rag/runbook_web_context.py`、`packages/common/metrics.py`、worker metrics 汇总 | `plans/12-latency/*`、`llm-and-prompts.md`、`memory-cache-compression.md`、`runbook-rag.md`、`worker-celery-langgraph-checkpoint-deep-dive.md` | `test_llm_providers.py`、`test_diagnose_multi_perspective.py`、`test_memory.py`、`test_web_search_safety.py`、worker integration |
 | 新工具后端或 observability adapter | 工具层、配置参考、工具与证据深挖、Observability 后端适配器深挖 | `packages/tools/`、worker `_build_deps()`、`packages/discovery/` | `tool-layer.md`、`tool-evidence-deep-dive.md`、`observability-backend-adapters-deep-dive.md`、`configuration.md`、必要时 `discovery-capability-topology-deep-dive.md` | mocked backend + degraded/read-only/secret leakage tests |
 | 新 deployment change 后端或映射规则 | Deployment Change 深挖、工具层、配置参考 | `packages/tools/git_changes.py`、`packages/tools/deployment_backends.py`、`packages/agent/nodes/collect_deployment.py`、worker `_build_deps()` | `deployment-change-github-argocd-deep-dive.md`、`tool-layer.md`、`configuration.md`、必要时 `tool-evidence-deep-dive.md` | fixture/GitHub/Argo mapping + degraded/redaction/cache datasource tests |
 | 新执行动作 | guardrail/approval、executor/verify 深挖 | guardrail policy、capabilities、snapshot、executor backend、verify、action API if needed | `guardrails-and-approval.md`、`executor-action-verification-loop-deep-dive.md`、`tool-layer.md`、scope docs | guardrail/capability/executor/approval/verify/replan negative tests |

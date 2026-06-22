@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from packages.memory.compressor import Compressor
 from packages.memory.context_budget import ContextBudgeter
 from packages.memory.schemas import (
@@ -146,6 +148,53 @@ class TestCompressor:
         plans = c.generate_compression_plan(evidence, budget)
         assert len(plans) == 0
 
+    def test_compress_report_inputs_omits_raw_logs_and_keeps_traceability(self) -> None:
+        c = Compressor()
+        evidence = [
+            {
+                "type": "log",
+                "source": "loki",
+                "evidence_id": f"evi_log_{idx}",
+                "summary": f"RAW_LOG_SUMMARY_{idx}_SHOULD_NOT_PROMPT",
+                "payload": {
+                    "message": f"RAW_LOG_LINE_{idx}_SHOULD_NOT_PROMPT",
+                    "samples": [{"msg": f"RAW_SAMPLE_{idx}_SHOULD_NOT_PROMPT"}],
+                    "line_count": 100 + idx,
+                    "top_stack_signature": f"RAW_STACK_SIGNATURE_{idx}_SHOULD_NOT_PROMPT",
+                    "top_error_type": f"RAW_ERROR_TYPE_{idx}_SHOULD_NOT_PROMPT",
+                    "error_type_counts": {f"RAW_ERROR_KEY_{idx}_SHOULD_NOT_PROMPT": idx},
+                },
+            }
+            for idx in range(14)
+        ]
+        evidence.append({
+            "type": "runbook",
+            "evidence_id": "evi_runbook",
+            "payload": {"chunk_id": "chk_report", "source_path": "runbooks/high-5xx.md"},
+            "summary": "Known high 5xx rollback path",
+        })
+
+        report_context, compression = c.compress_report_inputs(
+            evidence=evidence,
+            actions=[{"type": "rollback_release", "reason": "bad deploy"}],
+            errors=[{"node": "verify", "error": "RAW_ERROR_DETAIL_SHOULD_NOT_PROMPT"}],
+        )
+        serialized = json.dumps(report_context, default=str)
+
+        assert "RAW_LOG_LINE" not in serialized
+        assert "RAW_LOG_SUMMARY" not in serialized
+        assert "RAW_SAMPLE" not in serialized
+        assert "RAW_STACK_SIGNATURE" not in serialized
+        assert "RAW_ERROR_TYPE" not in serialized
+        assert "RAW_ERROR_KEY" not in serialized
+        assert "RAW_ERROR_DETAIL" not in serialized
+        assert "evi_log_0" in report_context["retained_evidence_ids"]
+        assert "evi_runbook" in report_context["omitted_evidence_ids"]
+        assert "evi_runbook" in report_context["all_evidence_ids"]
+        assert report_context["runbook_chunk_ids"] == ["chk_report"]
+        assert compression.retained_evidence_ids
+        assert "evi_runbook" in compression.omitted_evidence_ids
+
 
 class TestMemoryStore:
     def test_put_and_get_by_scope(self, db_session) -> None:
@@ -226,3 +275,145 @@ class TestContextBuilder:
         content = result.messages[-1]["content"]
 
         assert content.index("evi_log") < content.index("evi_trace")
+
+    def test_stable_prefix_hash_ignores_dynamic_user_context(self) -> None:
+        from packages.memory.context_builder import ContextBuilder
+
+        builder = ContextBuilder()
+        first = builder.build(BuildContextInput(
+            incident={
+                "_system_prompt": "You are an SRE.",
+                "service_name": "checkout",
+                "alert_name": "High5xx",
+            },
+            output_schema="DiagnosisOutput",
+            evidence=[{
+                "type": "log",
+                "evidence_id": "evi_1",
+                "summary": "timeout on checkout",
+            }],
+            runbook_chunks=[{
+                "chunk_id": "chk_1",
+                "score": 0.9,
+                "excerpt": "checkout runbook",
+            }],
+            memories=[{
+                "memory_id": "mem_1",
+                "content": "checkout incident memory",
+                "importance": 0.9,
+            }],
+            cross_incident=[{
+                "incident_id": "inc_1",
+                "summary": "previous checkout outage",
+            }],
+        ))
+        second = builder.build(BuildContextInput(
+            incident={
+                "_system_prompt": "You are an SRE.",
+                "service_name": "payments",
+                "alert_name": "Latency",
+            },
+            output_schema="DiagnosisOutput",
+            evidence=[{
+                "type": "log",
+                "evidence_id": "evi_2",
+                "summary": "different raw stack trace",
+            }],
+            runbook_chunks=[{
+                "chunk_id": "chk_2",
+                "score": 0.95,
+                "excerpt": "payments runbook",
+            }],
+            memories=[{
+                "memory_id": "mem_2",
+                "content": "payments incident memory",
+                "importance": 0.8,
+            }],
+            cross_incident=[{
+                "incident_id": "inc_2",
+                "summary": "previous payments outage",
+            }],
+        ))
+
+        assert ContextBuilder.stable_prefix_hash(first.messages) == (
+            ContextBuilder.stable_prefix_hash(second.messages)
+        )
+        assert "different raw stack trace" not in first.messages[0]["content"]
+        assert "different raw stack trace" not in second.messages[0]["content"]
+
+    def test_stable_prefix_hash_changes_for_static_schema_or_version(self) -> None:
+        from packages.memory.context_builder import ContextBuilder
+
+        builder = ContextBuilder()
+        base = builder.build(BuildContextInput(
+            incident={"_system_prompt": "You are an SRE."},
+            output_schema="DiagnosisOutput",
+        ))
+        schema_changed = builder.build(BuildContextInput(
+            incident={"_system_prompt": "You are an SRE."},
+            output_schema="DiagnosisOutput:v2",
+        ))
+        prompt_changed = builder.build(BuildContextInput(
+            incident={"_system_prompt": "You are a senior SRE."},
+            output_schema="DiagnosisOutput",
+        ))
+        base_hash = ContextBuilder.stable_prefix_hash(base.messages)
+
+        assert ContextBuilder.stable_prefix_hash(schema_changed.messages) != base_hash
+        assert ContextBuilder.stable_prefix_hash(prompt_changed.messages) != base_hash
+        assert ContextBuilder.stable_prefix_hash(
+            base.messages,
+            prompt_version="v2",
+        ) != base_hash
+        assert ContextBuilder.stable_prefix_hash(
+            base.messages,
+            schema_version="v2",
+        ) != base_hash
+
+    def test_segment_keys_are_versioned_and_safe(self) -> None:
+        from packages.memory.context_builder import ContextBuilder
+
+        builder = ContextBuilder()
+        result = builder.build(BuildContextInput(
+            incident={"_system_prompt": "You are an SRE."},
+            output_schema="DiagnosisOutput",
+            runbook_chunks=[{
+                "chunk_id": "chk_1",
+                "title": "Private runbook",
+                "excerpt": "raw runbook text with api.prod.svc.cluster.local/path",
+                "metadata": {"content_hash": "sha256:abc123"},
+                "score": 0.9,
+            }],
+        ))
+        keys = result.segment_cache_keys
+
+        assert any(key.startswith("prompt_segment:static:diagnosis:v1:") for key in keys)
+        assert any(key.startswith("prompt_segment:schema:diagnosis:v1:") for key in keys)
+        assert any(key.startswith("prompt_segment:runbook:chk_1:v1:") for key in keys)
+        joined = " ".join(keys)
+        assert "DiagnosisOutput" not in joined
+        assert "raw runbook text" not in joined
+        assert "svc.cluster.local" not in joined
+        assert "/path" not in joined
+
+    def test_segment_keys_hash_untrusted_runbook_identifiers(self) -> None:
+        from packages.memory.context_builder import ContextBuilder
+
+        builder = ContextBuilder()
+        result = builder.build(BuildContextInput(
+            incident={"_system_prompt": "You are an SRE."},
+            output_schema="DiagnosisOutput",
+            runbook_chunks=[{
+                "chunk_id": "api.prod.svc.cluster.local/path",
+                "title": "Private runbook",
+                "excerpt": "raw runbook text",
+                "content_hash": "not a hash api.prod.svc.cluster.local/path",
+                "score": 0.9,
+            }],
+        ))
+        joined = " ".join(result.segment_cache_keys)
+
+        assert "api.prod.svc.cluster.local" not in joined
+        assert "/path" not in joined
+        assert "not_a_hash" not in joined
+        assert "raw runbook text" not in joined

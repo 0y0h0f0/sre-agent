@@ -33,14 +33,25 @@ class DisabledLLMAdapter(LLMProvider):
         thinking: bool = False,
         **kwargs: Any,
     ) -> str:
+        result, meta = self.invoke_with_metadata(messages, thinking=thinking, **kwargs)
+        self.last_metadata = meta
+        return result
+
+    def invoke_with_metadata(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        thinking: bool = False,
+        **kwargs: Any,
+    ) -> tuple[str, LLMCallMetadata]:
         result = self._fake.invoke(messages, thinking=thinking, **kwargs)
-        self.last_metadata = LLMCallMetadata(
+        meta = LLMCallMetadata(
             provider="disabled",
             model="deterministic-fallback",
             usage={"prompt_tokens": 0, "completion_tokens": 0},
             finish_reason="stop",
         )
-        return result
+        return result, dict(meta)
 
     def generate_json(
         self,
@@ -50,16 +61,30 @@ class DisabledLLMAdapter(LLMProvider):
         thinking: bool = False,
         **kwargs: Any,
     ) -> Any:
+        result, meta = self.generate_json_with_metadata(
+            prompt, output_schema, thinking=thinking, **kwargs
+        )
+        self.last_metadata = meta
+        return result
+
+    def generate_json_with_metadata(
+        self,
+        prompt: str,
+        output_schema: Any,
+        *,
+        thinking: bool = False,
+        **kwargs: Any,
+    ) -> tuple[Any, LLMCallMetadata]:
         result = self._fake.generate_json(
             prompt, output_schema, thinking=thinking, **kwargs
         )
-        self.last_metadata = LLMCallMetadata(
+        meta = LLMCallMetadata(
             provider="disabled",
             model="deterministic-fallback",
             usage={"prompt_tokens": 0, "completion_tokens": 0},
             finish_reason="stop",
         )
-        return result
+        return result, dict(meta)
 
     def get_last_metadata(self) -> LLMCallMetadata:
         return self.last_metadata

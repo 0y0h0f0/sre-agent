@@ -7,6 +7,7 @@ raw thinking blocks.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import httpx
@@ -57,33 +58,57 @@ class AnthropicAdapter:
     def invoke(
         self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
     ) -> str:
+        text, meta = self.invoke_with_metadata(messages, thinking=thinking, **kwargs)
+        self.last_metadata = meta
+        return text
+
+    def invoke_with_metadata(
+        self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
+    ) -> tuple[str, LLMCallMetadata]:
+        request_model = _string_option(kwargs.get("model"), self.model)
+        request_max_tokens = _positive_int_option(kwargs.get("max_tokens"), self.max_tokens)
+        request_temperature = _non_negative_float_option(
+            kwargs.get("temperature"), self.temperature
+        )
+        request_reasoning_effort = _string_option(
+            kwargs.get("reasoning_effort"), self.reasoning_effort
+        )
         system, chat = _split_system(messages)
         payload: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
+            "model": request_model,
+            "max_tokens": request_max_tokens,
             "messages": chat,
         }
         if not thinking:
-            payload["temperature"] = self.temperature
+            payload["temperature"] = request_temperature
         if system:
             payload["system"] = system
         if thinking:
             payload["thinking"] = {"type": "adaptive"}
-            payload["output_config"] = {"effort": self.reasoning_effort}
+            payload["output_config"] = {"effort": request_reasoning_effort}
         data = self._post("/v1/messages", payload)
         text = _extract_text(data)
-        self._record(data)
-        return text
+        meta = self._metadata_from_response(data, request_model=request_model)
+        return text, dict(meta)
 
     def generate_json(
         self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
     ) -> Any:
+        result, meta = self.generate_json_with_metadata(
+            prompt, output_schema, thinking=thinking, **kwargs
+        )
+        self.last_metadata = meta
+        return result
+
+    def generate_json_with_metadata(
+        self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
+    ) -> tuple[Any, LLMCallMetadata]:
         messages = [
             {"role": "system", "content": _JSON_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ]
-        raw = self.invoke(messages, thinking=thinking)
-        return parse_into_schema(extract_json(raw), output_schema)
+        raw, meta = self.invoke_with_metadata(messages, thinking=thinking, **kwargs)
+        return parse_into_schema(extract_json(raw), output_schema), meta
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
@@ -102,11 +127,14 @@ class AnthropicAdapter:
         result: dict[str, Any] = response.json()
         return result
 
-    def _record(self, data: dict[str, Any]) -> None:
+    def _metadata_from_response(
+        self, data: dict[str, Any], *, request_model: str
+    ) -> LLMCallMetadata:
         usage = data.get("usage") or {}
+        model = data.get("model")
         meta: LLMCallMetadata = {
             "provider": self.provider,
-            "model": str(data.get("model", self.model)),
+            "model": model if isinstance(model, str) and model else request_model,
             "finish_reason": str(data.get("stop_reason", "")),
         }
         if usage:
@@ -117,7 +145,7 @@ class AnthropicAdapter:
         reasoning = _extract_reasoning_summary(data)
         if reasoning:
             meta["reasoning_summary"] = reasoning[:500]
-        self.last_metadata = meta
+        return meta
 
 
 def _split_system(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
@@ -146,3 +174,25 @@ def _extract_reasoning_summary(data: dict[str, Any]) -> str:
         if value:
             summaries.append(str(value))
     return "\n".join(summaries)
+
+
+def _string_option(value: Any, default: str) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
+
+
+def _positive_int_option(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int | float) and math.isfinite(value) and value > 0:
+        return int(value)
+    return default
+
+
+def _non_negative_float_option(value: Any, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int | float) and math.isfinite(value) and value >= 0:
+        return float(value)
+    return default

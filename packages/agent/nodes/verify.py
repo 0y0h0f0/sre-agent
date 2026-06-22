@@ -371,52 +371,126 @@ def _run_k8s_rollout_gate(
         if str(gate.get("action_type", "")).lower() == "restart_statefulset"
         else "rollout_status"
     )
-    query = K8sQuery(service=target, operation=operation, namespace=namespace)
-    try:
-        result = deps.k8s_tool.run(query)
-        deps.tool_call_recorder(
-            agent_run_id=agent_run_id,
-            node_name="verify",
-            tool_name=deps.k8s_tool.name,
-            query=query,
-            result=result,
-            input_summary=(
-                f"verify k8s_rollout service={target} namespace={namespace} operation={operation}"
-            ),
+    action_type = str(gate.get("action_type", "")).lower()
+    result = None
+    verdict = "unknown"
+    resolved_target = target
+    last_error: Exception | None = None
+    fallback_used = False
+
+    for candidate_target in _rollout_target_candidates(target, service):
+        query = K8sQuery(service=candidate_target, operation=operation, namespace=namespace)
+        try:
+            result = deps.k8s_tool.run(query)
+            deps.tool_call_recorder(
+                agent_run_id=agent_run_id,
+                node_name="verify",
+                tool_name=deps.k8s_tool.name,
+                query=query,
+                result=result,
+                input_summary=(
+                    "verify k8s_rollout "
+                    f"service={candidate_target} namespace={namespace} operation={operation}"
+                ),
+            )
+        except Exception as exc:
+            last_error = exc
+            logger.error(
+                "verify: k8s rollout gate failed service=%s namespace=%s",
+                candidate_target,
+                namespace,
+                exc_info=True,
+            )
+            continue
+
+        verdict = _assess_k8s_rollout(
+            result.data,
+            result.status,
+            action_type=action_type,
+            expected_replicas=_number_value(gate.get("expected_replicas")),
+            required=required,
         )
-    except Exception as exc:
-        logger.error(
-            "verify: k8s rollout gate failed service=%s namespace=%s",
-            target,
-            namespace,
-            exc_info=True,
-        )
+        resolved_target = candidate_target
+        if (
+            candidate_target != _normalize_rollout_target(service)
+            and _should_try_rollout_service_fallback(result.status, verdict)
+        ):
+            fallback_used = True
+            continue
+        break
+
+    if result is None:
         verdict = "degraded" if required else "unknown"
+        summary = (
+            f"k8s rollout gate unavailable: {type(last_error).__name__}"
+            if last_error
+            else "k8s rollout gate unavailable"
+        )
         return {
             **_gate_base(gate),
             "verdict": verdict,
             "status": "degraded",
-            "summary": f"k8s rollout gate unavailable: {type(exc).__name__}",
+            "summary": summary,
             "_evidence": [],
         }
+
     evidence = [
-        {**item, "_verify_fresh": True, "verify_gate": "k8s_rollout"} for item in result.evidence
+        {
+            **item,
+            "_verify_fresh": True,
+            "verify_gate": "k8s_rollout",
+            "verify_target": resolved_target,
+        }
+        for item in result.evidence
     ]
-    action_type = str(gate.get("action_type", "")).lower()
-    verdict = _assess_k8s_rollout(
-        result.data,
-        result.status,
-        action_type=action_type,
-        expected_replicas=_number_value(gate.get("expected_replicas")),
-        required=required,
-    )
+    summary = result.summary
+    if fallback_used and resolved_target != _normalize_rollout_target(target):
+        summary = f"{summary}; fallback_target={resolved_target}"
     return {
         **_gate_base(gate),
         "verdict": verdict,
         "status": result.status,
-        "summary": result.summary,
+        "summary": summary,
+        "resolved_target": resolved_target,
         "_evidence": evidence,
     }
+
+
+def _rollout_target_candidates(primary: str, service: str) -> list[str]:
+    """Return verify targets, preferring the action target then incident service."""
+    return _dedupe_nonempty(
+        [
+            _normalize_rollout_target(primary),
+            _normalize_rollout_target(service),
+        ]
+    )
+
+
+def _normalize_rollout_target(target: object) -> str:
+    """Normalize common Kubernetes resource target strings for read-only verify."""
+    value = str(target or "").strip()
+    if "/" not in value:
+        return value
+    kind, name = value.split("/", 1)
+    if kind.strip().lower() in {"deploy", "deployment", "statefulset", "sts"}:
+        return name.strip()
+    return value
+
+
+def _dedupe_nonempty(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _should_try_rollout_service_fallback(status: str, verdict: str) -> bool:
+    """Return true when a rollout check likely failed due to a bad read target."""
+    return status in {"degraded", "timeout", "failed"} or verdict == "unknown"
 
 
 def _run_db_readonly_gate(

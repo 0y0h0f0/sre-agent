@@ -1,6 +1,6 @@
 # Configuration Reference
 
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-23
 
 The runtime source of truth is `packages/common/settings.py`. This document explains the stable settings surface for developers and operators.
 
@@ -179,15 +179,39 @@ Provider 工厂、FakeLLM / disabled provider、真实 provider 手动边界、u
 | `LLM_TIMEOUT_SECONDS` | `30.0` | Provider call timeout. |
 | `LLM_MAX_TOKENS` | `512` | Max completion tokens. |
 | `LLM_TEMPERATURE` | `0.1` | Generation temperature. |
+| `LLM_DETERMINISTIC_REPORT_ENABLED` | `false` | When true, `generate_report` skips the report-generation LLM call and uses the deterministic report builder. Report schema and versioning are unchanged. |
+| `LLM_FAST_JSON_MODEL` | empty | Optional model override for the `fast_json` profile. Empty inherits `LLM_MODEL`. |
+| `LLM_FAST_JSON_MAX_TOKENS` | `0` | Optional max-token override for `fast_json`. `0` inherits `LLM_MAX_TOKENS`. |
+| `LLM_DIAGNOSE_REASONING_MODEL` | empty | Optional model override for the `diagnose_reasoning` profile. Empty inherits `LLM_MODEL`. |
+| `LLM_DIAGNOSE_REASONING_MAX_TOKENS` | `0` | Optional max-token override for `diagnose_reasoning`. `0` inherits `LLM_MAX_TOKENS`. |
+| `LLM_REPORT_MODEL` | empty | Optional model override for the `report` profile. Empty inherits `LLM_MODEL`. |
+| `LLM_REPORT_MAX_TOKENS` | `0` | Optional max-token override for `report`. `0` inherits `LLM_MAX_TOKENS`. |
+| `LLM_NODE_MODEL_OVERRIDES` | empty | JSON object or comma-separated `node_or_profile=model` overrides. |
+| `LLM_NODE_MAX_TOKENS` | empty | JSON object or comma-separated `node_or_profile=tokens` overrides. |
 | `LLM_REASONING_ENABLED` | `false` | Enables deep reasoning output where supported. |
 | `LLM_REASONING_EFFORT` | `medium` | Reasoning effort hint. |
 | `LLM_REASONING_NODES` | `diagnose,diagnose_synthesize` | Comma-separated nodes using reasoning mode. |
 | `LLM_MULTI_PERSPECTIVE_ENABLED` | `false` | Optional multi-perspective diagnosis mode. |
+| `LLM_MULTI_PERSPECTIVE_PARALLEL_ENABLED` | `false` | Optional latency mode for multi-perspective diagnosis. When true, metrics/logs/traces specialists run concurrently only if the provider supports call-local metadata; synthesizer remains sequential. |
 | `TOKEN_BUDGET_TOTAL` | `32000` | Overall token budget. |
 | `TOKEN_BUDGET_PROMPT` | `12000` | Prompt budget. |
 | `TOKEN_CACHE_ENABLED` | `true` | Application prompt segment cache toggle. |
 
 CI and deterministic tests must use FakeLLM. Real LLMs are for manual demos/evals only, not stable CI gates.
+
+LLM profiles only change adapter options. `plan_actions` can use `fast_json`,
+`diagnose` / `diagnose_synthesize` can use `diagnose_reasoning` when conditional
+reasoning triggers, and `generate_report` can use `report`. `LLM_NODE_*`
+overrides may use either profile names or concrete node names such as
+`plan_actions` and `generate_report`; concrete node names take precedence.
+Profile settings do not change provider selection, cloud-provider allow rules,
+or the redaction wrapper boundary. `LLM_DETERMINISTIC_REPORT_ENABLED=true` is
+the explicit opt-in path for avoiding the report LLM call while keeping the same
+report response fields and append-only report versions.
+`LLM_MULTI_PERSPECTIVE_PARALLEL_ENABLED=true` only changes the optional
+multi-perspective diagnosis branch. It does not enable multi-perspective mode by
+itself, and it requires call-local metadata support so worker threads do not
+read or write shared `last_metadata`.
 
 When `LLM_PROVIDER` is a cloud provider (`openai`, `deepseek`, or `anthropic`),
 the factory wraps the provider in `RedactingLLMAdapter`. The wrapper redacts
@@ -208,7 +232,8 @@ wrapper rule.
 | `RUNBOOK_WEB_SEARCH_ALLOWED_DOMAINS` | empty | Required in production for Web search. |
 | `RUNBOOK_WEB_SEARCH_BLOCKED_DOMAINS` | empty | Blocklist; should override allowlist policy. |
 | `RUNBOOK_WEB_SEARCH_MAX_CONTENT_BYTES` | `1048576` | Per-result content cap. |
-| `RUNBOOK_WEB_SEARCH_CACHE_TTL_SECONDS` | `86400` | Web context cache TTL. |
+| `RUNBOOK_WEB_SEARCH_CACHE_ENABLED` | `true` | Cache safe Web context results when Web search itself is enabled. Set `false` to roll back cache behavior without disabling Web search. |
+| `RUNBOOK_WEB_SEARCH_CACHE_TTL_SECONDS` | `86400` | Web context cache TTL. Uses `REDIS_URL`; `memory://` uses an in-process TTL cache for tests/local fixtures. |
 | `RUNBOOK_WEB_SEARCH_MAX_REDIRECTS` | `3` | Redirect cap. |
 | `GRAFANA_WEBHOOK_SECRET_REF` | empty | Secret reference field for Grafana webhook integrations; current app has no registered Grafana webhook route using it for HMAC. |
 | `GRAFANA_WEBHOOK_MAX_BYTES` | `256000` | Payload size policy field for Grafana webhook integrations; current app has no registered Grafana webhook route enforcing it. |
@@ -229,6 +254,7 @@ M9_EXTENSIONS_ENABLED=false
 RUNBOOK_LLM_GENERATION_ENABLED=false
 LLM_INCIDENT_DIFF_ENABLED=false
 RUNBOOK_WEB_SEARCH_ENABLED=false
+RUNBOOK_WEB_SEARCH_CACHE_ENABLED=false
 TEMPO_DISCOVERY_ENABLED=false
 GRAFANA_ALERT_INGEST_ENABLED=false
 SEMANTIC_RUNBOOK_SEARCH_ENABLED=false

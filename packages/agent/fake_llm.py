@@ -14,7 +14,12 @@ from packages.agent.rules_fallback import (
     _DIAGNOSIS_MAP,
     _diag,
 )
-from packages.agent.schemas import DiagnosisOutput, PlannedAction
+from packages.agent.schemas import (
+    CompactDiagnosisOutput,
+    DiagnosisOutput,
+    PlannedAction,
+    compact_diagnosis_from_output,
+)
 
 _EVIDENCE_ID_RE = re.compile(r"\b(?:evi|evd)_[A-Za-z0-9_-]+")
 _RUNBOOK_CHUNK_ID_RE = re.compile(r"\bchk_[A-Za-z0-9_-]+")
@@ -160,6 +165,16 @@ class FakeLLM:
             return DiagnosisOutput(
                 **self._diagnosis_dict(
                     alert_name, evidence_ids, perspective, runbook_chunk_ids
+                )
+            )
+        if output_schema is CompactDiagnosisOutput:
+            evidence_ids = self._extract_evidence_ids_from_text(prompt)
+            runbook_chunk_ids = self._extract_runbook_chunk_ids_from_text(prompt)
+            return compact_diagnosis_from_output(
+                DiagnosisOutput(
+                    **self._diagnosis_dict(
+                        alert_name, evidence_ids, perspective, runbook_chunk_ids
+                    )
                 )
             )
         return output_schema()

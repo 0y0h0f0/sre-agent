@@ -1,6 +1,6 @@
 # 测试、Eval 与工程指标技术深挖
 
-**最后更新：** 2026-06-17
+**最后更新：** 2026-06-23
 
 本文沿当前代码路径说明测试门禁、Eval harness 和工程指标如何共同证明系统质量。它补充 [测试策略](../07-testing/testing-strategy.md)、[评测体系](../09-evals/evaluation.md) 和 [工程评估指标](engineering-metrics.md)：这些文档分别列出策略、suite 和指标定义；本文解释 CI、pytest fixture、Vitest/Playwright、FakeLLM smoke eval、Eval API/Celery task 和 `/api/evals/engineering-metrics` 如何组合。
 
@@ -39,6 +39,7 @@
 | Engineering metrics repository | `packages/db/repositories/engineering_metrics.py` |
 | Engineering metrics tests | `tests/integration/test_engineering_metrics_api.py` |
 | Smoke eval tests | `tests/integration/test_eval_runner.py` |
+| Latency/LLM/Web safety tests | `tests/unit/test_llm_providers.py`、`tests/unit/test_diagnose_multi_perspective.py`、`tests/unit/test_web_search_safety.py`、`tests/integration/test_worker_task.py` |
 
 ## 总链路
 
@@ -99,6 +100,8 @@ npm run test:e2e
 - 真实 LLM、真实 SMTP、真实 Kubernetes 或 cloud provider 测试。
 
 这意味着“CI 通过”证明的是确定性 local/CI 路径：FakeLLM、fixture/mock 后端、fixture executor、离线 smoke eval 和前端浏览器 smoke。生产后端对接、M9 外部调用、真实 LLM 质量只能作为手动验证或 rollout 附加证据，不能变成稳定 CI gate。
+
+Latency 相关测试仍遵守同一原则：真实 LLM 和真实 Web search 不能成为 CI gate。当前覆盖重点是 provider cache 三态、低基数 LLM/Web 指标、JSON repair/fallback metrics、compact diagnosis schema、deterministic report mode、Web context cache key/value 安全，以及 parallel multi-perspective metadata/timeout isolation。
 
 ## 2. Python Test Topology
 

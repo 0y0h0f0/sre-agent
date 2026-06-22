@@ -314,8 +314,20 @@ def _promql_templates_for_selector(metric_type: MetricType, selector: str) -> li
                 f"{{{selector}}}[5m])) by (le))"
             ),
             (
+                "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket"
+                f"{{{selector}}}[15m])) by (le))"
+            ),
+            (
+                "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket"
+                f"{{{selector}}}[30m])) by (le))"
+            ),
+            (
                 "histogram_quantile(0.95, sum(rate(grpc_server_request_duration_seconds_bucket"
                 f"{{{selector}}}[5m])) by (le))"
+            ),
+            (
+                "histogram_quantile(0.95, sum(rate(grpc_server_request_duration_seconds_bucket"
+                f"{{{selector}}}[15m])) by (le))"
             ),
         ],
         "error_rate": [
@@ -324,15 +336,26 @@ def _promql_templates_for_selector(metric_type: MetricType, selector: str) -> li
                 f"/ clamp_min(sum(rate(http_requests_total{{{selector}}}[5m])), 1)"
             ),
             (
+                f'sum(rate(http_requests_total{{{selector},status=~"5.."}}[15m])) '
+                f"/ clamp_min(sum(rate(http_requests_total{{{selector}}}[15m])), 1)"
+            ),
+            (
                 f'sum(rate(http_server_requests_seconds_count{{{selector},status=~"5.."}}[5m])) '
                 f"/ clamp_min(sum(rate(http_server_requests_seconds_count{{{selector}}}[5m])), 1)"
+            ),
+            (
+                f'sum(rate(http_server_requests_seconds_count{{{selector},status=~"5.."}}[15m])) '
+                f"/ clamp_min(sum(rate(http_server_requests_seconds_count{{{selector}}}[15m])), 1)"
             ),
             f"clamp_min(1 - avg(up{{{selector}}}), 0)",
         ],
         "qps": [
             f"sum(rate(http_requests_total{{{selector}}}[5m]))",
+            f"sum(rate(http_requests_total{{{selector}}}[15m]))",
             f"sum(rate(http_server_requests_seconds_count{{{selector}}}[5m]))",
+            f"sum(rate(http_server_requests_seconds_count{{{selector}}}[15m]))",
             f"sum(rate(grpc_server_requests_total{{{selector}}}[5m]))",
+            f"sum(rate(grpc_server_requests_total{{{selector}}}[15m]))",
         ],
         "cpu": [
             f"sum(rate(process_cpu_seconds_total{{{selector}}}[5m]))",
@@ -358,6 +381,7 @@ def _promql_templates_for_selector(metric_type: MetricType, selector: str) -> li
                 f"sum(rate(container_cpu_cfs_throttled_periods_total{{{selector}}}[5m])) "
                 f"/ clamp_min(sum(rate(container_cpu_cfs_periods_total{{{selector}}}[5m])), 1)"
             ),
+            f"sum(rate(container_cpu_cfs_throttled_seconds_total{{{selector}}}[5m]))",
         ],
         "disk_avail": [
             (
@@ -393,6 +417,7 @@ def _service_selector_candidates(service: str, service_label: str) -> list[str]:
         "job",
         "container",
         "deployment",
+        "service_name",
         "app_kubernetes_io_name",
         "kubernetes_pod_name",
         "pod",

@@ -9,7 +9,7 @@ can be wired in later without changing the node call sites.
 from __future__ import annotations
 
 import json
-from typing import Any, Protocol, TypedDict, get_args, get_origin, runtime_checkable
+from typing import Any, Literal, Protocol, TypedDict, get_args, get_origin, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -25,6 +25,9 @@ class LLMCallMetadata(TypedDict, total=False):
     model: str
     provider: str
     usage: dict[str, int]
+    provider_cache_status: Literal["hit", "miss", "unknown"]
+    duration_ms: int
+    service_tier: str
     reasoning_summary: str
     finish_reason: str
     redaction_applied: bool
@@ -45,6 +48,16 @@ class LLMProvider(Protocol):
         self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
     ) -> Any:
         """Return a parsed object (BaseModel or list of BaseModel) for ``prompt``."""
+
+    def invoke_with_metadata(
+        self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
+    ) -> tuple[str, LLMCallMetadata]:
+        """Return text plus metadata without requiring shared ``last_metadata`` reads."""
+
+    def generate_json_with_metadata(
+        self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
+    ) -> tuple[Any, LLMCallMetadata]:
+        """Return parsed output plus metadata without shared ``last_metadata`` reads."""
 
 
 def extract_json(text: str) -> Any:

@@ -58,6 +58,140 @@ def test_build_checkpointer_fails_closed_for_unreachable_db() -> None:
         tasks._build_checkpointer(settings)
 
 
+def test_populate_run_metrics_aggregates_llm_tristate_cache_without_conflation() -> None:
+    run = SimpleNamespace()
+    state: dict[str, Any] = {
+        "llm_calls": [
+            {
+                "node": "diagnose",
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 3,
+                    "cached_prompt_tokens": 6,
+                },
+                "duration_ms": 100,
+                "provider_cache_status": "hit",
+            },
+            {
+                "node": "plan_actions",
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+                "duration_ms": 25,
+                "provider_cache_status": "miss",
+            },
+            {
+                "node": "generate_report",
+                "usage": {"prompt_tokens": 4, "completion_tokens": 8},
+                "duration_ms": 50,
+                "provider_cache_status": "unknown",
+                "cache_hit": False,
+            },
+            {
+                "node": "legacy",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                "duration_ms": 10,
+                "cache_hit": True,
+            },
+        ]
+    }
+    cache = tasks.RequestLocalToolCache()
+    cache.hit_count = 2
+    cache.miss_count = 3
+
+    tasks._populate_run_metrics(run, state, cache)
+
+    assert run.total_prompt_tokens == 20
+    assert run.total_completion_tokens == 14
+    assert run.provider_cache_hit_count == 2
+    assert run.provider_cache_miss_count == 1
+    assert run.app_cache_hit_count == 2
+    assert run.app_cache_miss_count == 3
+    assert state["token_usage"] == {
+        "prompt_tokens": 20,
+        "completion_tokens": 14,
+        "cached_prompt_tokens": 6,
+        "llm_duration_ms": 185,
+    }
+    assert state["llm_metrics_summary"]["provider_cache"] == {
+        "hit": 2,
+        "miss": 1,
+        "unknown": 1,
+    }
+    assert state["llm_metrics_summary"]["total_cached_prompt_tokens"] == 6
+    assert state["llm_metrics_summary"]["total_duration_ms"] == 185
+    assert state["llm_metrics_summary"]["per_node"] == [
+        {
+            "node": "diagnose",
+            "calls": 1,
+            "duration_ms": 100,
+            "prompt_tokens": 10,
+            "completion_tokens": 3,
+            "cached_prompt_tokens": 6,
+        },
+        {
+            "node": "plan_actions",
+            "calls": 1,
+            "duration_ms": 25,
+            "prompt_tokens": 5,
+            "completion_tokens": 2,
+            "cached_prompt_tokens": 0,
+        },
+        {
+            "node": "generate_report",
+            "calls": 1,
+            "duration_ms": 50,
+            "prompt_tokens": 4,
+            "completion_tokens": 8,
+            "cached_prompt_tokens": 0,
+        },
+        {
+            "node": "legacy",
+            "calls": 1,
+            "duration_ms": 10,
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "cached_prompt_tokens": 0,
+        },
+    ]
+
+
+def test_populate_run_metrics_drops_malformed_llm_values() -> None:
+    run = SimpleNamespace()
+    state: dict[str, Any] = {
+        "llm_calls": [
+            {
+                "node": "diagnose",
+                "usage": {
+                    "prompt_tokens": -1,
+                    "completion_tokens": float("inf"),
+                    "cached_prompt_tokens": "6",
+                },
+                "duration_ms": float("nan"),
+                "provider_cache_status": ["hit"],
+            },
+            "not-a-call",
+        ]
+    }
+    cache = tasks.RequestLocalToolCache()
+
+    tasks._populate_run_metrics(run, state, cache)
+
+    assert run.total_prompt_tokens == 0
+    assert run.total_completion_tokens == 0
+    assert run.provider_cache_hit_count == 0
+    assert run.provider_cache_miss_count == 0
+    assert state["token_usage"] == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_prompt_tokens": 0,
+        "llm_duration_ms": 0,
+    }
+    assert state["llm_metrics_summary"]["provider_cache"] == {
+        "hit": 0,
+        "miss": 0,
+        "unknown": 0,
+    }
+
+
 class _FakeTool:
     def __init__(self, **kw: Any) -> None:
         pass
@@ -100,6 +234,8 @@ def test_worker_task_idempotent(monkeypatch, db_session) -> None:
     assert run.status == "succeeded"
     assert incident is not None
     assert incident.root_cause_summary
+    assert run.provider_cache_miss_count == 0
+    assert run.state["llm_metrics_summary"]["provider_cache"]["unknown"] >= 1
 
 
 @pytest.mark.parametrize("in_flight_status", ["running", "waiting_approval"])

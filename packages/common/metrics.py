@@ -6,6 +6,8 @@ time so ``generate_latest()`` in the health router picks them up automatically.
 
 from __future__ import annotations
 
+import math
+
 from prometheus_client import Counter, Gauge, Histogram
 
 # --- Counters ---
@@ -50,6 +52,18 @@ llm_completion_tokens_total = Counter(
     "agentp_llm_completion_tokens_total",
     "Total LLM completion tokens consumed",
     ["model", "provider"],
+)
+
+llm_cached_prompt_tokens_total = Counter(
+    "agentp_llm_cached_prompt_tokens_total",
+    "Total provider-reported cached LLM prompt tokens",
+    ["model", "provider"],
+)
+
+llm_provider_cache_status_total = Counter(
+    "agentp_llm_provider_cache_status_total",
+    "Provider-level LLM prompt cache status observations",
+    ["model", "provider", "status"],
 )
 
 llm_cache_hit_total = Counter(
@@ -108,6 +122,18 @@ llm_call_errors_total = Counter(
     ["model", "provider", "error_type"],
 )
 
+llm_json_repair_attempts_total = Counter(
+    "agentp_llm_json_repair_attempts_total",
+    "Total LLM JSON repair attempts",
+    ["node"],
+)
+
+llm_fallback_total = Counter(
+    "agentp_llm_fallback_total",
+    "Total deterministic LLM fallback paths",
+    ["node", "reason"],
+)
+
 # --- Email send metrics ---
 
 email_send_total = Counter(
@@ -162,13 +188,38 @@ llm_runbook_draft_total = Counter(
 web_search_requests_total = Counter(
     "agentp_web_search_requests_total",
     "Web search requests made for runbook enrichment",
-    ["status", "reason"],
+    ["provider", "status", "reason"],
 )
 
 web_search_blocked_total = Counter(
     "agentp_web_search_blocked_total",
     "Web search requests blocked by safety rules",
-    ["reason"],
+    ["provider", "reason"],
+)
+
+web_search_results_total = Counter(
+    "agentp_web_search_results_total",
+    "Web search results returned after safety filtering",
+    ["provider", "status"],
+)
+
+web_search_query_redactions_total = Counter(
+    "agentp_web_search_query_redactions_total",
+    "Sensitive values redacted from Web search queries",
+    ["provider"],
+)
+
+web_search_cache_status_total = Counter(
+    "agentp_web_search_cache_status_total",
+    "Web search cache status observations",
+    ["provider", "status"],
+)
+
+web_search_duration_seconds = Histogram(
+    "agentp_web_search_duration_seconds",
+    "Web search request duration",
+    ["provider", "status", "reason"],
+    buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
 )
 
 # --- M9 Tempo Trace ---
@@ -231,6 +282,151 @@ def _sanitize_label(value: str) -> str:
     return sanitized
 
 
+def _provider_cache_status(status: object | None = None, cache_hit: bool | None = None) -> str:
+    if isinstance(status, str):
+        if status in {"hit", "miss", "unknown"}:
+            return status
+        return "unknown"
+    if status is None:
+        if cache_hit is True:
+            return "hit"
+        if cache_hit is False:
+            return "miss"
+    return "unknown"
+
+
+_LLM_FALLBACK_REASON_CODES = frozenset(
+    {
+        "json_repair_failed",
+        "llm_generate_failed",
+        "report_generation_failed",
+        "unknown",
+    }
+)
+
+_LLM_NODE_LABELS = frozenset(
+    {
+        "diagnose",
+        "diagnose_metrics",
+        "diagnose_logs",
+        "diagnose_traces",
+        "diagnose_synthesize",
+        "plan_actions",
+        "generate_report",
+        "unknown",
+    }
+)
+
+
+def _llm_fallback_reason(reason: object) -> str:
+    if not isinstance(reason, str):
+        return "unknown"
+    value = reason.strip().lower()
+    return value if value in _LLM_FALLBACK_REASON_CODES else "unknown"
+
+
+def _llm_node_label(node: object) -> str:
+    if not isinstance(node, str):
+        return "unknown"
+    value = node.strip().lower()
+    return value if value in _LLM_NODE_LABELS else "unknown"
+
+
+_WEB_SEARCH_PROVIDERS = frozenset({"disabled", "fake"})
+_WEB_SEARCH_STATUSES = frozenset({
+    "ok",
+    "disabled",
+    "config_error",
+    "degraded",
+    "blocked",
+})
+_WEB_SEARCH_REASONS = frozenset({
+    "none",
+    "feature_disabled",
+    "provider_disabled",
+    "unsupported_provider",
+    "production_allowlist_required",
+    "unsupported_purpose",
+    "provider_exception",
+    "provider_degraded",
+    "all_results_blocked",
+    "https_required",
+    "url_credentials",
+    "scheme_not_allowed",
+    "blocked_domain",
+    "metadata_endpoint",
+    "cluster_internal_domain",
+    "blocked_host",
+    "not_allowlisted",
+    "private_ip",
+    "dns_resolution_failed",
+    "dns_resolved_private_ip",
+    "redirect_limit",
+    "empty_url",
+    "url_parse_failed",
+    "missing_hostname",
+    "unsafe_url",
+    "unknown",
+})
+_WEB_SEARCH_CACHE_STATUSES = frozenset({"hit", "miss", "unknown", "not_applicable"})
+
+
+def _web_search_provider(value: object) -> str:
+    if not isinstance(value, str):
+        return "unknown"
+    provider = value.strip().lower()
+    if not provider:
+        return "unknown"
+    if provider in _WEB_SEARCH_PROVIDERS:
+        return provider
+    return "unsupported"
+
+
+def _web_search_status(value: object) -> str:
+    if isinstance(value, str) and value in _WEB_SEARCH_STATUSES:
+        return value
+    return "unknown"
+
+
+def _web_search_reason(value: object) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, str):
+        if value == "":
+            return "none"
+        if value in _WEB_SEARCH_REASONS:
+            return value
+    return "unknown"
+
+
+def _web_search_cache_status(value: object) -> str:
+    if isinstance(value, str) and value in _WEB_SEARCH_CACHE_STATUSES:
+        return value
+    return "unknown"
+
+
+def _non_negative_counter_value(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if not isinstance(value, int | float):
+        return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
+    if value < 0:
+        return 0
+    return int(value)
+
+
+def _non_negative_duration(value: object) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    if not isinstance(value, int | float):
+        return 0.0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0.0
+    return max(0.0, float(value))
+
+
 class AgentMetricsCollector:
     """Convenience wrapper around Prometheus metrics for domain recording."""
 
@@ -245,13 +441,10 @@ class AgentMetricsCollector:
         completion_tokens: int = 0,
     ) -> None:
         m = _sanitize_label(model)
-        p = _sanitize_label(provider)
         diagnosis_total.labels(status=status, model=m).inc()
         diagnosis_duration_seconds.labels(status=status).observe(duration_seconds)
-        if prompt_tokens:
-            llm_prompt_tokens_total.labels(model=m, provider=p).inc(prompt_tokens)
-        if completion_tokens:
-            llm_completion_tokens_total.labels(model=m, provider=p).inc(completion_tokens)
+        # Per-call LLM token metrics are emitted by ``record_llm_usage()``.
+        # The token arguments remain for API compatibility and DB-backed run totals.
 
     @staticmethod
     def record_approval_decision(
@@ -282,16 +475,29 @@ class AgentMetricsCollector:
         prompt_tokens: int,
         completion_tokens: int,
         duration_seconds: float,
-        cache_hit: bool,
+        cached_prompt_tokens: int = 0,
+        provider_cache_status: str | None = None,
+        cache_hit: bool | None = None,
     ) -> None:
         m = _sanitize_label(model)
         p = _sanitize_label(provider)
-        llm_prompt_tokens_total.labels(model=m, provider=p).inc(prompt_tokens)
-        llm_completion_tokens_total.labels(model=m, provider=p).inc(completion_tokens)
-        llm_call_duration_seconds.labels(model=m, provider=p).observe(duration_seconds)
-        if cache_hit:
+        status = _provider_cache_status(provider_cache_status, cache_hit)
+        prompt_count = _non_negative_counter_value(prompt_tokens)
+        completion_count = _non_negative_counter_value(completion_tokens)
+        cached_count = _non_negative_counter_value(cached_prompt_tokens)
+        llm_prompt_tokens_total.labels(model=m, provider=p).inc(prompt_count)
+        llm_completion_tokens_total.labels(model=m, provider=p).inc(completion_count)
+        if cached_count:
+            llm_cached_prompt_tokens_total.labels(model=m, provider=p).inc(
+                cached_count
+            )
+        llm_call_duration_seconds.labels(model=m, provider=p).observe(
+            _non_negative_duration(duration_seconds)
+        )
+        llm_provider_cache_status_total.labels(model=m, provider=p, status=status).inc()
+        if status == "hit":
             llm_cache_hit_total.labels(provider=p).inc()
-        else:
+        elif status == "miss":
             llm_cache_miss_total.labels(provider=p).inc()
 
     @staticmethod
@@ -317,6 +523,23 @@ class AgentMetricsCollector:
         ).inc()
 
     @staticmethod
+    def record_llm_json_repair_attempt(*, node: str) -> None:
+        try:
+            llm_json_repair_attempts_total.labels(node=_llm_node_label(node)).inc()
+        except Exception:
+            pass
+
+    @staticmethod
+    def record_llm_fallback(*, node: str, reason: str) -> None:
+        try:
+            llm_fallback_total.labels(
+                node=_llm_node_label(node),
+                reason=_llm_fallback_reason(reason),
+            ).inc()
+        except Exception:
+            pass
+
+    @staticmethod
     def record_email_send(
         *, notification_type: str, status: str, duration_seconds: float
     ) -> None:
@@ -340,14 +563,54 @@ class AgentMetricsCollector:
         llm_runbook_draft_total.labels(status=status).inc()
 
     @staticmethod
-    def record_web_search_request(*, status: str, reason: str = "") -> None:
+    def record_web_search_request(
+        *, status: str, reason: str = "", provider: str = "unknown"
+    ) -> None:
         """Record a web search request outcome."""
-        web_search_requests_total.labels(status=status, reason=reason).inc()
+        p = _web_search_provider(provider)
+        s = _web_search_status(status)
+        r = _web_search_reason(reason)
+        web_search_requests_total.labels(provider=p, status=s, reason=r).inc()
 
     @staticmethod
-    def record_web_search_blocked(*, reason: str) -> None:
+    def record_web_search_blocked(*, reason: str, provider: str = "unknown") -> None:
         """Record a web search request blocked by safety rules."""
-        web_search_blocked_total.labels(reason=reason).inc()
+        web_search_blocked_total.labels(
+            provider=_web_search_provider(provider),
+            reason=_web_search_reason(reason),
+        ).inc()
+
+    @staticmethod
+    def record_web_search_observation(
+        *,
+        provider: str,
+        status: str,
+        duration_seconds: float,
+        reason: str = "",
+        result_count: int = 0,
+        query_redaction_count: int = 0,
+        cache_status: str = "not_applicable",
+    ) -> None:
+        """Record one safe Web search observation.
+
+        Labels intentionally use fixed low-cardinality values only. Queries,
+        URLs, URL paths, hostnames, and diagnostic strings must not be labels.
+        """
+        p = _web_search_provider(provider)
+        s = _web_search_status(status)
+        r = _web_search_reason(reason)
+        record_count = _non_negative_counter_value(result_count)
+        redaction_count = _non_negative_counter_value(query_redaction_count)
+        web_search_requests_total.labels(provider=p, status=s, reason=r).inc()
+        web_search_duration_seconds.labels(provider=p, status=s, reason=r).observe(
+            _non_negative_duration(duration_seconds)
+        )
+        web_search_results_total.labels(provider=p, status=s).inc(record_count)
+        web_search_query_redactions_total.labels(provider=p).inc(redaction_count)
+        web_search_cache_status_total.labels(
+            provider=p,
+            status=_web_search_cache_status(cache_status),
+        ).inc()
 
     @staticmethod
     def record_tempo_trace_query(*, status: str, mode: str) -> None:

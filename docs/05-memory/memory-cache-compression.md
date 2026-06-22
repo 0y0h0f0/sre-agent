@@ -1,6 +1,6 @@
 # 记忆、缓存与上下文压缩
 
-**最后更新：** 2026-06-18
+**最后更新：** 2026-06-23
 
 ## 概述
 
@@ -117,10 +117,18 @@ L3 procedural memory 当前只记录 `status` 为 `succeeded`、`executed` 或 `
 |------|------|
 | `messages` | system + user prompt messages |
 | `token_usage_estimate` | static、alert、evidence、runbook、memory、cross_incident、scratchpad 用量 |
-| `segment_cache_keys` | schema 和 runbook chunk 的稳定 segment key |
+| `segment_cache_keys` | static prompt、schema 和已纳入 prompt 的 runbook chunk 的版本化稳定 segment key |
 | `compressed_context` | 本次 evidence compression events |
 
 ContextBuilder 会按 evidence type、timestamp、evidence ID 排序，保持 prompt 组装稳定，利于缓存和测试断言。
+
+### Prompt prefix 边界
+
+LAT-06 的实现选择保留当前 `generate_json(prompt, schema)` 调用形态，不引入新的 message-based JSON 调用卡。当前稳定前缀边界定义为 `ContextBuilder.messages` 中第一个非 `system` message 之前的所有 leading system messages。`ContextBuilder.stable_prefix_hash()` 只哈希这段 system prefix，并显式纳入 prompt/schema version；alert、incident ID、timestamps、evidence、runbook、memory、Web context 等动态内容必须保持在后续 user message 中，不进入 stable prefix hash。
+
+当前 `_single_call_diagnose()` 仍会把 messages content 拼成一个 `generate_json()` prompt。可缓存前缀因此依赖 builder 保持 system content 在最前、动态内容在后；本卡不把 app segment key 或 stable prefix hash 解释为 provider prompt cache hit。
+
+`diagnose` 的 output schema segment 使用 compact diagnosis schema。该 schema key 只描述内部 LLM 输出格式，不改变 API/state 中的 public `DiagnosisOutput` 字段。
 
 ## 当前压缩触发
 
@@ -131,8 +139,9 @@ ContextBuilder 会按 evidence type、timestamp、evidence ID 排序，保持 pr
 | evidence 总 token 超过 evidence budget 的 80% | `ContextBuilder.build()` | 调用 `Compressor.compress_evidence()` |
 | 某类 log evidence 数量超过 20 | `Compressor._needs_compression()` | 压缩该 log evidence group |
 | 某 evidence group token 超过 evidence budget 的 80% | `Compressor._needs_compression()` | 按类型压缩 |
+| 报告生成前 | `generate_report` + `Compressor.compress_report_inputs()` | 构造 report 专用 compact context，压缩 evidence summaries、action trajectory 和 errors |
 
-Runbook chunks 和 memory 超预算时当前是按分配预算裁剪纳入 prompt，不产生 `compression_events`。设计边界仍要求未来扩展时覆盖大日志 token、runbook overflow、approval resume 和报告轨迹压缩；实现这些触发时必须补测试并更新本文件。
+Runbook chunks 和 memory 超预算时当前是按分配预算裁剪纳入 prompt，不产生 `compression_events`。设计边界仍要求未来扩展时覆盖大日志 token、runbook overflow 和 approval resume；实现这些触发时必须补测试并更新本文件。
 
 ## 压缩策略
 
@@ -142,6 +151,7 @@ Runbook chunks 和 memory 超预算时当前是按分配预算裁剪纳入 promp
 | `metric` | 保留 metric_type、service、stats 中的 min/max/avg/p95/first/last/change_ratio |
 | `trace` | 保留 duration p95、downstream services、前 5 个 slow spans、前 5 个 error spans |
 | 其它 | 保留前 3 个 item |
+| report input | 保留 compact evidence summaries、type counts、all/retained/omitted evidence IDs、runbook chunk IDs、最多 10 条 action trajectory、最多 5 条 error 摘要；log report summary 不携带 raw summary/message/samples |
 
 `CompressedContext` 会记录：
 
@@ -155,6 +165,21 @@ Runbook chunks 和 memory 超预算时当前是按分配预算裁剪纳入 promp
 
 压缩后的 item 会尽量保留 `evidence_id`、`source_id`、`title`、`summary`、`status`、`service`、`timestamp` 等可追溯字段。
 
+### 报告生成输入压缩
+
+`generate_report` 不再把原始 evidence payload 或 action list 直接序列化进 LLM prompt。它会调用 `Compressor.compress_report_inputs()` 生成 `Compressed report context`：
+
+- `evidence`：最多 12 条 compact evidence summary。
+- `evidence_counts`：按 type 统计 evidence 数量。
+- `retained_evidence_ids` / `omitted_evidence_ids` / `all_evidence_ids`：用于报告 traceability 和审计。
+- `runbook_chunk_ids`：从 runbook evidence payload/root cause/state 合并，保留 runbook 追踪。
+- `actions`：最多 10 条 compact action trajectory。
+- `errors`：最多 5 条结构化错误摘要，只保留 node/type/status/error_present，不携带 raw exception text。
+
+该路径会追加一个 `compression_events` 条目，`scope="report_generation"`。LLM 失败时 deterministic fallback 仍从完整 evidence 列表提取 `evidence_ids`，并保留 `runbook_chunk_ids`。LLM 成功时，`generate_report` 也会确定性合并 `evidence_ids` 和 `runbook_chunk_ids`，不依赖模型完整输出这些追踪字段。
+
+当 `LLM_DETERMINISTIC_REPORT_ENABLED=true` 时，`generate_report` 完全跳过报告 LLM 调用，直接使用同一套确定性报告生成和版本追加路径。该模式仍使用 report input compression 的 traceability 输出，不改变 report schema 或 `incident_reports` append-only 语义。
+
 ## 缓存边界
 
 项目里有三类容易混淆的缓存：
@@ -162,12 +187,21 @@ Runbook chunks 和 memory 超预算时当前是按分配预算裁剪纳入 promp
 | 类别 | 位置 | 当前含义 |
 |------|------|----------|
 | 工具 request-local cache | `packages/tools/cache.py` | 单次 agent run 内缓存 metrics/logs/traces/git/runbook tool result；hit/miss 写入 `agent_runs.app_cache_*` |
-| Prompt segment key | `ContextBuilder.segment_cache_keys` | schema 和 runbook chunk 的稳定 key，供应用层 prompt segment cache 使用；当前 builder 只生成 key |
+| Prompt segment key | `ContextBuilder.segment_cache_keys` | static prompt、schema 和 runbook chunk 的稳定 key，供应用层 prompt segment cache 使用；当前 builder 只生成 key |
 | Provider prompt cache | LLM provider 自身 | 只有 provider 明确返回 cache hit 信号时才可统计；不要用 tool/app cache 命中率代替 |
+| Web context cache | `packages/rag/runbook_web_context.py` | 仅在 Web search + M9 draft enrichment 路径启用；key/value 不包含 raw query、URL path、host 或 secret |
 
-`apps/worker/tasks.py` 的 `_populate_run_metrics()` 会从 `state.llm_calls` 汇总 prompt/completion token 和 provider cache 计数，并从 `RequestLocalToolCache` 写入 app cache hit/miss。
+`apps/worker/tasks.py` 的 `_populate_run_metrics()` 会从 `state.llm_calls` 汇总 prompt/completion token、cached prompt token、LLM duration 和 provider cache 三态计数，并从 `RequestLocalToolCache` 写入 app cache hit/miss。当前 DB 列只保存 provider hit/miss；provider `unknown`、cached prompt token 和 LLM duration 保存在 `agent_runs.state.llm_metrics_summary` / `state.token_usage`，不做 schema 迁移。
+
+Segment key 格式只包含版本和安全 fingerprint，不包含 raw prompt、schema 文本、runbook excerpt、URL path、secret 或内部域名。当前格式包括：
+
+- `prompt_segment:static:diagnosis:v1:<hash>`
+- `prompt_segment:schema:diagnosis:v1:<hash>`
+- `prompt_segment:runbook:<chunk_id>:v1:<content_hash_or_hash>`
 
 `llm_calls` metadata、provider cache 计数、FakeLLM / disabled provider 和真实 provider 手动边界的完整路径见 [LLM、Prompt、FakeLLM 与 Provider 边界技术深挖](../00-overview/llm-prompt-fakellm-provider-boundaries-deep-dive.md)。
+
+Web context cache 与 prompt segment cache 也必须分开解释。前者缓存已经通过 URL safety 的外部 Web 结果 traceability 字段；后者只是 prompt 片段稳定 key。两者都不是 provider prompt cache。
 
 ## 与 Agent 的职责边界
 

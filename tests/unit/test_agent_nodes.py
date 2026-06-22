@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy.orm import Session
 
 from packages.agent.nodes.execute_action import execute_action
@@ -66,6 +67,19 @@ def _base_state(**overrides) -> IncidentState:
     }
     state.update(overrides)  # type: ignore[typeddict-unknown-key]
     return state
+
+
+class _CounterSpy:
+    def __init__(self) -> None:
+        self.label_calls: list[dict[str, object]] = []
+        self.inc_values: list[float] = []
+
+    def labels(self, **kwargs: object) -> _CounterSpy:
+        self.label_calls.append(kwargs)
+        return self
+
+    def inc(self, value: float = 1) -> None:
+        self.inc_values.append(value)
 
 
 def _seed_incident_run(db: Session, incident_id: str, agent_run_id: str) -> None:
@@ -2637,6 +2651,104 @@ class TestSnapshotVerifyRollbackFlow:
 
         assert k8s_tool.queries[0].namespace == "payments"
 
+    def test_verify_k8s_rollout_falls_back_to_incident_service_target(
+        self, db_session: Session, monkeypatch
+    ) -> None:
+        from packages.agent.nodes.verify import verify
+        from packages.tools.base import ToolResult
+
+        incident_id = "inc_verify_k8s_target_fallback"
+        agent_run_id = "run_verify_k8s_target_fallback"
+        _seed_incident_run(db_session, incident_id, agent_run_id)
+        deps = _make_deps(db_session)
+        deps.metrics_tool = self._static_tool(
+            "metrics",
+            ToolResult(
+                status="succeeded",
+                data={},
+                summary="error_rate=0.005",
+                evidence=[
+                    {"type": "metric", "source": "prometheus", "summary": "error_rate=0.005"}
+                ],
+                duration_ms=1,
+            ),
+        )
+        deps.logs_tool = self._static_tool(
+            "logs",
+            ToolResult(status="succeeded", data={}, summary="clean", evidence=[], duration_ms=1),
+        )
+
+        class FallbackK8sTool:
+            name = "k8s"
+            timeout_seconds = 1.0
+
+            def __init__(self) -> None:
+                self.queries = []
+
+            def run(self, query):
+                self.queries.append(query)
+                if query.service == "checkout":
+                    return ToolResult(
+                        status="succeeded",
+                        data={
+                            "operation": "rollout_status",
+                            "payload": {
+                                "deployment": "checkout",
+                                "desired_replicas": 2,
+                                "updated_replicas": 2,
+                                "ready_replicas": 2,
+                                "status": "complete",
+                            },
+                        },
+                        summary="rollout complete",
+                        evidence=[
+                            {"type": "k8s", "source": "fixture", "summary": "rollout complete"}
+                        ],
+                        duration_ms=1,
+                    )
+                return ToolResult(
+                    status="degraded",
+                    data={
+                        "operation": "rollout_status",
+                        "payload": {"error": "not_found"},
+                    },
+                    summary="service=wrong-target, has_data=False",
+                    evidence=[],
+                    duration_ms=1,
+                    error_message="empty k8s result",
+                )
+
+        k8s_tool = FallbackK8sTool()
+        deps.k8s_tool = k8s_tool
+        monkeypatch.setattr("packages.agent.nodes.verify.time.sleep", lambda _: None)
+
+        result = verify(
+            _base_state(
+                incident_id=incident_id,
+                agent_run_id=agent_run_id,
+                service_name="checkout",
+                alert_name="High5xxAfterDeploy",
+                metrics_evidence=[{"summary": "error_rate=0.05"}],
+                execution_results=[
+                    {
+                        "risk_level": "L2",
+                        "type": "restart_deployment",
+                        "target": "deployment/wrong-target",
+                    }
+                ],
+                _verify_cycles=0,
+            ),
+            deps,
+        )
+
+        rollout_gate = [
+            gate for gate in result["verify_gates"] if gate["gate"] == "k8s_rollout"
+        ][0]
+        assert result["verify_result"] == "resolved"
+        assert [query.service for query in k8s_tool.queries] == ["wrong-target", "checkout"]
+        assert rollout_gate["resolved_target"] == "checkout"
+        assert "fallback_target=checkout" in rollout_gate["summary"]
+
     def test_verify_restart_statefulset_uses_statefulset_status(
         self, db_session: Session, monkeypatch
     ) -> None:
@@ -3595,6 +3707,48 @@ class TestSnapshotVerifyRollbackFlow:
         assert "replicas=2" in llm.prompt
         assert "scale_back" in llm.prompt
 
+    def test_plan_actions_uses_fast_json_profile_when_configured(
+        self, db_session: Session
+    ) -> None:
+        from packages.agent.nodes.plan_actions import plan_actions
+        from packages.agent.schemas import PlannedAction
+
+        class CapturingLLM:
+            def __init__(self) -> None:
+                self.kwargs: dict[str, object] = {}
+                self.last_metadata = {"provider": "fake", "model": "fake"}
+
+            def generate_json(self, prompt, output_schema, *, thinking=False, **kwargs):
+                self.kwargs = dict(kwargs)
+                return [
+                    PlannedAction(
+                        type="create_ticket",
+                        target="platform",
+                        reason="track remediation",
+                        risk_hint="L1",
+                    )
+                ]
+
+        deps = _make_deps(db_session)
+        deps.settings = Settings(
+            llm_fast_json_model="qwen-fast",
+            llm_fast_json_max_tokens=96,
+            llm_node_model_overrides="plan_actions=qwen-plan-hot",
+            llm_node_max_tokens="plan_actions=80",
+        )
+        llm = CapturingLLM()
+        deps.llm = llm
+
+        plan_actions(
+            _base_state(
+                alert_name="High5xxAfterDeploy",
+                root_cause={"summary": "bad release", "confidence": 0.8},
+            ),
+            deps,
+        )
+
+        assert llm.kwargs == {"model": "qwen-plan-hot", "max_tokens": 80}
+
 
 class TestGenerateReportReviewFlag:
     """The dangling cross-validation flag must surface in the report (M4)."""
@@ -3691,3 +3845,685 @@ class TestGenerateReportReviewFlag:
         result = generate_report(state, deps)
 
         assert "evi_runbook" in result["incident_report"]["evidence_ids"]
+
+    def test_report_prompt_compresses_large_evidence_inputs(
+        self,
+        db_session: Session,
+    ) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+
+        class CapturingFailingLLM:
+            def __init__(self) -> None:
+                self.prompt = ""
+
+            def invoke(self, messages, *, thinking=False):
+                self.prompt = messages[0]["content"]
+                raise RuntimeError("force fallback")
+
+        deps = _make_deps(db_session)
+        llm = CapturingFailingLLM()
+        deps.llm = llm
+        log_evidence = [
+            {
+                "type": "log",
+                "source": "loki",
+                "evidence_id": f"evi_log_{idx}",
+                "summary": f"RAW_LOG_SUMMARY_{idx}_SHOULD_NOT_PROMPT",
+                "payload": {
+                    "message": f"RAW_LOG_LINE_{idx}_SHOULD_NOT_PROMPT",
+                    "samples": [{"msg": f"RAW_SAMPLE_{idx}_SHOULD_NOT_PROMPT"}],
+                    "line_count": 100 + idx,
+                    "top_stack_signature": f"RAW_STACK_SIGNATURE_{idx}_SHOULD_NOT_PROMPT",
+                    "top_error_type": f"RAW_ERROR_TYPE_{idx}_SHOULD_NOT_PROMPT",
+                    "error_type_counts": {f"RAW_ERROR_KEY_{idx}_SHOULD_NOT_PROMPT": idx},
+                },
+            }
+            for idx in range(14)
+        ]
+        state = _base_state(
+            incident_id="inc_report_compress",
+            agent_run_id="run_report_compress",
+            root_cause={
+                "summary": "bad release matched known runbook",
+                "confidence": 0.8,
+                "runbook_chunk_ids": ["chk_report"],
+            },
+            logs_evidence=log_evidence,
+            runbook_context=[
+                {
+                    "chunk_id": "chk_report",
+                    "source_id": "chk_report",
+                    "source_path": "runbooks/high-5xx.md",
+                    "title": "High 5xx rollback",
+                    "excerpt": "Rollback checks for high 5xx after deploy.",
+                    "score": 0.92,
+                    "evidence_id": "evi_runbook",
+                }
+            ],
+            recommended_actions=[
+                {
+                    "type": "rollback_release",
+                    "target": "checkout",
+                    "reason": "bad deploy",
+                    "risk_level": "L3",
+                }
+            ],
+            errors=[{"node": "verify", "error": "RAW_ERROR_DETAIL_SHOULD_NOT_PROMPT"}],
+        )
+
+        result = generate_report(state, deps)
+        report = result["incident_report"]
+
+        assert "Compressed report context" in llm.prompt
+        assert "RAW_LOG_LINE" not in llm.prompt
+        assert "RAW_LOG_SUMMARY" not in llm.prompt
+        assert "RAW_SAMPLE" not in llm.prompt
+        assert "RAW_STACK_SIGNATURE" not in llm.prompt
+        assert "RAW_ERROR_TYPE" not in llm.prompt
+        assert "RAW_ERROR_KEY" not in llm.prompt
+        assert "RAW_ERROR_DETAIL" not in llm.prompt
+        assert "omitted_evidence_ids" in llm.prompt
+        assert "evi_log_13" in report["evidence_ids"]
+        assert "evi_runbook" in report["evidence_ids"]
+        assert "chk_report" in report["runbook_chunk_ids"]
+        assert any(
+            event.get("scope") == "report_generation"
+            for event in result["compression_events"]
+        )
+
+    def test_report_success_merges_traceability_ids(self, db_session: Session) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+
+        class SuccessfulLLM:
+            last_metadata = {"provider": "fake", "model": "fake"}
+
+            def invoke(self, messages, *, thinking=False):
+                return (
+                    '{"root_cause":"bad release","impact":"5xx spike",'
+                    '"timeline":[],"actions":[],"follow_ups":[]}'
+                )
+
+        deps = _make_deps(db_session)
+        deps.llm = SuccessfulLLM()
+        state = _base_state(
+            incident_id="inc_report_success_ids",
+            agent_run_id="run_report_success_ids",
+            root_cause={
+                "summary": "bad release",
+                "confidence": 0.8,
+                "evidence_ids": ["evi_root"],
+                "runbook_chunk_ids": ["chk_report"],
+            },
+            evidence_ids=["evi_state"],
+            metrics_evidence=[
+                {
+                    "type": "metric",
+                    "source": "prometheus",
+                    "evidence_id": "evi_metric",
+                    "summary": "5xx spike",
+                }
+            ],
+            runbook_context=[
+                {
+                    "chunk_id": "chk_report",
+                    "source_path": "runbooks/high-5xx.md",
+                    "excerpt": "rollback checks",
+                    "evidence_id": "evi_runbook",
+                }
+            ],
+        )
+
+        result = generate_report(state, deps)
+        report = result["incident_report"]
+
+        assert "evi_metric" in report["evidence_ids"]
+        assert "evi_runbook" in report["evidence_ids"]
+        assert "evi_root" in report["evidence_ids"]
+        assert "evi_state" in report["evidence_ids"]
+        assert "chk_report" in report["runbook_chunk_ids"]
+
+    def test_default_report_mode_invokes_llm(self, db_session: Session) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+
+        class CountingLLM:
+            last_metadata = {"provider": "fake", "model": "fake"}
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def invoke(self, messages, *, thinking=False, **kwargs):
+                self.calls += 1
+                return (
+                    '{"root_cause":"llm report","impact":"checkout affected",'
+                    '"timeline":[],"actions":[],"follow_ups":[]}'
+                )
+
+        deps = _make_deps(db_session)
+        llm = CountingLLM()
+        deps.llm = llm
+        state = _base_state(
+            incident_id="inc_report_default_llm",
+            agent_run_id="run_report_default_llm",
+            root_cause={"summary": "fallback report", "confidence": 0.8},
+        )
+
+        result = generate_report(state, deps)
+
+        assert llm.calls == 1
+        assert result["incident_report"]["root_cause"] == "llm report"
+
+    def test_deterministic_report_mode_skips_llm(
+        self,
+        db_session: Session,
+    ) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+
+        class CountingLLM:
+            last_metadata = {"provider": "fake", "model": "fake"}
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def invoke(self, messages, *, thinking=False, **kwargs):
+                self.calls += 1
+                return (
+                    '{"root_cause":"llm report","impact":"checkout affected",'
+                    '"timeline":[],"actions":[],"follow_ups":[]}'
+                )
+
+        deps = _make_deps(db_session)
+        deps.settings = Settings(
+            database_url="sqlite://",
+            redis_url="memory://",
+            celery_broker_url="memory://",
+            celery_result_backend="memory://",
+            llm_deterministic_report_enabled=True,
+        )
+        llm = CountingLLM()
+        deps.llm = llm
+        state = _base_state(
+            incident_id="inc_report_deterministic",
+            agent_run_id="run_report_deterministic",
+            root_cause={
+                "summary": "pool exhausted",
+                "confidence": 0.8,
+                "evidence_ids": ["evi_root"],
+                "runbook_chunk_ids": ["chk_report"],
+            },
+            evidence_ids=["evi_state"],
+            metrics_evidence=[
+                {
+                    "type": "metric",
+                    "source": "prometheus",
+                    "evidence_id": "evi_metric",
+                    "summary": "connection saturation",
+                }
+            ],
+            runbook_context=[
+                {
+                    "chunk_id": "chk_report",
+                    "source_path": "runbooks/db.md",
+                    "excerpt": "increase pool or shed load",
+                    "evidence_id": "evi_runbook",
+                }
+            ],
+        )
+
+        result = generate_report(state, deps)
+        report = result["incident_report"]
+
+        assert llm.calls == 0
+        assert report["root_cause"] == "pool exhausted"
+        assert "evi_metric" in report["evidence_ids"]
+        assert "evi_runbook" in report["evidence_ids"]
+        assert "evi_root" in report["evidence_ids"]
+        assert "evi_state" in report["evidence_ids"]
+        assert "chk_report" in report["runbook_chunk_ids"]
+
+    def test_report_db_flush_failure_propagates(
+        self,
+        db_session: Session,
+        monkeypatch,
+    ) -> None:
+        from packages.agent.nodes import generate_report as report_node
+
+        class SuccessfulLLM:
+            last_metadata = {"provider": "fake", "model": "fake"}
+
+            def invoke(self, messages, *, thinking=False, **kwargs):
+                return (
+                    '{"root_cause":"pool exhausted","impact":"checkout affected",'
+                    '"timeline":[],"actions":[],"follow_ups":[]}'
+                )
+
+        class FailingSession:
+            def flush(self) -> None:
+                raise RuntimeError("report flush failed")
+
+        class CreatedReport:
+            report_id = "rpt_flush_failed"
+
+        class StubReportRepository:
+            def __init__(self, db) -> None:
+                self.db = db
+
+            def next_version(self, incident_id: str) -> int:
+                return 1
+
+            def create(self, **kwargs) -> CreatedReport:
+                return CreatedReport()
+
+        traces: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            report_node,
+            "IncidentReportRepository",
+            StubReportRepository,
+        )
+        deps = _make_deps(db_session)
+        deps.db = FailingSession()  # type: ignore[assignment]
+        deps.llm = SuccessfulLLM()
+        deps.node_tracer = lambda **kwargs: traces.append(kwargs)
+
+        with pytest.raises(RuntimeError, match="report flush failed"):
+            report_node.generate_report(
+                _base_state(
+                    incident_id="inc_report_flush_failed",
+                    agent_run_id="run_report_flush_failed",
+                    root_cause={"summary": "pool exhausted", "confidence": 0.8},
+                ),
+                deps,
+            )
+
+        assert traces[-1]["name"] == "generate_report"
+        assert traces[-1]["status"] == "failed"
+
+    def test_report_generation_appends_versions(self, db_session: Session) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+        from packages.db.repositories.reports import IncidentReportRepository
+
+        class SuccessfulLLM:
+            last_metadata = {"provider": "fake", "model": "fake"}
+
+            def invoke(self, messages, *, thinking=False, **kwargs):
+                return (
+                    '{"root_cause":"pool exhausted","impact":"checkout affected",'
+                    '"timeline":[],"actions":[],"follow_ups":[]}'
+                )
+
+        deps = _make_deps(db_session)
+        deps.llm = SuccessfulLLM()
+        state = _base_state(
+            incident_id="inc_report_versions",
+            agent_run_id="run_report_versions",
+            root_cause={"summary": "pool exhausted", "confidence": 0.8},
+        )
+
+        first = generate_report(state, deps)
+        second = generate_report(state, deps)
+        versions = IncidentReportRepository(db_session).list_for_incident(
+            "inc_report_versions"
+        )
+
+        assert first["incident_report"]["version"] == 1
+        assert second["incident_report"]["version"] == 2
+        assert [report.version for report in versions] == [2, 1]
+        assert versions[0].report_id != versions[1].report_id
+
+    def test_report_uses_report_profile_when_configured(self, db_session: Session) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+
+        class CapturingLLM:
+            last_metadata = {"provider": "fake", "model": "fake"}
+
+            def __init__(self) -> None:
+                self.kwargs: dict[str, object] = {}
+
+            def invoke(self, messages, *, thinking=False, **kwargs):
+                self.kwargs = dict(kwargs)
+                return (
+                    '{"root_cause":"pool exhausted","impact":"checkout affected",'
+                    '"timeline":[],"actions":[],"follow_ups":[]}'
+                )
+
+        deps = _make_deps(db_session)
+        deps.settings = Settings(
+            llm_report_model="qwen-report",
+            llm_report_max_tokens=900,
+            llm_node_model_overrides="generate_report=qwen-report-hot",
+            llm_node_max_tokens="generate_report=700",
+        )
+        llm = CapturingLLM()
+        deps.llm = llm
+        state = _base_state(
+            incident_id="inc_report_profile",
+            agent_run_id="run_report_profile",
+            root_cause={"summary": "pool exhausted", "confidence": 0.8},
+        )
+
+        generate_report(state, deps)
+
+        assert llm.kwargs == {"model": "qwen-report-hot", "max_tokens": 700}
+
+
+class TestLLMRepairFallbackMetrics:
+    def test_llm_repair_fallback_metrics_use_allowlisted_labels(
+        self,
+        monkeypatch,
+    ) -> None:
+        from packages.common import metrics as agent_metrics
+
+        repair_metric = _CounterSpy()
+        fallback_metric = _CounterSpy()
+        monkeypatch.setattr(agent_metrics, "llm_json_repair_attempts_total", repair_metric)
+        monkeypatch.setattr(agent_metrics, "llm_fallback_total", fallback_metric)
+
+        agent_metrics.AgentMetricsCollector.record_llm_json_repair_attempt(
+            node="RAW_PROMPT_NODE_SHOULD_NOT_LABEL"
+        )
+        agent_metrics.AgentMetricsCollector.record_llm_fallback(
+            node="RAW_PROMPT_NODE_SHOULD_NOT_LABEL",
+            reason="RAW_EXCEPTION_SHOULD_NOT_LABEL",
+        )
+
+        assert repair_metric.label_calls == [{"node": "unknown"}]
+        assert fallback_metric.label_calls == [{"node": "unknown", "reason": "unknown"}]
+
+    def test_llm_repair_fallback_metrics_are_best_effort(
+        self,
+        monkeypatch,
+    ) -> None:
+        from packages.common import metrics as agent_metrics
+
+        class RaisingMetric:
+            def labels(self, **kwargs):
+                raise RuntimeError("metrics backend unavailable")
+
+        monkeypatch.setattr(agent_metrics, "llm_json_repair_attempts_total", RaisingMetric())
+        monkeypatch.setattr(agent_metrics, "llm_fallback_total", RaisingMetric())
+
+        agent_metrics.AgentMetricsCollector.record_llm_json_repair_attempt(node="diagnose")
+        agent_metrics.AgentMetricsCollector.record_llm_fallback(
+            node="diagnose",
+            reason="json_repair_failed",
+        )
+
+    def test_diagnose_json_repair_attempt_metric_on_malformed_output(
+        self,
+        db_session: Session,
+        monkeypatch,
+    ) -> None:
+        from packages.agent.nodes.diagnose import diagnose
+        from packages.common import metrics as agent_metrics
+
+        class RepairingLLM:
+            last_metadata = {"provider": "fake", "model": "fake"}
+
+            def generate_json(self, prompt, output_schema, *, thinking=False, **kwargs):
+                raise ValueError("RAW_PROMPT_SHOULD_NOT_LABEL")
+
+            def invoke(self, messages, *, thinking=False, **kwargs):
+                return (
+                    '{"hypotheses":[],"root_cause":{"summary":"repaired",'
+                    '"confidence":0.7},"evidence_ids":[],"runbook_chunk_ids":[]}'
+                )
+
+        repair_metric = _CounterSpy()
+        fallback_metric = _CounterSpy()
+        monkeypatch.setattr(agent_metrics, "llm_json_repair_attempts_total", repair_metric)
+        monkeypatch.setattr(agent_metrics, "llm_fallback_total", fallback_metric)
+
+        deps = _make_deps(db_session)
+        deps.llm = RepairingLLM()
+
+        result = diagnose(
+            _base_state(
+                incident_id="inc_repair_metric",
+                agent_run_id="run_repair_metric",
+                alert_name="High5xxAfterDeploy",
+                service_name="checkout",
+            ),
+            deps,
+        )
+
+        assert result["root_cause"]["summary"] == "repaired"
+        assert repair_metric.label_calls == [{"node": "diagnose"}]
+        assert repair_metric.inc_values == [1]
+        assert fallback_metric.label_calls == []
+        assert "RAW_PROMPT_SHOULD_NOT_LABEL" not in repr(repair_metric.label_calls)
+
+    def test_diagnose_repair_failure_records_fixed_fallback_reason(
+        self,
+        db_session: Session,
+        monkeypatch,
+    ) -> None:
+        from packages.agent.nodes.diagnose import diagnose
+        from packages.common import metrics as agent_metrics
+
+        class BrokenLLM:
+            last_metadata = {"provider": "fake", "model": "fake"}
+
+            def generate_json(self, prompt, output_schema, *, thinking=False, **kwargs):
+                raise ValueError("RAW_GENERATE_EXCEPTION_SHOULD_NOT_LABEL")
+
+            def invoke(self, messages, *, thinking=False, **kwargs):
+                raise RuntimeError("RAW_REPAIR_EXCEPTION_SHOULD_NOT_LABEL")
+
+        fallback_metric = _CounterSpy()
+        monkeypatch.setattr(agent_metrics, "llm_fallback_total", fallback_metric)
+
+        deps = _make_deps(db_session)
+        deps.llm = BrokenLLM()
+
+        result = diagnose(
+            _base_state(
+                incident_id="inc_repair_failed_metric",
+                agent_run_id="run_repair_failed_metric",
+                alert_name="High5xxAfterDeploy",
+                service_name="checkout",
+            ),
+            deps,
+        )
+
+        assert result["root_cause"]["summary"]
+        assert fallback_metric.label_calls == [
+            {"node": "diagnose", "reason": "json_repair_failed"}
+        ]
+        serialized_labels = repr(fallback_metric.label_calls)
+        assert "RAW_GENERATE_EXCEPTION_SHOULD_NOT_LABEL" not in serialized_labels
+        assert "RAW_REPAIR_EXCEPTION_SHOULD_NOT_LABEL" not in serialized_labels
+
+    def test_plan_actions_fallback_metric_uses_fixed_reason(
+        self,
+        db_session: Session,
+        monkeypatch,
+    ) -> None:
+        from packages.agent.nodes.plan_actions import plan_actions
+        from packages.common import metrics as agent_metrics
+
+        class FailingLLM:
+            def generate_json(self, prompt, output_schema, *, thinking=False, **kwargs):
+                raise RuntimeError("RAW_PLAN_EXCEPTION_SHOULD_NOT_LABEL")
+
+        fallback_metric = _CounterSpy()
+        monkeypatch.setattr(agent_metrics, "llm_fallback_total", fallback_metric)
+
+        deps = _make_deps(db_session)
+        deps.llm = FailingLLM()
+        plan_actions(
+            _base_state(
+                alert_name="High5xxAfterDeploy",
+                root_cause={
+                    "summary": "RAW_PROMPT_CONTENT_SHOULD_NOT_LABEL",
+                    "confidence": 0.8,
+                },
+            ),
+            deps,
+        )
+
+        assert fallback_metric.label_calls == [
+            {"node": "plan_actions", "reason": "llm_generate_failed"}
+        ]
+        serialized_labels = repr(fallback_metric.label_calls)
+        assert "RAW_PLAN_EXCEPTION_SHOULD_NOT_LABEL" not in serialized_labels
+        assert "RAW_PROMPT_CONTENT_SHOULD_NOT_LABEL" not in serialized_labels
+
+    def test_report_fallback_metric_uses_fixed_reason(
+        self,
+        db_session: Session,
+        monkeypatch,
+    ) -> None:
+        from packages.agent.nodes.generate_report import generate_report
+        from packages.common import metrics as agent_metrics
+
+        class FailingLLM:
+            def invoke(self, messages, *, thinking=False, **kwargs):
+                raise RuntimeError("RAW_REPORT_EXCEPTION_SHOULD_NOT_LABEL")
+
+        fallback_metric = _CounterSpy()
+        monkeypatch.setattr(agent_metrics, "llm_fallback_total", fallback_metric)
+
+        deps = _make_deps(db_session)
+        deps.llm = FailingLLM()
+        result = generate_report(
+            _base_state(
+                incident_id="inc_report_fallback_metric",
+                agent_run_id="run_report_fallback_metric",
+                root_cause={
+                    "summary": "RAW_REPORT_PROMPT_SHOULD_NOT_LABEL",
+                    "confidence": 0.8,
+                },
+            ),
+            deps,
+        )
+
+        assert result["incident_report"]["report_id"]
+        assert fallback_metric.label_calls == [
+            {"node": "generate_report", "reason": "report_generation_failed"}
+        ]
+        serialized_labels = repr(fallback_metric.label_calls)
+        assert "RAW_REPORT_EXCEPTION_SHOULD_NOT_LABEL" not in serialized_labels
+        assert "RAW_REPORT_PROMPT_SHOULD_NOT_LABEL" not in serialized_labels
+
+
+class TestCompactDiagnosisSchema:
+    def test_compact_diagnosis_mapping_preserves_traceability(self) -> None:
+        from packages.agent.schemas import CompactDiagnosisOutput, diagnosis_output_from_compact
+
+        compact = CompactDiagnosisOutput(
+            h=[
+                {
+                    "id": "h1",
+                    "s": "bad rollout",
+                    "e": ["evi_metric", "evi_log"],
+                    "r": ["chk_runbook"],
+                    "c": 0.82,
+                    "why": "metrics and logs changed after deploy",
+                }
+            ],
+            rc={
+                "s": "deployment introduced 5xx errors",
+                "c": 0.82,
+                "e": ["evi_metric"],
+                "r": ["chk_runbook"],
+            },
+            e=["evi_metric", "evi_log"],
+            r=["chk_runbook"],
+            m=["trace details"],
+        )
+
+        output = diagnosis_output_from_compact(compact)
+
+        assert output.hypotheses[0].statement == "bad rollout"
+        assert output.hypotheses[0].supporting_evidence_ids == [
+            "evi_metric",
+            "evi_log",
+        ]
+        assert output.hypotheses[0].runbook_chunk_ids == ["chk_runbook"]
+        assert output.hypotheses[0].confidence == 0.82
+        assert output.hypotheses[0].rank_explanation == "metrics and logs changed after deploy"
+        assert output.root_cause["summary"] == "deployment introduced 5xx errors"
+        assert output.root_cause["confidence"] == 0.82
+        assert output.root_cause["evidence_ids"] == ["evi_metric"]
+        assert output.root_cause["runbook_chunk_ids"] == ["chk_runbook"]
+        assert output.evidence_ids == ["evi_metric", "evi_log"]
+        assert output.runbook_chunk_ids == ["chk_runbook"]
+        assert output.missing_evidence == ["trace details"]
+
+    def test_diagnose_maps_compact_llm_output_to_public_state(
+        self,
+        db_session: Session,
+    ) -> None:
+        from packages.agent.nodes.diagnose import diagnose
+        from packages.agent.schemas import CompactDiagnosisOutput
+
+        class CompactLLM:
+            last_metadata = {"provider": "fake", "model": "fake"}
+
+            def __init__(self) -> None:
+                self.schema = None
+
+            def generate_json(self, prompt, output_schema, *, thinking=False, **kwargs):
+                self.schema = output_schema
+                return CompactDiagnosisOutput(
+                    h=[
+                        {
+                            "id": "h1",
+                            "s": "bad rollout",
+                            "e": ["evi_metric"],
+                            "r": ["chk_runbook"],
+                            "c": 0.8,
+                            "why": "5xx spike after deploy",
+                        }
+                    ],
+                    rc={
+                        "s": "deployment introduced 5xx errors",
+                        "c": 0.8,
+                        "e": ["evi_metric"],
+                        "r": ["chk_runbook"],
+                    },
+                    e=["evi_metric"],
+                    r=["chk_runbook"],
+                    m=["trace details"],
+                )
+
+            def invoke(self, messages, *, thinking=False, **kwargs):
+                return "{}"
+
+        deps = _make_deps(db_session)
+        llm = CompactLLM()
+        deps.llm = llm
+        result = diagnose(
+            _base_state(
+                incident_id="inc_compact_diag",
+                agent_run_id="run_compact_diag",
+                alert_name="High5xxAfterDeploy",
+                service_name="checkout",
+                metrics_evidence=[
+                    {
+                        "type": "metric",
+                        "source": "prometheus",
+                        "evidence_id": "evi_metric",
+                        "summary": "5xx spike",
+                    }
+                ],
+                runbook_context=[
+                    {
+                        "chunk_id": "chk_runbook",
+                        "evidence_id": "evi_runbook",
+                        "excerpt": "rollback checks",
+                    }
+                ],
+            ),
+            deps,
+        )
+
+        assert llm.schema is CompactDiagnosisOutput
+        assert result["hypotheses"][0]["statement"] == "bad rollout"
+        assert result["hypotheses"][0]["supporting_evidence_ids"] == ["evi_metric"]
+        assert result["hypotheses"][0]["runbook_chunk_ids"] == ["chk_runbook"]
+        assert result["root_cause"]["summary"] == "deployment introduced 5xx errors"
+        assert result["root_cause"]["evidence_ids"] == ["evi_metric"]
+        assert result["root_cause"]["runbook_chunk_ids"] == ["chk_runbook"]
+        assert result["evidence_ids"] == ["evi_metric"]
+        assert result["runbook_chunk_ids"] == ["chk_runbook"]
+        assert result["diagnosis_rationale"]["missing_evidence"] == ["trace details"]

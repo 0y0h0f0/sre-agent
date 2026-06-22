@@ -12,6 +12,7 @@ from packages.agent.llm.base import LLMProvider
 from packages.agent.llm.disabled_adapter import DisabledLLMAdapter
 from packages.agent.llm.fake_adapter import FakeLLMAdapter
 from packages.agent.llm.openai_adapter import OpenAICompatibleAdapter
+from packages.agent.llm.profiles import resolve_llm_profile
 from packages.agent.llm.redacting_adapter import RedactingLLMAdapter
 from packages.common.errors import ValidationAppError
 from packages.common.settings import Settings
@@ -20,7 +21,7 @@ _OPENAI_COMPATIBLE = {"vllm", "openai", "deepseek"}
 _EXTERNAL_CLOUD_PROVIDERS = {"openai", "deepseek", "anthropic"}
 
 
-def build_llm(settings: Settings) -> LLMProvider:
+def build_llm(settings: Settings, profile: str | None = None) -> LLMProvider:
     """Construct the configured LLM provider adapter."""
     provider = settings.llm_provider.strip().lower()
     api_key = settings.llm_api_key.get_secret_value() if settings.llm_api_key else None
@@ -40,29 +41,31 @@ def build_llm(settings: Settings) -> LLMProvider:
             },
         )
 
+    llm_profile = resolve_llm_profile(settings, profile)
+
     if provider in _OPENAI_COMPATIBLE:
         adapter = OpenAICompatibleAdapter(
             base_url=settings.llm_base_url,
-            model=settings.llm_model,
+            model=llm_profile.model,
             api_key=api_key,
             provider_name=provider,
             timeout_seconds=settings.llm_timeout_seconds,
-            max_tokens=settings.llm_max_tokens,
-            temperature=settings.llm_temperature,
+            max_tokens=llm_profile.max_tokens,
+            temperature=llm_profile.temperature,
             reasoning_enabled=settings.llm_reasoning_enabled,
-            reasoning_effort=settings.llm_reasoning_effort,
+            reasoning_effort=llm_profile.reasoning_effort,
         )
         return _wrap_external_provider(provider, adapter)
 
     if provider == "anthropic":
         adapter = AnthropicAdapter(
-            model=settings.llm_model,
+            model=llm_profile.model,
             api_key=api_key,
             timeout_seconds=settings.llm_timeout_seconds,
-            max_tokens=settings.llm_max_tokens,
-            temperature=settings.llm_temperature,
+            max_tokens=llm_profile.max_tokens,
+            temperature=llm_profile.temperature,
             reasoning_enabled=settings.llm_reasoning_enabled,
-            reasoning_effort=settings.llm_reasoning_effort,
+            reasoning_effort=llm_profile.reasoning_effort,
         )
         return _wrap_external_provider(provider, adapter)
 

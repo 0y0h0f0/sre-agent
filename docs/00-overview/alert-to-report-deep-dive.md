@@ -1,6 +1,6 @@
 # 告警到报告技术深挖
 
-**最后更新：** 2026-06-15
+**最后更新：** 2026-06-23
 
 本文按当前代码路径解释一条告警如何从 HTTP 请求变成 incident report。它不是 API 字段全集；字段契约见 [API 参考](../01-backend/api-reference.md)，节点细节见 [Agent 工作流](../02-agent/workflow.md)。告警来源归一化、Grafana-shaped payload、Alertmanager poll、poll cursor 和 resolved inference 见 [Alertmanager Poll、Grafana 与告警来源归一化技术深挖](alert-source-normalization-poll-grafana-deep-dive.md)。
 
@@ -135,7 +135,7 @@ build_context -> diagnose -> compress_context
 边界规则：
 
 - `build_context` 使用 `ContextBuilder` 做 token budget 和上下文组装，不直接调用 LLM。
-- `diagnose` 可调用 FakeLLM、disabled adapter 或真实 adapter；CI/smoke 必须使用 FakeLLM。
+- `diagnose` 可调用 FakeLLM、disabled adapter 或真实 adapter；CI/smoke 必须使用 FakeLLM。诊断 LLM 输出使用 compact internal schema 后映射回 public diagnosis；可选 multi-perspective 路径能并发运行 metrics/logs/traces specialist，但不会改变 guardrail 或 executor 选择。
 - `compress_context` 处理超预算上下文，避免大日志直接进入 prompt。
 - `plan_actions` 只给建议动作。
 - `guardrail_check` 才是最终风险分类入口。L2/L3 需要审批，L4 直接走报告，不进入审批。
@@ -192,8 +192,10 @@ take_snapshot -> execute_action -> verify
 报告由 `generate_report` 节点创建：
 
 - 收集 metrics/logs/traces/deployment/k8s/db/verify evidence。
+- 先通过 `compress_report_inputs()` 生成 compact report context，避免 raw evidence payload、raw log samples 或完整 action list 直接进入报告 prompt。
 - 要求 evidence-backed claim 引用 evidence ID。
-- LLM 报告失败时使用 deterministic fallback。
+- LLM 报告失败时使用 deterministic fallback；`LLM_DETERMINISTIC_REPORT_ENABLED=true` 时完全跳过报告 LLM 调用。
+- deterministic 合并 `evidence_ids` 和 `runbook_chunk_ids`，不依赖模型完整输出追踪字段。
 - 调用 `IncidentReportRepository.next_version()` 和 `create()` 写入 `incident_reports`。
 
 `incident_reports` 对 `(incident_id, version)` 有唯一约束。`POST /api/incidents/{incident_id}/report/regenerate` 不覆盖旧报告，而是基于最新 run state、evidence 和 actions 生成新版本。
@@ -206,7 +208,7 @@ worker 成功返回前会：
 
 - `_sanitize_state()` 移除以下划线开头的内部字段，并把 datetime 转成 ISO 字符串。
 - `_sync_incident_diagnosis()` 把 root cause summary 同步到 incident。
-- `_populate_run_metrics()` 写 prompt/completion token、provider cache hit/miss、app cache hit/miss。
+- `_populate_run_metrics()` 写 prompt/completion token、provider cache hit/miss、provider cache unknown 摘要、cached prompt token、LLM duration 摘要和 app cache hit/miss。
 - `AgentRunRepository.mark_succeeded()` 写最终 state、finished_at、duration。
 - 若有 `execution_results`，incident 标为 `mitigated`；否则标为 `resolved`。
 - best-effort 发送诊断完成和报告生成通知。

@@ -9,16 +9,21 @@ Results are evidence for draft review only — never auto-published.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import re
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from urllib.parse import urlparse
+from time import perf_counter
+from typing import Protocol
 
 from packages.common.backend_url_safety import BackendUrlSafetyValidator
 from packages.common.feature_flags import is_m9_subfeature_enabled
 from packages.common.metrics import AgentMetricsCollector
-from packages.common.redaction import redact_text
+from packages.common.redaction import RedactionResult, redact_text
 from packages.common.settings import Settings
 from packages.rag.web_search_provider import (
     SUPPORTED_WEB_SEARCH_PROVIDERS,
@@ -27,6 +32,10 @@ from packages.rag.web_search_provider import (
 )
 
 logger = logging.getLogger(__name__)
+
+_WEB_CONTEXT_CACHE_VERSION = "webctx:v1"
+_WEB_CONTEXT_CACHE_REDACTION_VERSION = "m9-9.4-cache-1"
+_MEMORY_WEB_CONTEXT_CACHE: dict[str, tuple[float, str]] = {}
 
 
 @dataclass
@@ -71,10 +80,12 @@ class RunbookWebContextBuilder:
         *,
         provider: WebSearchProvider | None = None,
         dns_resolver: Callable[[str], Iterable[str]] | None = None,
+        cache: WebContextCacheBackend | None = None,
     ) -> None:
         self.settings = settings or Settings()
         self._provider = provider
         self._dns_resolver = dns_resolver
+        self._cache = cache
 
     def build_context(
         self,
@@ -91,25 +102,36 @@ class RunbookWebContextBuilder:
         Returns:
             WebContextResult with traceable search results.
         """
+        started_at = perf_counter()
+        provider_name = self.settings.runbook_web_search_provider.strip().lower()
+        query_redaction_count = 0
+
         if purpose != "draft_enrichment":
             return self._blocked(
                 purpose=purpose,
+                provider=provider_name,
                 reason="unsupported_purpose",
                 message="web_search results may only be used for draft enrichment",
+                started_at=started_at,
             )
 
         # 1. Feature gate check.
         if not is_m9_subfeature_enabled(self.settings, "runbook_web_search"):
-            AgentMetricsCollector.record_web_search_request(
-                status="disabled", reason="feature_disabled"
+            AgentMetricsCollector.record_web_search_observation(
+                provider=provider_name,
+                status="disabled",
+                reason="feature_disabled",
+                duration_seconds=_elapsed_since(started_at),
             )
             return WebContextResult(status="disabled", purpose=purpose)
 
         # 2. Provider must not be disabled.
-        provider_name = self.settings.runbook_web_search_provider.strip().lower()
         if provider_name == "disabled":
-            AgentMetricsCollector.record_web_search_request(
-                status="config_error", reason="provider_disabled"
+            AgentMetricsCollector.record_web_search_observation(
+                provider=provider_name,
+                status="config_error",
+                reason="provider_disabled",
+                duration_seconds=_elapsed_since(started_at),
             )
             return WebContextResult(
                 status="config_error",
@@ -117,13 +139,16 @@ class RunbookWebContextBuilder:
                 error_message="web_search provider is disabled",
             )
         if provider_name not in SUPPORTED_WEB_SEARCH_PROVIDERS:
-            AgentMetricsCollector.record_web_search_request(
-                status="config_error", reason="unsupported_provider"
+            AgentMetricsCollector.record_web_search_observation(
+                provider=provider_name,
+                status="config_error",
+                reason="unsupported_provider",
+                duration_seconds=_elapsed_since(started_at),
             )
             return WebContextResult(
                 status="config_error",
                 purpose=purpose,
-                error_message=f"unsupported web_search provider: {provider_name}",
+                error_message="unsupported web_search provider",
             )
 
         # 3. Production requires allowed domains.
@@ -132,21 +157,60 @@ class RunbookWebContextBuilder:
             if not allowed:
                 return self._blocked(
                     purpose=purpose,
+                    provider=provider_name,
                     reason="production_allowlist_required",
                     message="web_search requires allowed domains in production",
+                    started_at=started_at,
                 )
 
         # 4. Redact query.
-        redacted_query = redact_text(query).redacted_text
+        redaction = _redact_web_search_text(query)
+        redacted_query = redaction.redacted_text
+        query_redaction_count = redaction.redaction_count
+        cache_status = "not_applicable"
+        cache = self._cache_backend()
+        cache_key = ""
+        url_validator = self._build_url_validator(provider_name)
+        if cache is not None:
+            cache_key = _web_context_cache_key(
+                self.settings,
+                provider=provider_name,
+                purpose=purpose,
+                redacted_query=redacted_query,
+            )
+            cache_status, cached_results = _safe_cache_get(cache, cache_key)
+            if cache_status == "hit":
+                safe_cached = _validate_cached_results(cached_results, url_validator)
+                if safe_cached is not None:
+                    AgentMetricsCollector.record_web_search_observation(
+                        provider=provider_name,
+                        status="ok",
+                        duration_seconds=_elapsed_since(started_at),
+                        result_count=len(safe_cached),
+                        query_redaction_count=query_redaction_count,
+                        cache_status="hit",
+                    )
+                    return WebContextResult(
+                        status="ok",
+                        purpose=purpose,
+                        results=safe_cached,
+                        query_redacted=redacted_query[:200],
+                    )
+                cache_status = "unknown"
 
         # 5. Execute search.
         provider = self._provider or build_web_search_provider(self.settings)
         try:
             response = provider.search(redacted_query)
         except Exception:
-            logger.warning("Web search provider failed", exc_info=True)
-            AgentMetricsCollector.record_web_search_request(
-                status="degraded", reason="provider_exception"
+            logger.warning("Web search provider failed")
+            AgentMetricsCollector.record_web_search_observation(
+                provider=provider_name,
+                status="degraded",
+                reason="provider_exception",
+                duration_seconds=_elapsed_since(started_at),
+                query_redaction_count=query_redaction_count,
+                cache_status=cache_status,
             )
             return WebContextResult(
                 status="degraded",
@@ -155,17 +219,24 @@ class RunbookWebContextBuilder:
             )
 
         if response.status != "ok":
-            AgentMetricsCollector.record_web_search_request(
-                status="degraded", reason="provider_degraded"
+            AgentMetricsCollector.record_web_search_observation(
+                provider=provider_name,
+                status="degraded",
+                reason="provider_degraded",
+                duration_seconds=_elapsed_since(started_at),
+                query_redaction_count=query_redaction_count,
+                cache_status=cache_status,
             )
             return WebContextResult(
                 status="degraded",
                 purpose=purpose,
-                error_message=response.error_message or "web_search returned no results",
+                error_message=_safe_diagnostic_message(
+                    response.error_message,
+                    fallback="web_search returned no results",
+                ),
             )
 
         # 6. Validate result URLs for safety.
-        url_validator = self._build_url_validator(provider_name)
         safe_results: list[WebSearchResult] = []
         for item in response.results:
             urls_to_validate = [item.original_url, *item.redirect_chain, item.final_url]
@@ -178,21 +249,24 @@ class RunbookWebContextBuilder:
                 validation_errors.append("redirect chain exceeds configured limit")
             if validation_errors:
                 reason = validation_errors[0]
+                metric_reason = _metric_reason(reason)
                 logger.warning(
-                    "Blocked unsafe URL in web search result: %s (%s)",
-                    _safe_url_summary(item.final_url),
-                    reason,
+                    "Blocked unsafe URL in web search result: reason_code=%s",
+                    metric_reason,
                 )
                 AgentMetricsCollector.record_web_search_blocked(
-                    reason=_metric_reason(reason)
+                    provider=provider_name,
+                    reason=metric_reason,
                 )
                 continue
+            redacted_title = _redact_web_search_text(item.title).redacted_text
+            redacted_snippet = _redact_web_search_text(item.snippet).redacted_text
             safe_results.append(WebSearchResult(
-                title=item.title,
+                title=redacted_title,
                 original_url=item.original_url,
                 final_url=item.final_url,
                 snippet=_limit_text_bytes(
-                    item.snippet,
+                    redacted_snippet,
                     min(500, self.settings.runbook_web_search_max_content_bytes),
                 ),
                 content_hash=item.content_hash,
@@ -204,11 +278,31 @@ class RunbookWebContextBuilder:
         if not safe_results:
             return self._blocked(
                 purpose=purpose,
+                provider=provider_name,
                 reason="all_results_blocked",
                 message="all web_search results were blocked by safety rules",
+                started_at=started_at,
+                query_redaction_count=query_redaction_count,
+                cache_status=cache_status,
             )
 
-        AgentMetricsCollector.record_web_search_request(status="ok")
+        if cache is not None and cache_key:
+            cache_status = _safe_cache_set(
+                cache,
+                cache_key,
+                safe_results,
+                ttl_seconds=self.settings.runbook_web_search_cache_ttl_seconds,
+                previous_status=cache_status,
+            )
+
+        AgentMetricsCollector.record_web_search_observation(
+            provider=provider_name,
+            status="ok",
+            duration_seconds=_elapsed_since(started_at),
+            result_count=len(safe_results),
+            query_redaction_count=query_redaction_count,
+            cache_status=cache_status,
+        )
         return WebContextResult(
             status="ok",
             purpose=purpose,
@@ -231,15 +325,104 @@ class RunbookWebContextBuilder:
             dns_resolver=dns_resolver,
         )
 
+    def _cache_backend(self) -> WebContextCacheBackend | None:
+        if not self.settings.runbook_web_search_cache_enabled:
+            return None
+        if self._cache is not None:
+            return self._cache
+        return RedisOrMemoryWebContextCache(self.settings.redis_url)
+
     @staticmethod
-    def _blocked(*, purpose: str, reason: str, message: str) -> WebContextResult:
-        AgentMetricsCollector.record_web_search_request(status="blocked", reason=reason)
-        AgentMetricsCollector.record_web_search_blocked(reason=reason)
+    def _blocked(
+        *,
+        purpose: str,
+        provider: str,
+        reason: str,
+        message: str,
+        started_at: float,
+        query_redaction_count: int = 0,
+        cache_status: str = "not_applicable",
+    ) -> WebContextResult:
+        AgentMetricsCollector.record_web_search_observation(
+            provider=provider,
+            status="blocked",
+            reason=reason,
+            duration_seconds=_elapsed_since(started_at),
+            query_redaction_count=query_redaction_count,
+            cache_status=cache_status,
+        )
+        AgentMetricsCollector.record_web_search_blocked(
+            provider=provider,
+            reason=reason,
+        )
         return WebContextResult(
             status="blocked",
             purpose=purpose,
             error_message=message,
         )
+
+
+class WebContextCacheBackend(Protocol):
+    """Minimal cache port for safe Web context results.
+
+    Backends store JSON payloads containing only validated traceability fields:
+    title, source/final URLs, snippet, content hash, provider, redaction version,
+    and retrieval time. Keys are opaque hashes built from redacted query and
+    policy/budget fields, never from raw query text, URL paths, hosts, or secrets.
+    """
+
+    def get(self, key: str) -> str | None:
+        """Return serialized cache payload, or None for miss."""
+
+    def setex(self, key: str, ttl_seconds: int, value: str) -> None:
+        """Store serialized cache payload with TTL."""
+
+
+class RedisOrMemoryWebContextCache:
+    """Redis-backed Web context cache with `memory://` test fallback.
+
+    Rollback path: set `RUNBOOK_WEB_SEARCH_CACHE_ENABLED=false`. The cache has no
+    database schema and stores only bounded, previously validated result fields.
+    """
+
+    def __init__(self, redis_url: str) -> None:
+        self._memory = redis_url.startswith("memory://")
+        self._redis = None
+        if not self._memory:
+            import redis
+
+            self._redis = redis.Redis.from_url(
+                redis_url,
+                socket_connect_timeout=0.2,
+                socket_timeout=0.2,
+            )
+
+    def get(self, key: str) -> str | None:
+        if self._memory:
+            record = _MEMORY_WEB_CONTEXT_CACHE.get(key)
+            if record is None:
+                return None
+            expires_at, value = record
+            if expires_at <= time.time():
+                _MEMORY_WEB_CONTEXT_CACHE.pop(key, None)
+                return None
+            return value
+        if self._redis is None:
+            return None
+        raw = self._redis.get(key)
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            return raw.decode("utf-8", errors="ignore")
+        return str(raw)
+
+    def setex(self, key: str, ttl_seconds: int, value: str) -> None:
+        ttl = max(1, int(ttl_seconds))
+        if self._memory:
+            _MEMORY_WEB_CONTEXT_CACHE[key] = (time.time() + ttl, value)
+            return
+        if self._redis is not None:
+            self._redis.setex(key, ttl, value)
 
 
 def _csv(value: str) -> list[str]:
@@ -253,6 +436,91 @@ def _fake_public_dns_resolver(_hostname: str) -> list[str]:
 def _limit_text_bytes(text: str, max_bytes: int) -> str:
     raw = text.encode("utf-8")[:max_bytes]
     return raw.decode("utf-8", errors="ignore")
+
+
+def _safe_diagnostic_message(message: str | None, *, fallback: str) -> str:
+    if not message:
+        return fallback
+    redacted = _redact_web_search_text(message).redacted_text.strip()
+    if not redacted:
+        return fallback
+    return _limit_text_bytes(redacted, 300)
+
+
+_WEB_SEARCH_PRE_REDACTION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "web_search_private_ip_url",
+        re.compile(
+            r"""\b(?:https?://)?(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?::\d+)?(?:/[^\s"')\]}>]*)?""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "web_search_internal_host",
+        re.compile(
+            r"""\b(?:[A-Za-z0-9-]+\.)+(?:svc(?:\.cluster\.local)?|cluster\.local|internal|local)(?::\d+)?(?:/[^\s"')\]}>]*)?""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "web_search_url_path",
+        re.compile(r"""\bhttps?://[^/\s"')\]}>]+/[^\s"')\]}>]*""", re.IGNORECASE),
+    ),
+)
+
+_WEB_SEARCH_POST_REDACTION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "web_search_redacted_url_path",
+        re.compile(r"""\[REDACTED\](?::\d+)?/[^\s"')\]}>]*"""),
+    ),
+    (
+        "web_search_path_token",
+        re.compile(r"""(?<![\w:])/[A-Za-z0-9][A-Za-z0-9._~!$&()*+,;=:@%/-]*"""),
+    ),
+)
+
+
+def _redact_web_search_text(text: str) -> RedactionResult:
+    """Redact secrets plus Web-search-specific topology and URL path details."""
+    result, count, redaction_types = _apply_web_search_redaction_rules(
+        text,
+        _WEB_SEARCH_PRE_REDACTION_RULES,
+    )
+    base = redact_text(result)
+    count += base.redaction_count
+    redaction_types.extend(base.redaction_types)
+    result, post_count, post_types = _apply_web_search_redaction_rules(
+        base.redacted_text,
+        _WEB_SEARCH_POST_REDACTION_RULES,
+    )
+    count += post_count
+    redaction_types.extend(post_types)
+    return RedactionResult(
+        redacted_text=result,
+        redaction_count=count,
+        redaction_types=redaction_types,
+    )
+
+
+def _apply_web_search_redaction_rules(
+    text: str,
+    rules: tuple[tuple[str, re.Pattern[str]], ...],
+) -> tuple[str, int, list[str]]:
+    result = text
+    count = 0
+    redaction_types: list[str] = []
+    for name, pattern in rules:
+        matches = list(pattern.finditer(result))
+        if not matches:
+            continue
+        result = pattern.sub("[REDACTED]", result)
+        count += len(matches)
+        redaction_types.append(name)
+    return result, count, redaction_types
+
+
+def _elapsed_since(started_at: float) -> float:
+    return max(0.0, perf_counter() - started_at)
 
 
 def _metric_reason(reason: str) -> str:
@@ -290,12 +558,139 @@ def _metric_reason(reason: str) -> str:
     return "unsafe_url"
 
 
-def _safe_url_summary(url: str) -> str:
+def _web_context_cache_key(
+    settings: Settings,
+    *,
+    provider: str,
+    purpose: str,
+    redacted_query: str,
+) -> str:
+    ttl = max(1, int(settings.runbook_web_search_cache_ttl_seconds))
+    parts = {
+        "version": _WEB_CONTEXT_CACHE_VERSION,
+        "provider": provider,
+        "purpose": purpose,
+        "query_hash": _sha256(redacted_query),
+        "allowed_policy_hash": _sha256(
+            _normalized_csv(settings.runbook_web_search_allowed_domains)
+        ),
+        "blocked_policy_hash": _sha256(
+            _normalized_csv(settings.runbook_web_search_blocked_domains)
+        ),
+        "require_https": settings.runbook_web_search_require_https,
+        "max_redirects": settings.runbook_web_search_max_redirects,
+        "max_results": settings.runbook_web_search_max_results,
+        "max_content_bytes": settings.runbook_web_search_max_content_bytes,
+        "recency_bucket": int(time.time() // ttl),
+        "redaction_version": _WEB_CONTEXT_CACHE_REDACTION_VERSION,
+    }
+    digest = _sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")))
+    return f"{_WEB_CONTEXT_CACHE_VERSION}:{digest}"
+
+
+def _safe_cache_get(
+    cache: WebContextCacheBackend,
+    key: str,
+) -> tuple[str, list[WebSearchResult]]:
     try:
-        parsed = urlparse(url)
-        if not parsed.scheme or not parsed.hostname:
-            return "<invalid-url>"
-        port = f":{parsed.port}" if parsed.port else ""
-        return f"{parsed.scheme}://{parsed.hostname}{port}"
+        raw = cache.get(key)
     except Exception:
-        return "<invalid-url>"
+        logger.warning("Web search cache read failed")
+        return "unknown", []
+    if not raw:
+        return "miss", []
+    try:
+        return "hit", _deserialize_cache_results(raw)
+    except Exception:
+        logger.warning("Web search cache payload ignored")
+        return "unknown", []
+
+
+def _safe_cache_set(
+    cache: WebContextCacheBackend,
+    key: str,
+    results: list[WebSearchResult],
+    *,
+    ttl_seconds: int,
+    previous_status: str,
+) -> str:
+    try:
+        cache.setex(key, ttl_seconds, _serialize_cache_results(results))
+    except Exception:
+        logger.warning("Web search cache write failed")
+        return "unknown"
+    return previous_status if previous_status in {"hit", "miss"} else "miss"
+
+
+def _serialize_cache_results(results: list[WebSearchResult]) -> str:
+    return json.dumps(
+        {
+            "version": 1,
+            "results": [
+                {
+                    "title": result.title,
+                    "original_url": result.original_url,
+                    "final_url": result.final_url,
+                    "snippet": result.snippet,
+                    "content_hash": result.content_hash,
+                    "provider": result.provider,
+                    "redaction_version": result.redaction_version,
+                    "retrieved_at": result.retrieved_at,
+                }
+                for result in results
+            ],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _deserialize_cache_results(raw: str) -> list[WebSearchResult]:
+    payload = json.loads(raw)
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise ValueError("unsupported cache payload")
+    items = payload.get("results")
+    if not isinstance(items, list):
+        raise ValueError("invalid cache payload")
+    results: list[WebSearchResult] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("invalid cache result")
+        fields = {
+            key: item.get(key)
+            for key in (
+                "title",
+                "original_url",
+                "final_url",
+                "snippet",
+                "content_hash",
+                "provider",
+                "redaction_version",
+                "retrieved_at",
+            )
+        }
+        if not all(isinstance(value, str) for value in fields.values()):
+            raise ValueError("invalid cache result fields")
+        results.append(WebSearchResult(**fields))  # type: ignore[arg-type]
+    return results
+
+
+def _validate_cached_results(
+    results: list[WebSearchResult],
+    url_validator: BackendUrlSafetyValidator,
+) -> list[WebSearchResult] | None:
+    for item in results:
+        for url in (item.original_url, item.final_url):
+            validation = url_validator.validate(url)
+            if not validation.is_safe:
+                logger.warning("Web search cached result failed safety validation")
+                return None
+    return results
+
+
+def _normalized_csv(value: str) -> str:
+    return ",".join(sorted(part.lower() for part in _csv(value)))
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()

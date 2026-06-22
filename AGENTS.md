@@ -8,6 +8,7 @@ The source of truth is:
 2. The detailed current documents under `docs/`
 3. `plan.md` as the high-level planning background
 4. `tzplan.md` and `plans/11-roadmap/` as the **post-MVP** expansion roadmap (background only, not MVP scope)
+5. `plans/12-latency/` as the reviewed Agent run LLM/Web search latency optimization plan and agent-executable task cards
 
 For implementation details, prefer the more specific `docs/` files and this `AGENTS.md` over older high-level wording in `plan.md`. Do not invent a different architecture when implementation details are already specified.
 
@@ -96,6 +97,26 @@ Core M9 invariants (from `docs/superpowers/specs/m9-foragent.md` §3):
 
 M9 execution loop: read → plan → test-first → implement → verify → document → stop (see `docs/superpowers/specs/m9-foragent.md` §17). Agent must stop and report if M8 release gate is not passed, if invariants conflict, or if secret leakage is detected.
 
+## Agent Run Latency Optimization Work
+
+For work that targets Agent run latency from LLM generation or Web search, use the reviewed latency plan and execution cards:
+
+- Plan: `plans/12-latency/agent-run-llm-web-search-speedup-plan.md`
+- Agent-executable cards: `plans/12-latency/agent-execution-cards.md`
+
+Rules for latency work:
+
+- Execute one `LAT-*` card at a time unless the user explicitly asks to combine cards.
+- Keep defaults unchanged: FakeLLM or disabled LLM, fixture executor, and M9/Web disabled.
+- Real LLM and real Web search remain manual/opt-in only and must not become CI gates.
+- Provider prompt cache status is tri-state: `hit`, `miss`, `unknown`; `unknown` must not be folded into `miss`.
+- LLM metrics must have exactly one authoritative emission path per call, or tests must prove no duplicate token/duration/cache observations.
+- Web search cache work must specify backend, TTL, key fields, value fields, and rollback path before implementation.
+- Web result URLs may be retained only as validated traceability fields; URL paths must not appear in metric labels, cache keys, logs, audit summaries, or high-cardinality metrics.
+- If Agent-run Web context is added later, it must remain under `M9_EXTENSIONS_ENABLED`, `RUNBOOK_WEB_SEARCH_ENABLED`, and its own default-off gate; it can provide context/evidence only and must not affect guardrail authorization or executor choice.
+- Parallel multi-perspective diagnosis must aggregate specialist outputs and metadata without shared `last_metadata` races or shared DB sessions.
+- Stop and ask for review if a latency card would require an unplanned DB migration, change public API/report schema, enable real external calls by default, require networked tests, or store raw prompts/queries/secrets/internal URLs in disallowed locations.
+
 ## Read Before Coding
 
 Before implementing or changing a module, read the matching document:
@@ -116,6 +137,7 @@ Before implementing or changing a module, read the matching document:
 - Documentation quality gate: `plans/10-codegen/documentation-quality-gate.md`
 - Post-MVP roadmap and completion notes: `plans/11-roadmap/README.md`
 - **M9 agent execution plan**: `docs/superpowers/specs/m9-foragent.md` — PR cards, invariants, test checklists, E2E smoke sequence, rollback plan
+- **Agent run latency work**: `plans/12-latency/agent-run-llm-web-search-speedup-plan.md` and `plans/12-latency/agent-execution-cards.md` — reviewed plan and `LAT-*` task cards for LLM/Web search speedup
 
 If implementation guidance conflicts, prefer the more specific document and current code. If still ambiguous, prefer the safer option: fixture executor, FakeLLM, no new real external writes, explicit schema, and stronger tests.
 

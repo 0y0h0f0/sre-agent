@@ -8,6 +8,7 @@ incident/run synchronization.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from sqlalchemy import text
@@ -643,25 +644,110 @@ def _populate_run_metrics(
     if isinstance(llm_calls, list):
         total_prompt = 0
         total_completion = 0
+        total_cached_prompt = 0
+        total_duration_ms = 0
         provider_hits = 0
         provider_misses = 0
+        provider_unknown = 0
+        per_node: dict[str, dict[str, int | str]] = {}
         for call in llm_calls:
             if isinstance(call, dict):
-                usage = call.get("usage") or {}
-                total_prompt += int(usage.get("prompt_tokens", 0) or 0)
-                total_completion += int(usage.get("completion_tokens", 0) or 0)
-                if call.get("cache_hit"):
+                usage = call.get("usage")
+                prompt_tokens = _safe_metric_int(
+                    usage.get("prompt_tokens") if isinstance(usage, dict) else None
+                )
+                completion_tokens = _safe_metric_int(
+                    usage.get("completion_tokens") if isinstance(usage, dict) else None
+                )
+                cached_prompt_tokens = _safe_metric_int(
+                    usage.get("cached_prompt_tokens") if isinstance(usage, dict) else None
+                )
+                duration_ms = _safe_metric_int(call.get("duration_ms"))
+                total_prompt += prompt_tokens
+                total_completion += completion_tokens
+                total_cached_prompt += cached_prompt_tokens
+                total_duration_ms += duration_ms
+
+                node_name = call.get("node")
+                if isinstance(node_name, str) and node_name:
+                    node_summary = per_node.setdefault(
+                        node_name,
+                        {
+                            "node": node_name,
+                            "calls": 0,
+                            "duration_ms": 0,
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "cached_prompt_tokens": 0,
+                        },
+                    )
+                    node_summary["calls"] = int(node_summary["calls"]) + 1
+                    node_summary["duration_ms"] = int(node_summary["duration_ms"]) + duration_ms
+                    node_summary["prompt_tokens"] = (
+                        int(node_summary["prompt_tokens"]) + prompt_tokens
+                    )
+                    node_summary["completion_tokens"] = (
+                        int(node_summary["completion_tokens"]) + completion_tokens
+                    )
+                    node_summary["cached_prompt_tokens"] = (
+                        int(node_summary["cached_prompt_tokens"]) + cached_prompt_tokens
+                    )
+
+                cache_status_present = "provider_cache_status" in call
+                cache_status = call.get("provider_cache_status")
+                if cache_status == "hit":
                     provider_hits += 1
-                else:
+                elif cache_status == "miss":
                     provider_misses += 1
+                elif cache_status == "unknown":
+                    provider_unknown += 1
+                elif not cache_status_present:
+                    legacy_cache_hit = call.get("cache_hit")
+                    if legacy_cache_hit is True:
+                        provider_hits += 1
+                    elif legacy_cache_hit is False:
+                        provider_misses += 1
+                    else:
+                        provider_unknown += 1
         run.total_prompt_tokens = total_prompt
         run.total_completion_tokens = total_completion
         run.provider_cache_hit_count = provider_hits
         run.provider_cache_miss_count = provider_misses
+        summary = {
+            "total_duration_ms": total_duration_ms,
+            "total_prompt_tokens": total_prompt,
+            "total_completion_tokens": total_completion,
+            "total_cached_prompt_tokens": total_cached_prompt,
+            "provider_cache": {
+                "hit": provider_hits,
+                "miss": provider_misses,
+                "unknown": provider_unknown,
+            },
+            "per_node": list(per_node.values()),
+        }
+        state["llm_metrics_summary"] = summary
+        state["token_usage"] = {
+            "prompt_tokens": total_prompt,
+            "completion_tokens": total_completion,
+            "cached_prompt_tokens": total_cached_prompt,
+            "llm_duration_ms": total_duration_ms,
+        }
 
     # App-level tool cache stats are request-local tool cache counters.
     run.app_cache_hit_count = cache.hit_count
     run.app_cache_miss_count = cache.miss_count
+
+
+def _safe_metric_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if not isinstance(value, int | float):
+        return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
+    if value < 0:
+        return 0
+    return int(value)
 
 
 def _run_duration_seconds(run: Any) -> float:

@@ -140,50 +140,64 @@ class LogsTool:
         return result
 
     def _query_loki(self, query: LogsQuery) -> list[dict[str, Any]]:
-        kw = list(query.keywords)[:10] if query.keywords else [None]
-        keywords: list[str | None] = [k if isinstance(k, str) else None for k in kw]
+        keywords: list[str | None] = [
+            k if isinstance(k, str) else None for k in list(query.keywords)[:10]
+        ]
+        if not keywords:
+            keywords = [None]
         collected: dict[tuple[Any, ...], dict[str, Any]] = {}
         for keyword in keywords:
-            before_count = len(collected)
-            for logql in _logql_candidates(query.service, keyword, self.service_label):
-                candidate_had_rows = False
-                params: dict[str, str | int] = {
-                    "query": logql,
-                    "start": int(query.start.timestamp() * 1_000_000_000),
-                    "end": int(query.end.timestamp() * 1_000_000_000),
-                    "limit": query.limit,
-                    "direction": "backward",
-                }
-                if self.client is not None:
-                    response = self.client.get(
-                        "/loki/api/v1/query_range",
-                        params=params,
-                        timeout=self.timeout_seconds,
-                    )
-                else:
-                    with httpx.Client(
-                        base_url=self.base_url, timeout=self.timeout_seconds
-                    ) as client:
-                        response = client.get("/loki/api/v1/query_range", params=params)
-                response.raise_for_status()
-                payload: dict[str, Any] = response.json()
-                if payload.get("status") != "success":
-                    msg = f"loki status={payload.get('status')}"
-                    raise ValueError(msg)
-                for stream in payload["data"].get("result", []):
-                    raw_labels = stream.get("stream", {})
-                    labels = _public_labels(raw_labels)
-                    for timestamp, line in stream.get("values", []):
-                        candidate_had_rows = True
-                        labels_key = tuple(sorted(labels.items()))
-                        collected[(str(timestamp), str(line), labels_key)] = {
-                            "timestamp": str(timestamp),
-                            "line": redact_text(str(line)).redacted_text,
-                            "labels": labels,
-                        }
-                if candidate_had_rows or len(collected) > before_count:
-                    break
+            self._query_keyword(query, keyword, collected)
+        if query.keywords and not collected:
+            # Keywords are useful for noisy environments, but sparse or info-only
+            # services still need contextual logs for diagnosis. If every
+            # keyword search is empty, fall back to selector-only service logs.
+            self._query_keyword(query, None, collected)
         return list(collected.values())[: query.limit]
+
+    def _query_keyword(
+        self,
+        query: LogsQuery,
+        keyword: str | None,
+        collected: dict[tuple[Any, ...], dict[str, Any]],
+    ) -> None:
+        before_count = len(collected)
+        for logql in _logql_candidates(query.service, keyword, self.service_label):
+            candidate_had_rows = False
+            params: dict[str, str | int] = {
+                "query": logql,
+                "start": int(query.start.timestamp() * 1_000_000_000),
+                "end": int(query.end.timestamp() * 1_000_000_000),
+                "limit": query.limit,
+                "direction": "backward",
+            }
+            if self.client is not None:
+                response = self.client.get(
+                    "/loki/api/v1/query_range",
+                    params=params,
+                    timeout=self.timeout_seconds,
+                )
+            else:
+                with httpx.Client(base_url=self.base_url, timeout=self.timeout_seconds) as client:
+                    response = client.get("/loki/api/v1/query_range", params=params)
+            response.raise_for_status()
+            payload: dict[str, Any] = response.json()
+            if payload.get("status") != "success":
+                msg = f"loki status={payload.get('status')}"
+                raise ValueError(msg)
+            for stream in payload["data"].get("result", []):
+                raw_labels = stream.get("stream", {})
+                labels = _public_labels(raw_labels)
+                for timestamp, line in stream.get("values", []):
+                    candidate_had_rows = True
+                    labels_key = tuple(sorted(labels.items()))
+                    collected[(str(timestamp), str(line), labels_key)] = {
+                        "timestamp": str(timestamp),
+                        "line": redact_text(str(line)).redacted_text,
+                        "labels": labels,
+                    }
+            if candidate_had_rows or len(collected) > before_count:
+                break
 
 
 def _logql_candidates(
@@ -218,6 +232,7 @@ def _selector_candidates(service: str, service_label: str) -> list[str]:
         "job",
         "container",
         "deployment",
+        "service_name",
         "app_kubernetes_io_name",
         "kubernetes_pod_name",
         "pod",
@@ -302,6 +317,19 @@ def _parse_line(line: str) -> dict[str, Any]:
     try:
         parsed = json.loads(line)
         if isinstance(parsed, dict):
+            inner = parsed.get("log")
+            if isinstance(inner, str) and inner.strip():
+                nested = _parse_line(inner.strip())
+                if nested and nested != {"message": inner.strip()}:
+                    merged = {**parsed, **nested}
+                    merged.setdefault("raw_log", inner.strip())
+                    if "message" not in merged and isinstance(merged.get("msg"), str):
+                        merged["message"] = merged["msg"]
+                    return merged
+                if "message" not in parsed:
+                    parsed["message"] = inner.strip()
+            if "message" not in parsed and isinstance(parsed.get("msg"), str):
+                parsed["message"] = parsed["msg"]
             return parsed
     except json.JSONDecodeError:
         pass
@@ -313,6 +341,12 @@ def _error_type(parsed: dict[str, Any]) -> str:
         value = parsed.get(key)
         if isinstance(value, str) and value:
             return value
+    status = _http_status(parsed)
+    if status is not None:
+        if 500 <= status < 600:
+            return "http_5xx"
+        if 400 <= status < 500:
+            return "http_4xx"
     message = str(parsed.get("message", "")).lower()
     if "timeout" in message:
         return "timeout"
@@ -325,6 +359,18 @@ def _error_type(parsed: dict[str, Any]) -> str:
     if "5xx" in message or "http 500" in message:
         return "http_5xx"
     return str(parsed.get("level") or "unknown")
+
+
+def _http_status(parsed: dict[str, Any]) -> int | None:
+    for key in ("status", "status_code", "http.status_code", "http.response.status_code"):
+        value = parsed.get(key)
+        if isinstance(value, bool) or value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _signature(parsed: dict[str, Any]) -> str | None:

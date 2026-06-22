@@ -26,6 +26,10 @@ class Compressor:
 
     MAX_LOG_SAMPLES: int = 3
     MAX_TRACE_SPANS: int = 10
+    REPORT_MAX_EVIDENCE_ITEMS: int = 12
+    REPORT_MAX_ACTION_ITEMS: int = 10
+    REPORT_MAX_ERROR_ITEMS: int = 5
+    REPORT_SUMMARY_CHARS: int = 240
 
     def __init__(self, token_counter: TokenCounter | None = None) -> None:
         self.token_counter = token_counter or TokenCounter()
@@ -86,6 +90,87 @@ class Compressor:
             after_tokens=after,
             compression_ratio=after / max(before, 1),
             risk_notes=all_notes,
+        )
+
+    def compress_report_inputs(
+        self,
+        *,
+        evidence: list[dict[str, Any]],
+        actions: list[dict[str, Any]],
+        errors: list[Any] | None = None,
+    ) -> tuple[dict[str, Any], CompressedContext]:
+        """Build compact report prompt input while preserving evidence lineage."""
+        before_payload = {
+            "evidence": evidence,
+            "actions": actions,
+            "errors": errors or [],
+        }
+        before = self.token_counter.count_tokens(json.dumps(before_payload, default=str))
+        evidence_summaries = [
+            self._report_evidence_summary(item)
+            for item in evidence[: self.REPORT_MAX_EVIDENCE_ITEMS]
+        ]
+        retained_ids = [
+            evidence_id
+            for item in evidence_summaries
+            if (evidence_id := item.get("evidence_id"))
+        ]
+        all_evidence_ids = [
+            evidence_id
+            for item in evidence
+            if (evidence_id := item.get("evidence_id"))
+        ]
+        omitted_ids = [
+            str(evidence_id)
+            for evidence_id in all_evidence_ids
+            if evidence_id not in retained_ids
+        ]
+        all_runbook_chunk_ids = _unique_strings(
+            chunk_id
+            for item in evidence
+            for chunk_id in self._report_runbook_chunk_ids(item)
+        )
+        report_context: dict[str, Any] = {
+            "evidence": evidence_summaries,
+            "evidence_counts": _count_by_type(evidence),
+            "retained_evidence_ids": retained_ids,
+            "omitted_evidence_ids": omitted_ids,
+            "all_evidence_ids": _unique_strings(str(eid) for eid in all_evidence_ids),
+            "runbook_chunk_ids": all_runbook_chunk_ids,
+            "actions": [
+                self._report_action_summary(action)
+                for action in actions[: self.REPORT_MAX_ACTION_ITEMS]
+            ],
+            "omitted_action_count": max(0, len(actions) - self.REPORT_MAX_ACTION_ITEMS),
+            "errors": [
+                self._report_error_summary(error)
+                for error in (errors or [])[: self.REPORT_MAX_ERROR_ITEMS]
+            ],
+            "omitted_error_count": max(0, len(errors or []) - self.REPORT_MAX_ERROR_ITEMS),
+        }
+        after = self.token_counter.count_tokens(json.dumps(report_context, default=str))
+        risk_notes: list[str] = []
+        if omitted_ids:
+            risk_notes.append(
+                f"report evidence summaries omitted {len(omitted_ids)} evidence ids"
+            )
+        if len(actions) > self.REPORT_MAX_ACTION_ITEMS:
+            omitted_actions = len(actions) - self.REPORT_MAX_ACTION_ITEMS
+            risk_notes.append(
+                f"report action trajectory omitted {omitted_actions} actions"
+            )
+        return report_context, CompressedContext(
+            summary=(
+                "compressed report inputs "
+                f"({len(evidence_summaries)}/{len(evidence)} evidence summaries, "
+                f"{min(len(actions), self.REPORT_MAX_ACTION_ITEMS)}/{len(actions)} actions)"
+            ),
+            retained_evidence_ids=[str(eid) for eid in retained_ids],
+            omitted_evidence_ids=omitted_ids,
+            before_tokens=before,
+            after_tokens=after,
+            compression_ratio=after / max(before, 1),
+            risk_notes=risk_notes,
         )
 
     # -- internal -------------------------------------------------------
@@ -211,6 +296,113 @@ class Compressor:
         """Fallback for unknown evidence types: keep a small deterministic prefix."""
         return items[:3]
 
+    def _report_evidence_summary(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Return a report-safe evidence summary with no raw samples/payloads."""
+        payload = self._payload(item)
+        etype = str(item.get("type", payload.get("type", "")))
+        summary = self._report_summary_text(etype, item, payload)
+        result: dict[str, Any] = {
+            "evidence_id": item.get("evidence_id", payload.get("evidence_id", "")),
+            "type": etype,
+            "source": item.get("source", payload.get("source", "")),
+            "source_id": item.get("source_id", payload.get("source_id", "")),
+            "source_path": _source_path(item),
+            "summary": _limit_text(str(summary), self.REPORT_SUMMARY_CHARS),
+            "status": item.get("status", payload.get("status", "")),
+            "service": item.get("service", payload.get("service", "")),
+            "timestamp": item.get("timestamp", payload.get("timestamp", "")),
+            "runbook_chunk_ids": self._report_runbook_chunk_ids(item),
+        }
+        return {key: value for key, value in result.items() if value not in ("", [], None)}
+
+    def _report_summary_text(
+        self,
+        etype: str,
+        item: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> str:
+        if etype == "log":
+            error_counts = payload.get("error_counts") or payload.get("error_type_counts") or {}
+            line_count = payload.get("line_count") or payload.get("total_lines") or ""
+            error_type_count = len(error_counts) if isinstance(error_counts, dict) else 0
+            total_error_count = (
+                sum(value for value in error_counts.values() if isinstance(value, int | float))
+                if isinstance(error_counts, dict)
+                else ""
+            )
+            return _limit_text(
+                "log summary "
+                f"line_count={line_count} "
+                f"error_type_count={error_type_count} "
+                f"total_error_count={total_error_count}",
+                self.REPORT_SUMMARY_CHARS,
+            )
+        explicit = item.get("summary")
+        if isinstance(explicit, str) and explicit:
+            return _limit_text(explicit, self.REPORT_SUMMARY_CHARS)
+        if etype == "metric":
+            stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+            return _limit_text(
+                f"metric summary type={payload.get('metric_type', '')} stats={stats}",
+                self.REPORT_SUMMARY_CHARS,
+            )
+        if etype == "trace":
+            return _limit_text(
+                "trace summary "
+                f"duration_p95_ms={payload.get('duration_p95_ms', '')} "
+                f"downstream={payload.get('downstream_services', [])}",
+                self.REPORT_SUMMARY_CHARS,
+            )
+        fallback = payload.get("summary") or payload.get("status") or ""
+        return _limit_text(str(fallback), self.REPORT_SUMMARY_CHARS)
+
+    def _report_action_summary(self, action: dict[str, Any]) -> dict[str, Any]:
+        """Return a compact action trajectory entry for report prompting."""
+        return {
+            key: value
+            for key, value in {
+                "action_id": action.get("action_id", ""),
+                "type": action.get("type", ""),
+                "target": action.get("target", ""),
+                "risk_level": action.get("risk_level", action.get("risk_hint", "")),
+                "status": action.get("status", ""),
+                "reason": _limit_text(str(action.get("reason", "")), self.REPORT_SUMMARY_CHARS),
+            }.items()
+            if value not in ("", None)
+        }
+
+    @staticmethod
+    def _report_error_summary(error: Any) -> dict[str, Any]:
+        if not isinstance(error, dict):
+            return {"error_present": True}
+        return {
+            key: value
+            for key, value in {
+                "node": error.get("node", ""),
+                "type": error.get("type", error.get("error_type", "")),
+                "status": error.get("status", ""),
+                "error_present": bool(error.get("error")),
+            }.items()
+            if value not in ("", None, False)
+        } or {"error_present": True}
+
+    @staticmethod
+    def _report_runbook_chunk_ids(item: dict[str, Any]) -> list[str]:
+        chunk_ids: list[str] = []
+        for key in ("runbook_chunk_ids", "runbook_chunks"):
+            value = item.get(key)
+            if isinstance(value, list):
+                chunk_ids.extend(str(v) for v in value if v)
+        for source in (item, item.get("payload")):
+            if isinstance(source, dict):
+                chunk_id = source.get("chunk_id")
+                if chunk_id:
+                    chunk_ids.append(str(chunk_id))
+                metadata = source.get("metadata")
+                if isinstance(metadata, dict) and metadata.get("chunk_id"):
+                    chunk_ids.append(str(metadata["chunk_id"]))
+        return _unique_strings(chunk_ids)
+
     @staticmethod
     def _payload(item: dict[str, Any]) -> dict[str, Any]:
         """Return payload dict when present, otherwise the item itself."""
@@ -284,3 +476,36 @@ def _downstream_from_spans(spans: list[dict[str, Any]]) -> list[str]:
         if isinstance(service, str) and service and service not in services:
             services.append(service)
     return services
+
+
+def _source_path(evidence: dict[str, Any]) -> object:
+    payload = evidence.get("payload")
+    if isinstance(payload, dict):
+        nested = payload.get("payload")
+        if isinstance(nested, dict) and nested.get("source_path"):
+            return nested.get("source_path")
+        return payload.get("source_path", "")
+    return evidence.get("source_path", "")
+
+
+def _limit_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 3)] + "..."
+
+
+def _count_by_type(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        etype = str(item.get("type", "unknown"))
+        counts[etype] = counts.get(etype, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _unique_strings(values: Any) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = str(value)
+        if text and text not in result:
+            result.append(text)
+    return result

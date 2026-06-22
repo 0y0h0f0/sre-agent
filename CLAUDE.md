@@ -8,6 +8,8 @@ The real backend integration (M0–M8) is **complete**. All 41 PRs (0.1 through 
 
 M9 does **not** replace M0–M8 deterministic diagnosis, safe publishing, config merge, audit, rollback, or runbook review. It only adds new capabilities within existing safety boundaries.
 
+Agent run latency optimization for LLM generation and Web search now has a reviewed plan and agent-executable task-card breakdown under `plans/12-latency/`. Treat these as the execution entry point for latency work, not as permission to relax M9 or safety boundaries.
+
 **Overall status:** M0 ✅ | M1 ✅ | M2 ✅ | M3 ✅ | M4 ✅ | M5 ✅ | M6 ✅ | M7 ✅ | M8 ✅ | M9 🔄
 
 **Next step:** Implement M9 PRs (9.1 through 9.10) in execution order. Start with PR 9.1 (M9 Feature Gate).
@@ -22,6 +24,8 @@ M9 does **not** replace M0–M8 deterministic diagnosis, safe publishing, config
 - `docs/superpowers/specs/2026-06-11-real-backend-integration-implementation-plan.md` — M0–M8 milestone/PR breakdown
 - `sre-agent-agent-execution-plan.md` — **agent-executable task cards with hard constraints** (read this before implementing any PR)
 - `docs/superpowers/specs/m9-foragent.md` — **M9 agent execution plan** (PR cards, invariants, stop conditions, E2E smoke sequence)
+- `plans/12-latency/agent-run-llm-web-search-speedup-plan.md` — reviewed latency optimization plan for LLM/Web search bottlenecks
+- `plans/12-latency/agent-execution-cards.md` — reviewed `LAT-*` agent-executable latency task cards
 
 ## Agent Execution Discipline
 
@@ -39,6 +43,17 @@ When implementing a `PR x.y` from the execution plan (M0–M8 or M9):
 
 Full M0–M8 execution rules, state machine, stop conditions, and report format are in `sre-agent-agent-execution-plan.md` §A–B.
 M9 execution loop, stop conditions, and per-PR test checklists are in `docs/superpowers/specs/m9-foragent.md` §4, §17–18.
+
+When implementing a `LAT-*` latency card:
+
+1. Read `plans/12-latency/agent-run-llm-web-search-speedup-plan.md` and `plans/12-latency/agent-execution-cards.md`.
+2. Execute one `LAT-*` card at a time unless explicitly told to combine cards.
+3. Preserve defaults: FakeLLM or disabled LLM, fixture executor, M9/Web disabled.
+4. Keep real LLM and real Web search manual/opt-in only; never make them CI gates.
+5. Preserve cache boundaries: provider prompt cache, app/tool cache, and segment keys are distinct.
+6. Use provider cache status `hit` / `miss` / `unknown`; never fold `unknown` into `miss`.
+7. Do not add high-cardinality or sensitive metric labels.
+8. Stop if the card would require an unplanned DB migration, public API/report schema change, real external calls by default, networked tests, or storage of raw prompts/queries/secrets/internal URLs in disallowed locations.
 
 ## Commands
 
@@ -187,6 +202,10 @@ Key model relationships:
 - **Phase 0–8 deterministic**: All diagnosis, runbook template, and feedback use deterministic methods. Real LLM and web_search are gated behind explicit flags.
 - **M9 enhancements default-off**: All M9 capabilities (LLM generation/diff, web_search, Tempo, Grafana ingest, semantic search, external embedding) are controlled by `M9_EXTENSIONS_ENABLED` and individual sub-feature flags. All default to `false` in production. M9 only augments — it never replaces M0–M8 deterministic paths.
 - **M9 invariants**: LLM only generates drafts (`RunbookDraft`/`AmendmentDraft`, both `pending_review`). Never auto-approves, auto-publishes, or auto-applies. Production Tempo discovery never auto-publishes. Embedding failure never blocks runbook ingest. All external calls have timeout, redaction, audit/metric, and degraded fallback.
+- **Latency optimization cards**: LLM/Web search speed work follows `plans/12-latency/agent-execution-cards.md`. Keep one authoritative LLM metrics emission path per call, provider cache tri-state semantics, and M9/Web default-off behavior.
+- **Web cache boundaries**: A Web search cache must specify backend, TTL, key fields, value fields, and rollback path before implementation. Validated traceability URLs may be retained in result payloads, but URL paths must not appear in labels, cache keys, logs, audit summaries, or high-cardinality metrics.
+- **Agent-run Web context**: If added later, it must remain under `M9_EXTENSIONS_ENABLED`, `RUNBOOK_WEB_SEARCH_ENABLED`, and its own default-off gate; it can only provide context/evidence and must not affect guardrail authorization or executor choice.
+- **Parallel diagnosis safety**: Optional multi-perspective parallelization must aggregate specialist outputs and metadata without shared `last_metadata` races or shared DB sessions.
 - **Executor backends**: Fixture executor is the default. `LiveK8sExecutorBackend` is opt-in via `EXECUTOR_BACKEND=live`, limited to restart/scale/rollback K8s mutations after guardrails and approval.
 - **Risk levels**: L0 read-only (auto), L1 low-risk write (auto), L2 restart/scale (approval), L3 rollback/rate-limit (approval + second confirmation), L4 destructive (hard reject).
 - **L3 approval requires** `risk_ack=true`, `confirm_action_type`, `confirm_target`.
@@ -224,4 +243,6 @@ When implementing PRs:
 | `docs/superpowers/specs/2026-06-11-real-backend-integration-implementation-plan.md` | M0–M8 milestone overview, dependency graph, risk register, parallelization plan |
 | `docs/superpowers/specs/2026-06-10-real-backend-integration-design.md` | M0–M8 design rationale, data models, protocol contracts, algorithm details |
 | `docs/superpowers/specs/m9-foragent.md` | **M9 agent execution plan** — 10 PR cards (9.1–9.10), invariants, stop conditions, per-PR test checklists, E2E smoke sequence, rollback plan |
+| `plans/12-latency/agent-run-llm-web-search-speedup-plan.md` | Reviewed plan for Agent run latency reduction focused on LLM generation and Web search |
+| `plans/12-latency/agent-execution-cards.md` | Agent-executable `LAT-*` task cards for latency work, with stop conditions and acceptance criteria |
 | `AGENTS.md` | Detailed coding standards, stack constraints, per-module rules |

@@ -1,6 +1,6 @@
 # M9 Rollout, Feature Gates, and Rollback
 
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-23
 
 M9 adds optional AI, Web, Tempo, Grafana, semantic search, and external embedding capabilities on top of the M0-M8 deterministic incident response system. These capabilities are controlled enhancements, not a replacement for the fixture/FakeLLM default path.
 
@@ -40,6 +40,7 @@ The safe default remains:
 | LLM incident diff | `LLM_INCIDENT_DIFF_ENABLED` | `false` | Enables `POST /api/runbooks/incident-diff`; creates `amd_` amendments with `pending_review` after evidence threshold. |
 | Runbook Web search | `RUNBOOK_WEB_SEARCH_ENABLED` | `false` | Enables `POST /api/runbooks/web-search`; provider defaults to `disabled`. |
 | Web search provider | `RUNBOOK_WEB_SEARCH_PROVIDER` | `disabled` | `fake` is deterministic local/CI; unknown providers return `config_error` and do not fall back. |
+| Web context cache | `RUNBOOK_WEB_SEARCH_CACHE_ENABLED` | `true` | Caches safe Web context results only when Web search itself is enabled. Roll back independently by setting it to `false`. |
 | Native Tempo backend | `TRACE_BACKEND=tempo` and `TRACE_ENABLED=true` | `fixture` / `true` | Uses `TempoTraceBackend`; treat as M9 rollout even though backend construction follows `TRACE_BACKEND`. |
 | Tempo discovery | `TEMPO_DISCOVERY_ENABLED` | `false` | Allows discovery to include Tempo service endpoints. |
 | Grafana alert ingest helper | `GRAFANA_ALERT_INGEST_ENABLED` | `false` | Enables `AlertService.ingest_grafana_alert()` helper. The generic `/api/alerts` schema can still normalize `source=grafana` payloads. |
@@ -57,6 +58,7 @@ The safe default remains:
    RUNBOOK_LLM_GENERATION_ENABLED=false
    LLM_INCIDENT_DIFF_ENABLED=false
    RUNBOOK_WEB_SEARCH_ENABLED=false
+   RUNBOOK_WEB_SEARCH_CACHE_ENABLED=false
    TEMPO_DISCOVERY_ENABLED=false
    GRAFANA_ALERT_INGEST_ENABLED=false
    SEMANTIC_RUNBOOK_SEARCH_ENABLED=false
@@ -163,14 +165,20 @@ Required scopes:
 Behavior:
 
 - Query text is redacted before provider invocation.
+- Web search applies an additional topology/path redaction pass for bare internal hosts, cluster hosts, private IP paths, and URL paths before provider invocation and before returning title/snippet or degraded diagnostics.
 - `RUNBOOK_WEB_SEARCH_PROVIDER=disabled` returns `config_error`; unknown providers do not fall back to a real default.
 - `RUNBOOK_WEB_SEARCH_PROVIDER=fake` returns deterministic local results.
 - Production blocks Web search unless `RUNBOOK_WEB_SEARCH_ALLOWED_DOMAINS` is set.
 - Original URLs, redirect chains, final URLs, and DNS results are validated; returned results include traceability metadata.
+- Observability is emitted for the existing `disabled`/`fake` paths only. Metric labels use fixed provider/status/reason/cache-status values; raw query text, URL paths, internal hostnames, and diagnostic strings are not labels.
+- Web context cache uses `REDIS_URL`; `memory://` uses an in-process TTL cache for tests/local fixtures. Cache keys contain provider, purpose, redacted query hash, allow/block policy hash, HTTPS/redirect policy, result/content budget, recency bucket, and redaction/cache version. Keys do not contain raw query, URL path, host, secret, or internal topology.
+- Cache values contain only validated traceability fields: title, original URL, final URL, snippet, content hash, provider, redaction version, and retrieved_at. Cache hits re-run current URL safety checks before returning results.
+- Current Web context is draft enrichment only. Agent-run Web context is LAT-14 and must not be enabled unless explicitly requested with its own default-off gate.
 
 Rollback:
 
 ```bash
+RUNBOOK_WEB_SEARCH_CACHE_ENABLED=false
 RUNBOOK_WEB_SEARCH_ENABLED=false
 RUNBOOK_WEB_SEARCH_PROVIDER=disabled
 ```
@@ -262,8 +270,12 @@ Relevant metrics use the `agentp_` prefix:
 | `agentp_m9_feature_flag_conflict_total` | Sub-feature or Tempo conflict while global gate is off. |
 | `agentp_llm_runbook_draft_total` | LLM draft generation outcomes. |
 | `agentp_llm_incident_diff_total` | Incident diff outcomes. |
-| `agentp_web_search_requests_total` | Web search attempts by provider/status. |
-| `agentp_web_search_blocked_total` | Blocked Web search operations. |
+| `agentp_web_search_requests_total` | Web search attempts by fixed provider/status/reason. |
+| `agentp_web_search_duration_seconds` | Web search request latency by fixed provider/status/reason. |
+| `agentp_web_search_results_total` | Safe Web search results returned after URL filtering. |
+| `agentp_web_search_blocked_total` | Blocked Web search operations by fixed provider/reason. |
+| `agentp_web_search_query_redactions_total` | Query redaction count before provider invocation. |
+| `agentp_web_search_cache_status_total` | Web context cache status: `hit`, `miss`, `unknown`, or `not_applicable`. |
 | `agentp_tempo_trace_queries_total` | Tempo trace query outcomes. |
 | `agentp_grafana_webhook_ingest_total` | Grafana helper ingest outcomes. |
 | `agentp_grafana_webhook_ignored_total` | Ignored Grafana helper payloads. |
@@ -306,6 +318,7 @@ Single-capability rollback:
 RUNBOOK_LLM_GENERATION_ENABLED=false
 LLM_INCIDENT_DIFF_ENABLED=false
 RUNBOOK_WEB_SEARCH_ENABLED=false
+RUNBOOK_WEB_SEARCH_CACHE_ENABLED=false
 TEMPO_DISCOVERY_ENABLED=false
 GRAFANA_ALERT_INGEST_ENABLED=false
 SEMANTIC_RUNBOOK_SEARCH_ENABLED=false

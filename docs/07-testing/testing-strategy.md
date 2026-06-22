@@ -1,6 +1,6 @@
 # 测试策略
 
-**最后更新：** 2026-06-17
+**最后更新：** 2026-06-23
 
 测试的目标不是只追求覆盖率数字，而是持续证明三件事：事件响应主链路正确、风险边界不会被绕过、默认 local/CI 路径保持确定性。CI、单元测试、集成测试和 smoke eval 必须使用 FakeLLM、fixture/mock 后端和可复现数据。
 
@@ -130,7 +130,14 @@ CI 不默认运行 `tests/e2e/`、`tests/contract/`、`tests/manual/` 或 manual
 | FakeEmbedding determinism | `tests/unit/test_rag.py` |
 | Runbook search shape | `tests/integration/test_runbook_api.py`、`tests/contract/test_runbook_api_contract.py` |
 | Evidence IDs after persistence/compression | `tests/unit/test_collect_all_evidence.py`、`tests/unit/test_memory.py`、`tests/unit/test_reasoning_layering.py` |
-| Provider/app cache metrics separation | `tests/integration/test_eval_runner.py` |
+| Provider/app cache metrics separation | `tests/unit/test_llm_providers.py`、`tests/integration/test_worker_task.py`、`tests/integration/test_eval_runner.py` |
+| LLM safe metadata, cache tri-state, runtime metrics | `tests/unit/test_llm_providers.py`、`tests/unit/test_reasoning_layering.py` |
+| JSON repair/fallback metrics | `tests/unit/test_agent_nodes.py`、`tests/unit/test_llm_providers.py` |
+| LLM profile routing and deterministic report mode | `tests/unit/test_reasoning_layering.py`、`tests/unit/test_agent_nodes.py`、`tests/unit/test_settings_production_defaults.py` |
+| Compact diagnosis schema mapping | `tests/unit/test_agent_nodes.py`、`tests/unit/test_diagnose_multi_perspective.py` |
+| Parallel multi-perspective metadata isolation/timeout | `tests/unit/test_diagnose_multi_perspective.py` |
+| Report input compression and traceability | `tests/unit/test_memory.py`、`tests/unit/test_agent_nodes.py` |
+| Web search safety/cache behavior | `tests/unit/test_web_search_safety.py`、`tests/integration/test_runbook_web_context_draft.py` |
 | Project engineering metrics aggregation | `tests/integration/test_engineering_metrics_api.py` |
 | Production safety defaults | `tests/unit/test_production_safety.py`、`tests/unit/test_settings_production_defaults.py` |
 | Backend URL SSRF safety | `tests/unit/test_backend_url_safety.py` |

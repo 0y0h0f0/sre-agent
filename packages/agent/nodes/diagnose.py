@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, wait
 from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any
 
 from packages.agent.evidence_validation import (
@@ -11,13 +13,16 @@ from packages.agent.evidence_validation import (
     cross_validate_state,
 )
 from packages.agent.llm.base import extract_json
+from packages.agent.llm.profiles import DIAGNOSE_REASONING_PROFILE
 from packages.agent.llm.reasoning import (
     capture_metadata,
     format_call_metadata,
+    llm_profile_call_options,
     record_llm_call,
-    should_use_deep_reasoning,
+    should_use_diagnosis_reasoning,
 )
 from packages.agent.prompts import (
+    COMPACT_DIAGNOSIS_OUTPUT_INSTRUCTIONS,
     DIAGNOSIS_PROMPT_TEMPLATE,
     LOGS_SPECIALIST_SYSTEM_PROMPT,
     METRICS_SPECIALIST_SYSTEM_PROMPT,
@@ -26,9 +31,15 @@ from packages.agent.prompts import (
     SYNTHESIZER_SYSTEM_PROMPT,
     TRACES_SPECIALIST_SYSTEM_PROMPT,
 )
-from packages.agent.schemas import AgentDeps, DiagnosisOutput
+from packages.agent.schemas import (
+    AgentDeps,
+    CompactDiagnosisOutput,
+    DiagnosisOutput,
+    diagnosis_output_from_compact,
+)
 from packages.agent.state import IncidentState
 from packages.agent.topology import analyze_cascade_from_state
+from packages.common import metrics as agent_metrics
 from packages.common.ids import new_id
 from packages.common.time import utc_now
 
@@ -76,9 +87,11 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
             state, topology_path=deps.settings.service_topology_path
         )
 
-        meta = capture_metadata(deps.llm)
-        record_llm_call(state, _NODE_NAME, meta)
-        meta_summary = format_call_metadata(meta)
+        meta_summary = ""
+        if not multi:
+            meta = capture_metadata(deps.llm)
+            record_llm_call(state, _NODE_NAME, meta)
+            meta_summary = format_call_metadata(meta)
 
         output_summary = (
             f"hypotheses={len(hypotheses)} rc={root_cause.get('summary', '')[:80]} "
@@ -87,7 +100,8 @@ def diagnose(state: IncidentState, deps: AgentDeps) -> IncidentState:
         )
         if specialist_summaries:
             output_summary += "specialists=" + ",".join(specialist_summaries)
-        output_summary += f" {meta_summary}"
+        if meta_summary:
+            output_summary += f" {meta_summary}"
 
         deps.node_tracer(
             node_id=node_id,
@@ -136,33 +150,65 @@ def _multi_perspective_enabled(deps: AgentDeps) -> bool:
     return bool(deps.settings.llm_multi_perspective_enabled)
 
 
+def _multi_perspective_parallel_enabled(deps: AgentDeps) -> bool:
+    return bool(
+        deps.settings.llm_multi_perspective_parallel_enabled
+        and _supports_call_local_metadata(deps.llm)
+    )
+
+
+def _supports_call_local_metadata(llm: Any) -> bool:
+    if not hasattr(llm, "generate_json_with_metadata"):
+        return False
+    delegate = getattr(llm, "delegate", None)
+    if delegate is not None and not hasattr(delegate, "generate_json_with_metadata"):
+        return False
+    return True
+
+
+@dataclass
+class _SpecialistRunResult:
+    perspective: str
+    node_name: str
+    output: DiagnosisOutput = field(default_factory=DiagnosisOutput)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 def _multi_perspective_diagnose(
     state: IncidentState, deps: AgentDeps
 ) -> tuple[DiagnosisOutput, list[str]]:
-    """Run 3 specialists + 1 synthesizer sequentially."""
+    """Run 3 specialists plus a sequential synthesizer."""
     summaries: list[str] = []
     topology = _load_topology(state, deps)
 
-    metrics_output = _run_specialist(
-        state, deps, "metrics",
-        state.get("metrics_evidence", []),
-        METRICS_SPECIALIST_SYSTEM_PROMPT,
-    )
-    summaries.append(f"metrics:h={len(metrics_output.hypotheses)}")
+    if _multi_perspective_parallel_enabled(deps):
+        metrics_output, logs_output, traces_output = _run_specialists_parallel(
+            state,
+            deps,
+            topology,
+            summaries,
+        )
+    else:
+        metrics_output = _run_specialist(
+            state, deps, "metrics",
+            state.get("metrics_evidence", []),
+            METRICS_SPECIALIST_SYSTEM_PROMPT,
+        )
+        summaries.append(f"metrics:h={len(metrics_output.hypotheses)}")
 
-    logs_output = _run_specialist(
-        state, deps, "logs",
-        state.get("logs_evidence", []),
-        LOGS_SPECIALIST_SYSTEM_PROMPT,
-    )
-    summaries.append(f"logs:h={len(logs_output.hypotheses)}")
+        logs_output = _run_specialist(
+            state, deps, "logs",
+            state.get("logs_evidence", []),
+            LOGS_SPECIALIST_SYSTEM_PROMPT,
+        )
+        summaries.append(f"logs:h={len(logs_output.hypotheses)}")
 
-    traces_output = _run_specialist(
-        state, deps, "traces",
-        state.get("traces_evidence", []) + topology,
-        TRACES_SPECIALIST_SYSTEM_PROMPT,
-    )
-    summaries.append(f"traces:h={len(traces_output.hypotheses)}")
+        traces_output = _run_specialist(
+            state, deps, "traces",
+            state.get("traces_evidence", []) + topology,
+            TRACES_SPECIALIST_SYSTEM_PROMPT,
+        )
+        summaries.append(f"traces:h={len(traces_output.hypotheses)}")
 
     synthesizer_output = _run_synthesizer(
         state, deps,
@@ -173,6 +219,88 @@ def _multi_perspective_diagnose(
     return synthesizer_output, summaries
 
 
+def _run_specialists_parallel(
+    state: IncidentState,
+    deps: AgentDeps,
+    topology: list[dict[str, Any]],
+    summaries: list[str],
+) -> tuple[DiagnosisOutput, DiagnosisOutput, DiagnosisOutput]:
+    specs = [
+        (
+            "metrics",
+            state.get("metrics_evidence", []),
+            METRICS_SPECIALIST_SYSTEM_PROMPT,
+        ),
+        ("logs", state.get("logs_evidence", []), LOGS_SPECIALIST_SYSTEM_PROMPT),
+        (
+            "traces",
+            state.get("traces_evidence", []) + topology,
+            TRACES_SPECIALIST_SYSTEM_PROMPT,
+        ),
+    ]
+    snapshot = _specialist_state_snapshot(state)
+    executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="diagnose-specialist")
+    futures = {
+        executor.submit(
+            _run_specialist_result,
+            snapshot,
+            deps.llm,
+            perspective,
+            evidence,
+            system_prompt,
+            True,
+        ): perspective
+        for perspective, evidence, system_prompt in specs
+    }
+    try:
+        done, not_done = wait(
+            futures,
+            timeout=max(0.1, float(deps.settings.llm_timeout_seconds)),
+        )
+        results: dict[str, _SpecialistRunResult] = {}
+        for future in done:
+            perspective = futures[future]
+            try:
+                results[perspective] = future.result()
+            except Exception:
+                agent_metrics.AgentMetricsCollector.record_llm_fallback(
+                    node=_SPECIALIST_NODE_NAMES[perspective],
+                    reason="llm_generate_failed",
+                )
+                results[perspective] = _SpecialistRunResult(
+                    perspective=perspective,
+                    node_name=_SPECIALIST_NODE_NAMES[perspective],
+                )
+        for future in not_done:
+            perspective = futures[future]
+            future.cancel()
+            agent_metrics.AgentMetricsCollector.record_llm_fallback(
+                node=_SPECIALIST_NODE_NAMES[perspective],
+                reason="llm_generate_failed",
+            )
+            results[perspective] = _SpecialistRunResult(
+                perspective=perspective,
+                node_name=_SPECIALIST_NODE_NAMES[perspective],
+            )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    outputs: list[DiagnosisOutput] = []
+    for perspective, _evidence, _system_prompt in specs:
+        result = results.get(
+            perspective,
+            _SpecialistRunResult(
+                perspective=perspective,
+                node_name=_SPECIALIST_NODE_NAMES[perspective],
+            ),
+        )
+        if result.metadata:
+            record_llm_call(state, result.node_name, result.metadata)
+        outputs.append(result.output)
+        summaries.append(f"{perspective}:h={len(result.output.hypotheses)}")
+    return outputs[0], outputs[1], outputs[2]
+
+
 def _run_specialist(
     state: IncidentState,
     deps: AgentDeps,
@@ -181,6 +309,28 @@ def _run_specialist(
     system_prompt: str,
 ) -> DiagnosisOutput:
     """Run one specialist sub-agent on its evidence type."""
+    result = _run_specialist_result(
+        state,
+        deps.llm,
+        perspective,
+        evidence,
+        system_prompt,
+        False,
+    )
+    if result.metadata:
+        record_llm_call(state, result.node_name, result.metadata)
+    return result.output
+
+
+def _run_specialist_result(
+    state: IncidentState,
+    llm: Any,
+    perspective: str,
+    evidence: list[dict[str, Any]],
+    system_prompt: str,
+    require_call_local_metadata: bool,
+) -> _SpecialistRunResult:
+    """Run one specialist without mutating shared graph state."""
     node_name = _SPECIALIST_NODE_NAMES[perspective]
     prompt_text = SPECIALIST_PROMPT_TEMPLATE.format(
         perspective=perspective,
@@ -189,22 +339,36 @@ def _run_specialist(
         severity=state.get("severity", ""),
         time_window=state.get("time_window", {}),
         evidence_block=json.dumps(evidence) if evidence else "No evidence collected.",
+        compact_schema=COMPACT_DIAGNOSIS_OUTPUT_INSTRUCTIONS,
     )
     tagged_prompt = f"[perspective:{perspective}]\n{system_prompt}\n\n{prompt_text}"
 
-    _clear_llm_metadata(deps.llm)
+    if not require_call_local_metadata:
+        _clear_llm_metadata(llm)
     try:
-        output = deps.llm.generate_json(tagged_prompt, DiagnosisOutput, thinking=False)
-        meta = capture_metadata(deps.llm)
-        record_llm_call(state, node_name, meta)
-        return output  # type: ignore[no-any-return]
+        raw_output, metadata = _generate_json_with_metadata(
+            llm,
+            tagged_prompt,
+            CompactDiagnosisOutput,
+            thinking=False,
+            require_call_local_metadata=require_call_local_metadata,
+        )
+        output = diagnosis_output_from_compact(raw_output)
+        return _SpecialistRunResult(
+            perspective=perspective,
+            node_name=node_name,
+            output=output,
+            metadata=metadata,
+        )
     except Exception:
-        try:
-            meta = capture_metadata(deps.llm)
-            record_llm_call(state, f"{node_name}_failed", meta)
-        except Exception:
-            pass  # best-effort audit; don't let bookkeeping abort diagnosis
-        return DiagnosisOutput()
+        agent_metrics.AgentMetricsCollector.record_llm_fallback(
+            node=node_name,
+            reason="llm_generate_failed",
+        )
+        return _SpecialistRunResult(
+            perspective=perspective,
+            node_name=node_name,
+        )
 
 
 def _run_synthesizer(
@@ -235,18 +399,43 @@ def _run_synthesizer(
         ),
         runbook_block=json.dumps(state.get("runbook_context", [])),
         memory_block=json.dumps(state.get("memory_context", [])),
+        compact_schema=COMPACT_DIAGNOSIS_OUTPUT_INSTRUCTIONS,
     )
     tagged_prompt = f"[perspective:synthesizer]\n{SYNTHESIZER_SYSTEM_PROMPT}\n\n{prompt_text}"
 
-    thinking = should_use_deep_reasoning(deps.settings, "diagnose_synthesize")
+    reasoning_context = _diagnosis_reasoning_context(state, deps)
+    thinking = should_use_diagnosis_reasoning(
+        deps.settings,
+        "diagnose_synthesize",
+        state,
+        **reasoning_context,
+    )
+    profile_options = (
+        llm_profile_call_options(
+            deps.settings,
+            DIAGNOSE_REASONING_PROFILE,
+            aliases=("diagnose_synthesize",),
+        )
+        if thinking
+        else {}
+    )
 
     _clear_llm_metadata(deps.llm)
     try:
-        output = deps.llm.generate_json(tagged_prompt, DiagnosisOutput, thinking=thinking)
+        raw_output = deps.llm.generate_json(
+            tagged_prompt,
+            CompactDiagnosisOutput,
+            thinking=thinking,
+            **profile_options,
+        )
+        output = diagnosis_output_from_compact(raw_output)
     except Exception:
+        agent_metrics.AgentMetricsCollector.record_llm_json_repair_attempt(
+            node=node_name,
+        )
         try:
             repair_prompt = (
-                "Return only a valid JSON object matching DiagnosisOutput. "
+                "Return only valid compact diagnosis JSON. "
                 "Preserve evidence_id references from the original prompt.\n\n"
                 f"Original prompt:\n{tagged_prompt}"
             )
@@ -255,12 +444,19 @@ def _run_synthesizer(
                 thinking=False,
             )
             data = extract_json(raw)
-            output = DiagnosisOutput(**data)
+            output = diagnosis_output_from_compact(data)
         except Exception:
-            return _single_call_diagnose(
+            agent_metrics.AgentMetricsCollector.record_llm_fallback(
+                node=node_name,
+                reason="json_repair_failed",
+            )
+            output = _single_call_diagnose(
                 state, deps,
                 specialist_outputs=(metrics_output, logs_output, traces_output),
             )
+            meta = capture_metadata(deps.llm)
+            record_llm_call(state, _NODE_NAME, meta)
+            return output
 
     meta = capture_metadata(deps.llm)
     record_llm_call(state, node_name, meta)
@@ -280,6 +476,39 @@ def _serialize_partial_output(output: DiagnosisOutput) -> str:
         "runbook_chunk_ids": output.runbook_chunk_ids,
         "missing_evidence": output.missing_evidence,
     })
+
+
+def _specialist_state_snapshot(state: IncidentState) -> IncidentState:
+    keys = (
+        "service_name",
+        "alert_name",
+        "severity",
+        "time_window",
+    )
+    return {key: deepcopy(state.get(key)) for key in keys}  # type: ignore[return-value]
+
+
+def _generate_json_with_metadata(
+    llm: Any,
+    prompt: str,
+    output_schema: Any,
+    *,
+    thinking: bool,
+    require_call_local_metadata: bool,
+    **kwargs: Any,
+) -> tuple[Any, dict[str, Any]]:
+    if hasattr(llm, "generate_json_with_metadata"):
+        output, metadata = llm.generate_json_with_metadata(
+            prompt,
+            output_schema,
+            thinking=thinking,
+            **kwargs,
+        )
+        return output, dict(metadata or {})
+    if require_call_local_metadata:
+        raise RuntimeError("LLM provider does not expose call-local metadata")
+    output = llm.generate_json(prompt, output_schema, thinking=thinking, **kwargs)
+    return output, capture_metadata(llm)
 
 
 def _load_topology(state: IncidentState, deps: AgentDeps) -> list[dict[str, Any]]:
@@ -338,6 +567,7 @@ def _single_call_diagnose(
             ),
             runbook_block=json.dumps(state.get("runbook_context", [])),
             memory_block=json.dumps(state.get("memory_context", [])),
+            compact_schema=COMPACT_DIAGNOSIS_OUTPUT_INSTRUCTIONS,
         )
 
     # When falling back from multi-perspective, include successful specialist
@@ -349,15 +579,39 @@ def _single_call_diagnose(
                 parts.append(f"\n### {_persp} specialist:\n{_serialize_partial_output(_out)}")
         prompt_text = "\n".join(parts)
 
-    thinking = should_use_deep_reasoning(deps.settings, _NODE_NAME)
+    reasoning_context = _diagnosis_reasoning_context(state, deps)
+    thinking = should_use_diagnosis_reasoning(
+        deps.settings,
+        _NODE_NAME,
+        state,
+        **reasoning_context,
+    )
+    profile_options = (
+        llm_profile_call_options(
+            deps.settings,
+            DIAGNOSE_REASONING_PROFILE,
+            aliases=(_NODE_NAME,),
+        )
+        if thinking
+        else {}
+    )
 
     _clear_llm_metadata(deps.llm)
     try:
-        output = deps.llm.generate_json(prompt_text, DiagnosisOutput, thinking=thinking)
+        raw_output = deps.llm.generate_json(
+            prompt_text,
+            CompactDiagnosisOutput,
+            thinking=thinking,
+            **profile_options,
+        )
+        output = diagnosis_output_from_compact(raw_output)
     except Exception:
+        agent_metrics.AgentMetricsCollector.record_llm_json_repair_attempt(
+            node=_NODE_NAME,
+        )
         try:
             repair_prompt = (
-                "Return only a valid JSON object matching DiagnosisOutput. "
+                "Return only valid compact diagnosis JSON. "
                 "Preserve evidence_id references from the original prompt.\n\n"
                 f"Original prompt:\n{prompt_text}"
             )
@@ -366,12 +620,36 @@ def _single_call_diagnose(
                 thinking=False,
             )
             data = extract_json(raw)
-            output = DiagnosisOutput(**data)
+            output = diagnosis_output_from_compact(data)
         except Exception:
+            agent_metrics.AgentMetricsCollector.record_llm_fallback(
+                node=_NODE_NAME,
+                reason="json_repair_failed",
+            )
             output = _rules_diagnosis(
                 state.get("alert_name", ""), _state_evidence_ids(state)
             )
     return output  # type: ignore[no-any-return]
+
+
+def _diagnosis_reasoning_context(
+    state: IncidentState,
+    deps: AgentDeps,
+) -> dict[str, dict[str, Any]]:
+    try:
+        cross_validation = cross_validate_state(state)
+    except Exception:
+        cross_validation = {}
+    try:
+        cascade_analysis = analyze_cascade_from_state(
+            state, topology_path=deps.settings.service_topology_path
+        )
+    except Exception:
+        cascade_analysis = {}
+    return {
+        "cross_validation": cross_validation,
+        "cascade_analysis": cascade_analysis,
+    }
 
 
 # ---------------------------------------------------------------------------

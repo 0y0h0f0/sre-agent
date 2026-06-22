@@ -33,31 +33,61 @@ class RedactingLLMAdapter:
     def invoke(
         self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
     ) -> str:
+        result, meta = self.invoke_with_metadata(messages, thinking=thinking, **kwargs)
+        self.last_metadata = meta
+        return result
+
+    def invoke_with_metadata(
+        self, messages: list[dict[str, Any]], *, thinking: bool = False, **kwargs: Any
+    ) -> tuple[str, LLMCallMetadata]:
         redacted_messages, redaction = _redact_value(messages)
         try:
-            return self.delegate.invoke(
-                redacted_messages, thinking=thinking, **kwargs
-            )
-        finally:
-            self._record_redaction(redaction)
+            if hasattr(self.delegate, "invoke_with_metadata"):
+                result, meta = self.delegate.invoke_with_metadata(
+                    redacted_messages, thinking=thinking, **kwargs
+                )
+            else:
+                result = self.delegate.invoke(redacted_messages, thinking=thinking, **kwargs)
+                meta = dict(getattr(self.delegate, "last_metadata", None) or {})
+            return result, self._metadata_with_redaction(redaction, meta)
+        except Exception:
+            raise
 
     def generate_json(
         self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
     ) -> Any:
+        result, meta = self.generate_json_with_metadata(
+            prompt, output_schema, thinking=thinking, **kwargs
+        )
+        self.last_metadata = meta
+        return result
+
+    def generate_json_with_metadata(
+        self, prompt: str, output_schema: Any, *, thinking: bool = False, **kwargs: Any
+    ) -> tuple[Any, LLMCallMetadata]:
         redacted_prompt, redaction = _redact_value(prompt)
         try:
-            return self.delegate.generate_json(
-                redacted_prompt, output_schema, thinking=thinking, **kwargs
-            )
-        finally:
-            self._record_redaction(redaction)
+            if hasattr(self.delegate, "generate_json_with_metadata"):
+                result, meta = self.delegate.generate_json_with_metadata(
+                    redacted_prompt, output_schema, thinking=thinking, **kwargs
+                )
+            else:
+                result = self.delegate.generate_json(
+                    redacted_prompt, output_schema, thinking=thinking, **kwargs
+                )
+                meta = dict(getattr(self.delegate, "last_metadata", None) or {})
+            return result, self._metadata_with_redaction(redaction, meta)
+        except Exception:
+            raise
 
-    def _record_redaction(self, redaction: _RedactionSummary) -> None:
-        meta = dict(getattr(self.delegate, "last_metadata", None) or {})
+    def _metadata_with_redaction(
+        self, redaction: _RedactionSummary, metadata: dict[str, Any]
+    ) -> LLMCallMetadata:
+        meta = dict(metadata)
         meta["redaction_applied"] = redaction.count > 0
         meta["redaction_count"] = redaction.count
         meta["redaction_types"] = sorted(set(redaction.types))
-        self.last_metadata = cast(LLMCallMetadata, meta)
+        return cast(LLMCallMetadata, meta)
 
 
 class _RedactionSummary:
